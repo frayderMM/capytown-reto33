@@ -2,6 +2,9 @@
 behavior_fsm.py — Parte B del RC3
 Máquina de estados reactiva para detectar y rodear cajas.
 
+Pista: jirón de 60 cm, cajas de 20×20 cm pegadas a las paredes.
+El bypass elige automáticamente el lado más libre mirando el scan lateral.
+
 Estados:
   CRUCERO → CAJA_DETECTADA → PARAR → ESPERAR_3S → RODEAR → CRUCERO
 """
@@ -28,28 +31,33 @@ class BehaviorFSM(Node):
         super().__init__('behavior_fsm')
 
         # --- parámetros ---
-        self.declare_parameter('cruise_speed',     0.15)   # velocidad crucero [m/s]
-        self.declare_parameter('alert_distance',   0.30)   # distancia de alerta [m]
-        self.declare_parameter('stop_distance',    0.17)   # distancia mínima de parada [m]
-        self.declare_parameter('alert_angle_deg',  45.0)   # semisector frontal [°]
-        self.declare_parameter('bypass_angle_deg', 30.0)   # ángulo de desvío [°]
-        self.declare_parameter('bypass_forward',   0.40)   # avance durante rodeo [m]
-        self.declare_parameter('bypass_speed',     0.10)   # velocidad durante rodeo [m/s]
-        self.declare_parameter('turn_speed',       0.40)   # velocidad angular [rad/s]
+        self.declare_parameter('cruise_speed',     0.15)
+        self.declare_parameter('alert_distance',   0.35)
+        self.declare_parameter('stop_distance',    0.17)
+        self.declare_parameter('alert_angle_deg',  40.0)
+        self.declare_parameter('side_angle_deg',   90.0)   # sector lateral para elegir lado
+        self.declare_parameter('bypass_angle_deg', 32.0)
+        self.declare_parameter('bypass_forward',   0.55)
+        self.declare_parameter('bypass_speed',     0.10)
+        self.declare_parameter('turn_speed',       0.40)
 
         self.cruise_speed   = self.get_parameter('cruise_speed').value
         self.alert_dist     = self.get_parameter('alert_distance').value
         self.stop_dist      = self.get_parameter('stop_distance').value
         self.alert_angle    = math.radians(self.get_parameter('alert_angle_deg').value)
+        self.side_angle     = math.radians(self.get_parameter('side_angle_deg').value)
         self.bypass_angle   = math.radians(self.get_parameter('bypass_angle_deg').value)
         self.bypass_forward = self.get_parameter('bypass_forward').value
         self.bypass_speed   = self.get_parameter('bypass_speed').value
         self.turn_speed     = self.get_parameter('turn_speed').value
 
-        self.state          = State.CRUCERO
-        self.closest_front  = float('inf')
-        self._t0            = None   # timestamp de inicio de un estado temporal
-        self._bypass_step   = 0
+        self.state         = State.CRUCERO
+        self.closest_front = float('inf')
+        self.dist_left     = float('inf')   # distancia libre al costado izquierdo
+        self.dist_right    = float('inf')   # distancia libre al costado derecho
+        self._bypass_dir   = -1.0           # +1 = izquierda, -1 = derecha
+        self._t0           = None
+        self._bypass_step  = 0
 
         qos = QoSProfile(depth=10)
         qos.reliability = ReliabilityPolicy.BEST_EFFORT
@@ -57,9 +65,8 @@ class BehaviorFSM(Node):
         self.create_subscription(LaserScan, '/scan', self._scan_cb, qos)
         self.cmd_pub = self.create_publisher(Twist, '/cmd_vel', 10)
 
-        # loop a 20 Hz
-        self.create_timer(0.05, self._loop)
-        self.get_logger().info('BehaviorFSM listo — estado inicial: CRUCERO')
+        self.create_timer(0.05, self._loop)   # 20 Hz
+        self.get_logger().info('BehaviorFSM listo — CRUCERO')
 
     # ------------------------------------------------------------------ scan
     def _scan_cb(self, msg):
@@ -68,14 +75,30 @@ class BehaviorFSM(Node):
         rmin = msg.range_min
         rmax = msg.range_max
 
-        closest = float('inf')
+        front = float('inf')
+        left  = float('inf')
+        right = float('inf')
+
         for i, r in enumerate(msg.ranges):
             if not math.isfinite(r) or r < rmin or r > rmax:
                 continue
             theta = a0 + i * da
+
+            # sector frontal
             if abs(theta) <= self.alert_angle:
-                closest = min(closest, r)
-        self.closest_front = closest
+                front = min(front, r)
+
+            # sector lateral izquierdo (θ positivo en ROS = izquierda)
+            elif self.alert_angle < theta <= self.side_angle:
+                left = min(left, r)
+
+            # sector lateral derecho (θ negativo = derecha)
+            elif -self.side_angle <= theta < -self.alert_angle:
+                right = min(right, r)
+
+        self.closest_front = front
+        self.dist_left     = left
+        self.dist_right    = right
 
     # ------------------------------------------------------------------ vel
     def _pub(self, lin, ang):
@@ -102,13 +125,18 @@ class BehaviorFSM(Node):
                 self._change(State.CAJA_DETECTADA)
 
         elif s == State.CAJA_DETECTADA:
-            # frena suavemente hasta llegar a stop_dist
+            # frena hasta llegar a stop_dist
             if self.closest_front > self.stop_dist:
                 self._pub(0.05, 0.0)
             else:
                 self._pub(0.0, 0.0)
                 self.get_logger().info(
-                    f'Parada a {self.closest_front:.2f} m de la caja')
+                    f'Parada a {self.closest_front:.2f} m | '
+                    f'izq={self.dist_left:.2f} m | der={self.dist_right:.2f} m')
+                # elegir lado más libre para el rodeo
+                self._bypass_dir = 1.0 if self.dist_left > self.dist_right else -1.0
+                lado = 'IZQUIERDA' if self._bypass_dir > 0 else 'DERECHA'
+                self.get_logger().info(f'Rodeo por {lado}')
                 self._change(State.PARAR)
 
         elif s == State.PARAR:
@@ -126,20 +154,21 @@ class BehaviorFSM(Node):
 
     # ------------------------------------------------------------------ rodeo
     def _bypass(self):
-        elapsed = self._now() - self._t0
-        turn_time    = self.bypass_angle   / self.turn_speed    # s para girar ~30°
-        forward_time = self.bypass_forward / self.bypass_speed  # s para avanzar ~40 cm
+        elapsed      = self._now() - self._t0
+        d            = self._bypass_dir               # +1 izq / -1 der
+        turn_time    = self.bypass_angle / self.turn_speed
+        forward_time = self.bypass_forward / self.bypass_speed
 
         if self._bypass_step == 0:
-            # paso 1: girar a la derecha
-            self._pub(0.0, -self.turn_speed)
+            # desviar hacia el lado libre
+            self._pub(0.0, d * self.turn_speed)
             if elapsed >= turn_time:
                 self._bypass_step = 1
                 self._t0 = self._now()
-                self.get_logger().info('Rodeo: giro derecha OK')
+                self.get_logger().info('Rodeo: giro lateral OK')
 
         elif self._bypass_step == 1:
-            # paso 2: avanzar sobrepasando la caja
+            # avanzar hasta sobrepasar la caja
             self._pub(self.bypass_speed, 0.0)
             if elapsed >= forward_time:
                 self._bypass_step = 2
@@ -147,12 +176,12 @@ class BehaviorFSM(Node):
                 self.get_logger().info('Rodeo: avance OK')
 
         elif self._bypass_step == 2:
-            # paso 3: girar a la izquierda para volver al carril
-            self._pub(0.0, self.turn_speed)
+            # volver al carril
+            self._pub(0.0, -d * self.turn_speed)
             if elapsed >= turn_time:
                 self._bypass_step = 3
                 self._t0 = self._now()
-                self.get_logger().info('Rodeo: giro izquierda OK')
+                self.get_logger().info('Rodeo: vuelta al carril OK')
 
         elif self._bypass_step == 3:
             self._pub(0.0, 0.0)
