@@ -1,0 +1,19 @@
+box_detector:
+  ros__parameters:
+    jump_threshold: 0.12      # [m] salto de rango para abrir nuevo cluster
+    box_min_width:  0.10      # [m] ancho mínimo de caja válida
+    box_max_width:  0.35      # [m] ancho máximo de caja válida
+    box_min_points: 3         # puntos mínimos por cluster
+    box_max_points: 60        # puntos máximos por cluster
+    max_range:      3.0       # [m] ignorar lecturas más lejanas
+
+behavior_fsm:
+  ros__parameters:
+    cruise_speed:     0.15    # [m/s] velocidad de avance normal
+    alert_distance:   0.30    # [m] distancia que activa CAJA_DETECTADA
+    stop_distance:    0.17    # [m] distancia mínima de parada (≥15 cm del reto)
+    alert_angle_deg:  45.0    # [°] semisector frontal vigilado
+    bypass_angle_deg: 30.0    # [°] ángulo de giro en cada paso del rodeo
+    bypass_forward:   0.40    # [m] avance recto durante el rodeo
+    bypass_speed:     0.10    # [m/s] velocidad durante el rodeo
+    turn_speed:       0.40    # [rad/s] velocidad angular en giros
