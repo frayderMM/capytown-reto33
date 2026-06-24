@@ -14,7 +14,7 @@ behavior_fsm:
     stop_distance:    0.22    # [m] parar a 22cm de la caja
     alert_angle_deg:  45.0    # [°] cono frontal amplio — captura caja aunque el robot venga ladeado
     side_angle_deg:   80.0    # [°] semisector lateral
-    bypass_angle_deg: 28.0    # [°] angulo de giro en rodeo
-    bypass_forward:   0.40    # [m] avance para sobrepasar la caja
-    bypass_speed:     0.12    # [m/s] velocidad durante el rodeo
-    turn_speed:       0.45    # [rad/s] velocidad angular
+    bypass_angle_deg: 18.0    # [°] giro suave — jirón de 60cm es estrecho
+    bypass_forward:   0.50    # [m] avance para sobrepasar la caja de 20cm
+    bypass_speed:     0.10    # [m/s] lento en el rodeo para no chocar
+    turn_speed:       0.40    # [rad/s] velocidad angular
