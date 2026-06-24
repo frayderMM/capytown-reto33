@@ -103,6 +103,11 @@ class BoxDetector(Node):
             if not (self.box_min_w <= width <= self.box_max_w):
                 continue
 
+            # Superficie plana: variacion de rango < 8cm (esquinas varían mucho más)
+            ranges_c = [r for r, _ in clust]
+            if max(ranges_c) - min(ranges_c) > 0.08:
+                continue
+
             cx_bl = sum(xs) / n
             cy_bl = sum(ys) / n
 

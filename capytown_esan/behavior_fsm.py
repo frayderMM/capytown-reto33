@@ -33,20 +33,22 @@ class BehaviorFSM(Node):
         self.declare_parameter('stop_distance',    0.22)
         self.declare_parameter('alert_angle_deg',  45.0)
         self.declare_parameter('side_angle_deg',   80.0)
-        self.declare_parameter('bypass_angle_deg', 28.0)
-        self.declare_parameter('bypass_forward',   0.40)
-        self.declare_parameter('bypass_speed',     0.12)
-        self.declare_parameter('turn_speed',       0.45)
+        self.declare_parameter('bypass_angle_deg', 18.0)
+        self.declare_parameter('bypass_forward',   0.50)
+        self.declare_parameter('bypass_speed',     0.10)
+        self.declare_parameter('turn_speed',       0.40)
+        self.declare_parameter('bypass_cooldown',  2.5)
 
-        self.cruise_speed   = self.get_parameter('cruise_speed').value
-        self.alert_dist     = self.get_parameter('alert_distance').value
-        self.stop_dist      = self.get_parameter('stop_distance').value
-        self.alert_angle    = math.radians(self.get_parameter('alert_angle_deg').value)
-        self.side_angle     = math.radians(self.get_parameter('side_angle_deg').value)
-        self.bypass_angle   = math.radians(self.get_parameter('bypass_angle_deg').value)
-        self.bypass_forward = self.get_parameter('bypass_forward').value
-        self.bypass_speed   = self.get_parameter('bypass_speed').value
-        self.turn_speed     = self.get_parameter('turn_speed').value
+        self.cruise_speed    = self.get_parameter('cruise_speed').value
+        self.alert_dist      = self.get_parameter('alert_distance').value
+        self.stop_dist       = self.get_parameter('stop_distance').value
+        self.alert_angle     = math.radians(self.get_parameter('alert_angle_deg').value)
+        self.side_angle      = math.radians(self.get_parameter('side_angle_deg').value)
+        self.bypass_angle    = math.radians(self.get_parameter('bypass_angle_deg').value)
+        self.bypass_forward  = self.get_parameter('bypass_forward').value
+        self.bypass_speed    = self.get_parameter('bypass_speed').value
+        self.turn_speed      = self.get_parameter('turn_speed').value
+        self.bypass_cooldown = self.get_parameter('bypass_cooldown').value
 
         self.state         = State.CRUCERO
         self.closest_front = float('inf')
@@ -56,10 +58,11 @@ class BehaviorFSM(Node):
         self._t0           = None
         self._bypass_step  = 0
         self._log_timer    = 0
+        self._last_bypass_ts = 0.0   # cooldown: evita retrigger inmediato
 
         # caja confirmada por box_detector (no para por paredes)
         self._caja_confirmada = False
-        self._caja_ts         = 0.0   # timestamp de la ultima deteccion
+        self._caja_ts         = 0.0
 
         qos_sensor = QoSProfile(depth=10)
         qos_sensor.reliability = ReliabilityPolicy.BEST_EFFORT
@@ -141,8 +144,9 @@ class BehaviorFSM(Node):
                 self.get_logger().info(
                     f'[CRUCERO] frente={self.closest_front:.2f}m '
                     f'caja={self._caja_confirmada}')
-            # solo para si box_detector confirma caja Y esta cerca
-            if self._caja_confirmada and self.closest_front < self.alert_dist:
+            # solo para si: caja confirmada + cerca + cooldown de bypass cumplido
+            in_cooldown = (now - self._last_bypass_ts) < self.bypass_cooldown
+            if self._caja_confirmada and self.closest_front < self.alert_dist and not in_cooldown:
                 self._change(State.CAJA_DETECTADA)
 
         elif s == State.CAJA_DETECTADA:
@@ -198,6 +202,7 @@ class BehaviorFSM(Node):
 
         elif self._bypass_step == 3:
             self._pub(0.0, 0.0)
+            self._last_bypass_ts = self._now()
             self._change(State.CRUCERO)
 
 

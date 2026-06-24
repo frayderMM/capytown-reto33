@@ -1,20 +1,21 @@
 box_detector:
   ros__parameters:
     jump_threshold: 0.12      # [m] salto de rango para abrir nuevo cluster
-    box_min_width:  0.08      # [m] ancho mínimo (caja 20cm vista en ángulo ~14cm)
-    box_max_width:  0.30      # [m] ancho máximo (caja 20cm + margen)
-    box_min_points: 3         # puntos mínimos por cluster
-    box_max_points: 40        # puntos máximos (paredes tienen muchos más)
-    max_range:      2.0       # [m] jirón de 60cm — no hay nada más lejos que 2m
+    box_min_width:  0.13      # [m] minimo 13cm (caja 20cm vista en angulo)
+    box_max_width:  0.25      # [m] maximo 25cm
+    box_min_points: 5         # minimo 5 puntos
+    box_max_points: 30        # maximo 30 puntos
+    max_range:      0.80      # [m] solo detectar dentro de 80cm
 
 behavior_fsm:
   ros__parameters:
-    cruise_speed:     0.28    # [m/s] velocidad crucero
+    cruise_speed:     0.35    # [m/s] velocidad crucero
     alert_distance:   0.55    # [m] detectar obstaculo frontal
     stop_distance:    0.22    # [m] parar a 22cm de la caja
     alert_angle_deg:  45.0    # [°] cono frontal amplio — captura caja aunque el robot venga ladeado
     side_angle_deg:   80.0    # [°] semisector lateral
-    bypass_angle_deg: 18.0    # [°] giro suave — jirón de 60cm es estrecho
-    bypass_forward:   0.50    # [m] avance para sobrepasar la caja de 20cm
-    bypass_speed:     0.10    # [m/s] lento en el rodeo para no chocar
+    bypass_angle_deg: 18.0    # [°] giro suave
+    bypass_forward:   0.50    # [m] avance rodeo
+    bypass_speed:     0.10    # [m/s] velocidad rodeo
     turn_speed:       0.40    # [rad/s] velocidad angular
+    bypass_cooldown:  2.5     # [s] espera antes de detectar otra caja tras rodeo
