@@ -22,6 +22,7 @@ class State(Enum):
     PARAR          = auto()
     ESPERAR_3S     = auto()
     RODEAR         = auto()
+    GIRAR          = auto()   # girar en esquina del circuito
 
 
 class BehaviorFSM(Node):
@@ -37,7 +38,9 @@ class BehaviorFSM(Node):
         self.declare_parameter('bypass_forward',   0.50)
         self.declare_parameter('bypass_speed',     0.10)
         self.declare_parameter('turn_speed',       0.40)
-        self.declare_parameter('bypass_cooldown',  2.5)
+        self.declare_parameter('bypass_cooldown',   2.5)
+        self.declare_parameter('corner_distance',   0.40)
+        self.declare_parameter('corner_turn_deg',   88.0)
 
         self.cruise_speed    = self.get_parameter('cruise_speed').value
         self.alert_dist      = self.get_parameter('alert_distance').value
@@ -48,7 +51,9 @@ class BehaviorFSM(Node):
         self.bypass_forward  = self.get_parameter('bypass_forward').value
         self.bypass_speed    = self.get_parameter('bypass_speed').value
         self.turn_speed      = self.get_parameter('turn_speed').value
-        self.bypass_cooldown = self.get_parameter('bypass_cooldown').value
+        self.bypass_cooldown  = self.get_parameter('bypass_cooldown').value
+        self.corner_dist      = self.get_parameter('corner_distance').value
+        self.corner_turn_rad  = math.radians(self.get_parameter('corner_turn_deg').value)
 
         self.state         = State.CRUCERO
         self.closest_front = float('inf')
@@ -73,7 +78,7 @@ class BehaviorFSM(Node):
         self.cmd_pub = self.create_publisher(Twist, '/cmd_vel', 10)
         self.create_timer(0.05, self._loop)
 
-        self.get_logger().info('BehaviorFSM listo — solo para si box_detector confirma caja')
+        self.get_logger().info('BehaviorFSM listo — CRUCERO + esquinas + cajas')
 
     # ---------------------------------------------------------------- cajas
     def _cajas_cb(self, msg):
@@ -144,10 +149,17 @@ class BehaviorFSM(Node):
                 self.get_logger().info(
                     f'[CRUCERO] frente={self.closest_front:.2f}m '
                     f'caja={self._caja_confirmada}')
-            # solo para si: caja confirmada + cerca + cooldown de bypass cumplido
+
             in_cooldown = (now - self._last_bypass_ts) < self.bypass_cooldown
+
             if self._caja_confirmada and self.closest_front < self.alert_dist and not in_cooldown:
+                # hay caja confirmada → parar y rodear
                 self._change(State.CAJA_DETECTADA)
+            elif not self._caja_confirmada and self.closest_front < self.corner_dist and not in_cooldown:
+                # pared en frente sin caja = esquina del circuito → girar izquierda
+                self.get_logger().info(
+                    f'[ESQUINA] pared a {self.closest_front:.2f}m — girando izquierda')
+                self._change(State.GIRAR)
 
         elif s == State.CAJA_DETECTADA:
             self._pub(0.0, 0.0)
@@ -171,6 +183,15 @@ class BehaviorFSM(Node):
 
         elif s == State.RODEAR:
             self._bypass()
+
+        elif s == State.GIRAR:
+            # gira izquierda (sentido antihorario = positivo en ROS)
+            turn_time = self.corner_turn_rad / self.turn_speed
+            self._pub(0.0, self.turn_speed)
+            if now - self._t0 >= turn_time:
+                self._last_bypass_ts = now   # cooldown breve post-esquina
+                self.get_logger().info('Esquina completada — CRUCERO')
+                self._change(State.CRUCERO)
 
     # ---------------------------------------------------------------- rodeo
     def _bypass(self):
