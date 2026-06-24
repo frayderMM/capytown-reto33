@@ -9,12 +9,12 @@ box_detector:
 
 behavior_fsm:
   ros__parameters:
-    cruise_speed:     0.22    # [m/s] velocidad de avance normal
-    alert_distance:   0.50    # [m] detectar caja con mas margen
-    stop_distance:    0.22    # [m] parar a 22cm (holgura sobre los 15cm del reto)
-    alert_angle_deg:  25.0    # [°] cono frontal estrecho — evita disparos de paredes laterales
-    side_angle_deg:   80.0    # [°] semisector lateral para elegir lado libre
-    bypass_angle_deg: 30.0    # [°] angulo de giro en el rodeo
-    bypass_forward:   0.60    # [m] avance para sobrepasar la caja de 20cm con margen
+    cruise_speed:     0.28    # [m/s] velocidad crucero
+    alert_distance:   0.55    # [m] detectar obstaculo frontal
+    stop_distance:    0.22    # [m] parar a 22cm de la caja
+    alert_angle_deg:  45.0    # [°] cono frontal amplio — captura caja aunque el robot venga ladeado
+    side_angle_deg:   80.0    # [°] semisector lateral
+    bypass_angle_deg: 28.0    # [°] angulo de giro en rodeo
+    bypass_forward:   0.65    # [m] avance para sobrepasar la caja
     bypass_speed:     0.12    # [m/s] velocidad durante el rodeo
-    turn_speed:       0.45    # [rad/s] velocidad angular en giros
+    turn_speed:       0.45    # [rad/s] velocidad angular

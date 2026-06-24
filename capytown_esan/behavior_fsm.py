@@ -53,11 +53,12 @@ class BehaviorFSM(Node):
 
         self.state         = State.CRUCERO
         self.closest_front = float('inf')
-        self.dist_right    = float('inf')   # theta positivo
-        self.dist_left     = float('inf')   # theta negativo
+        self.dist_right    = float('inf')
+        self.dist_left     = float('inf')
         self._bypass_dir   = -1.0
         self._t0           = None
         self._bypass_step  = 0
+        self._log_timer    = 0
 
         qos = QoSProfile(depth=10)
         qos.reliability = ReliabilityPolicy.BEST_EFFORT
@@ -119,6 +120,11 @@ class BehaviorFSM(Node):
 
         if s == State.CRUCERO:
             self._pub(self.cruise_speed, 0.0)
+            # log cada 20 ciclos (1 seg) para ver qué lee el frente
+            self._log_timer += 1
+            if self._log_timer >= 20:
+                self._log_timer = 0
+                self.get_logger().info(f'[CRUCERO] frente={self.closest_front:.2f}m')
             if self.closest_front < self.alert_dist:
                 self._change(State.CAJA_DETECTADA)
 
