@@ -9,12 +9,12 @@ box_detector:
 
 behavior_fsm:
   ros__parameters:
-    cruise_speed:     0.15    # [m/s] velocidad de avance normal
-    alert_distance:   0.35    # [m] distancia que activa CAJA_DETECTADA
-    stop_distance:    0.17    # [m] distancia mínima de parada (≥15 cm del reto)
-    alert_angle_deg:  40.0    # [°] semisector frontal vigilado
-    side_angle_deg:   90.0    # [°] semisector lateral para elegir lado libre
-    bypass_angle_deg: 32.0    # [°] ángulo de giro (ajustado para jirón de 60 cm)
-    bypass_forward:   0.55    # [m] avance — caja 20cm + holgura para sobrepasarla
-    bypass_speed:     0.10    # [m/s] velocidad durante el rodeo
-    turn_speed:       0.40    # [rad/s] velocidad angular en giros
+    cruise_speed:     0.22    # [m/s] velocidad de avance normal
+    alert_distance:   0.50    # [m] detectar caja con mas margen
+    stop_distance:    0.22    # [m] parar a 22cm (holgura sobre los 15cm del reto)
+    alert_angle_deg:  25.0    # [°] cono frontal estrecho — evita disparos de paredes laterales
+    side_angle_deg:   80.0    # [°] semisector lateral para elegir lado libre
+    bypass_angle_deg: 30.0    # [°] angulo de giro en el rodeo
+    bypass_forward:   0.60    # [m] avance para sobrepasar la caja de 20cm con margen
+    bypass_speed:     0.12    # [m/s] velocidad durante el rodeo
+    turn_speed:       0.45    # [rad/s] velocidad angular en giros

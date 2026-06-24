@@ -123,18 +123,15 @@ class BehaviorFSM(Node):
                 self._change(State.CAJA_DETECTADA)
 
         elif s == State.CAJA_DETECTADA:
-            if self.closest_front > self.stop_dist:
-                self._pub(0.05, 0.0)
-            else:
-                self._pub(0.0, 0.0)
-                self.get_logger().info(
-                    f'Parada a {self.closest_front:.2f}m | '
-                    f'der={self.dist_right:.2f}m | izq={self.dist_left:.2f}m')
-                # elegir el lado mas libre
-                self._bypass_dir = 1.0 if self.dist_left > self.dist_right else -1.0
-                lado = 'IZQUIERDA' if self._bypass_dir > 0 else 'DERECHA'
-                self.get_logger().info(f'Rodeo por {lado}')
-                self._change(State.PARAR)
+            # Frena inmediatamente — sin fase de desaceleración
+            self._pub(0.0, 0.0)
+            self.get_logger().info(
+                f'Parada a {self.closest_front:.2f}m | '
+                f'der={self.dist_right:.2f}m | izq={self.dist_left:.2f}m')
+            self._bypass_dir = 1.0 if self.dist_left > self.dist_right else -1.0
+            lado = 'IZQUIERDA' if self._bypass_dir > 0 else 'DERECHA'
+            self.get_logger().info(f'Rodeo por {lado}')
+            self._change(State.PARAR)
 
         elif s == State.PARAR:
             self._pub(0.0, 0.0)
