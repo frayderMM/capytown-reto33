@@ -1,13 +1,10 @@
 """
 behavior_fsm.py — Parte B del RC3
 
-NOTA DE MONTAJE: LiDAR 0° apunta hacia ATRAS del robot.
-  Frente del robot = angulos cerca de +/-pi (+/-180 grados).
-  Lado derecho     = theta positivo (~+90 grados).
-  Lado izquierdo   = theta negativo (~-90 grados).
+Solo reacciona cuando box_detector confirma una caja en /cajas_avistadas.
+NO para por paredes ni esquinas del jirón.
 
-Estados:
-  CRUCERO -> CAJA_DETECTADA -> PARAR -> ESPERAR_3S -> RODEAR -> CRUCERO
+LiDAR: 0 grados apunta hacia ATRAS. Frente = +/-180 grados.
 """
 import math
 from enum import Enum, auto
@@ -16,7 +13,7 @@ import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import LaserScan
-from geometry_msgs.msg import Twist
+from geometry_msgs.msg import Twist, PoseArray
 
 
 class State(Enum):
@@ -31,15 +28,15 @@ class BehaviorFSM(Node):
     def __init__(self):
         super().__init__('behavior_fsm')
 
-        self.declare_parameter('cruise_speed',     0.15)
-        self.declare_parameter('alert_distance',   0.35)
-        self.declare_parameter('stop_distance',    0.17)
-        self.declare_parameter('alert_angle_deg',  40.0)
+        self.declare_parameter('cruise_speed',     0.28)
+        self.declare_parameter('alert_distance',   0.55)
+        self.declare_parameter('stop_distance',    0.22)
+        self.declare_parameter('alert_angle_deg',  45.0)
         self.declare_parameter('side_angle_deg',   80.0)
-        self.declare_parameter('bypass_angle_deg', 32.0)
-        self.declare_parameter('bypass_forward',   0.55)
-        self.declare_parameter('bypass_speed',     0.10)
-        self.declare_parameter('turn_speed',       0.40)
+        self.declare_parameter('bypass_angle_deg', 28.0)
+        self.declare_parameter('bypass_forward',   0.40)
+        self.declare_parameter('bypass_speed',     0.12)
+        self.declare_parameter('turn_speed',       0.45)
 
         self.cruise_speed   = self.get_parameter('cruise_speed').value
         self.alert_dist     = self.get_parameter('alert_distance').value
@@ -60,15 +57,30 @@ class BehaviorFSM(Node):
         self._bypass_step  = 0
         self._log_timer    = 0
 
-        qos = QoSProfile(depth=10)
-        qos.reliability = ReliabilityPolicy.BEST_EFFORT
+        # caja confirmada por box_detector (no para por paredes)
+        self._caja_confirmada = False
+        self._caja_ts         = 0.0   # timestamp de la ultima deteccion
 
-        self.create_subscription(LaserScan, '/scan', self._scan_cb, qos)
+        qos_sensor = QoSProfile(depth=10)
+        qos_sensor.reliability = ReliabilityPolicy.BEST_EFFORT
+
+        self.create_subscription(LaserScan,  '/scan',           self._scan_cb,  qos_sensor)
+        self.create_subscription(PoseArray,  '/cajas_avistadas', self._cajas_cb, 10)
+
         self.cmd_pub = self.create_publisher(Twist, '/cmd_vel', 10)
-
         self.create_timer(0.05, self._loop)
-        self.get_logger().info('BehaviorFSM listo — CRUCERO (front=+/-180 grados)')
 
+        self.get_logger().info('BehaviorFSM listo — solo para si box_detector confirma caja')
+
+    # ---------------------------------------------------------------- cajas
+    def _cajas_cb(self, msg):
+        if len(msg.poses) > 0:
+            self._caja_confirmada = True
+            self._caja_ts = self._now()
+        else:
+            self._caja_confirmada = False
+
+    # ---------------------------------------------------------------- scan
     def _scan_cb(self, msg):
         a0   = msg.angle_min
         da   = msg.angle_increment
@@ -76,24 +88,19 @@ class BehaviorFSM(Node):
         rmax = msg.range_max
 
         front = float('inf')
-        right = float('inf')   # theta positivo
-        left  = float('inf')   # theta negativo
+        right = float('inf')
+        left  = float('inf')
 
         for i, r in enumerate(msg.ranges):
             if not math.isfinite(r) or r < rmin or r > rmax:
                 continue
             theta = a0 + i * da
-
-            # Frente: angulos cerca de +/-pi (LiDAR montado con 0 hacia atras)
             dist_to_front = abs(abs(theta) - math.pi)
+
             if dist_to_front <= self.alert_angle:
                 front = min(front, r)
-
-            # Lado derecho: theta positivo alejado del frente
             elif self.alert_angle < theta <= self.side_angle:
                 right = min(right, r)
-
-            # Lado izquierdo: theta negativo alejado del frente
             elif -self.side_angle <= theta < -self.alert_angle:
                 left = min(left, r)
 
@@ -101,6 +108,7 @@ class BehaviorFSM(Node):
         self.dist_right    = right
         self.dist_left     = left
 
+    # ---------------------------------------------------------------- vel
     def _pub(self, lin, ang):
         t = Twist()
         t.linear.x  = float(lin)
@@ -115,21 +123,29 @@ class BehaviorFSM(Node):
         self.state = new_state
         self._t0   = self._now()
 
+    # ---------------------------------------------------------------- FSM
     def _loop(self):
+        now = self._now()
+
+        # cajas_avistadas expira si no llega nueva en 0.5s
+        if now - self._caja_ts > 0.5:
+            self._caja_confirmada = False
+
         s = self.state
 
         if s == State.CRUCERO:
             self._pub(self.cruise_speed, 0.0)
-            # log cada 20 ciclos (1 seg) para ver qué lee el frente
             self._log_timer += 1
             if self._log_timer >= 20:
                 self._log_timer = 0
-                self.get_logger().info(f'[CRUCERO] frente={self.closest_front:.2f}m')
-            if self.closest_front < self.alert_dist:
+                self.get_logger().info(
+                    f'[CRUCERO] frente={self.closest_front:.2f}m '
+                    f'caja={self._caja_confirmada}')
+            # solo para si box_detector confirma caja Y esta cerca
+            if self._caja_confirmada and self.closest_front < self.alert_dist:
                 self._change(State.CAJA_DETECTADA)
 
         elif s == State.CAJA_DETECTADA:
-            # Frena inmediatamente — sin fase de desaceleración
             self._pub(0.0, 0.0)
             self.get_logger().info(
                 f'Parada a {self.closest_front:.2f}m | '
@@ -145,13 +161,14 @@ class BehaviorFSM(Node):
 
         elif s == State.ESPERAR_3S:
             self._pub(0.0, 0.0)
-            if self._now() - self._t0 >= 3.0:
+            if now - self._t0 >= 3.0:
                 self._bypass_step = 0
                 self._change(State.RODEAR)
 
         elif s == State.RODEAR:
             self._bypass()
 
+    # ---------------------------------------------------------------- rodeo
     def _bypass(self):
         elapsed      = self._now() - self._t0
         d            = self._bypass_dir
