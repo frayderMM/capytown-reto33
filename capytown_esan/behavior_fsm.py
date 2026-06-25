@@ -142,21 +142,27 @@ class BehaviorFSM(Node):
         s = self.state
 
         if s == State.CRUCERO:
-            self._pub(self.cruise_speed, 0.0)
+            # rampa de frenado: si hay pared cerca, reduce velocidad gradualmente
+            freno_dist = self.corner_dist + 0.20   # empieza a frenar 20cm antes
+            if self.closest_front < freno_dist:
+                factor = max(0.3, (self.closest_front - self.corner_dist) / 0.20)
+                spd = self.cruise_speed * factor
+            else:
+                spd = self.cruise_speed
+            self._pub(spd, 0.0)
+
             self._log_timer += 1
             if self._log_timer >= 20:
                 self._log_timer = 0
                 self.get_logger().info(
-                    f'[CRUCERO] frente={self.closest_front:.2f}m '
+                    f'[CRUCERO] frente={self.closest_front:.2f}m spd={spd:.2f} '
                     f'caja={self._caja_confirmada}')
 
             in_cooldown = (now - self._last_bypass_ts) < self.bypass_cooldown
 
             if self._caja_confirmada and self.closest_front < self.alert_dist and not in_cooldown:
-                # hay caja confirmada → parar y rodear
                 self._change(State.CAJA_DETECTADA)
             elif not self._caja_confirmada and self.closest_front < self.corner_dist and not in_cooldown:
-                # pared en frente sin caja = esquina del circuito → girar izquierda
                 self.get_logger().info(
                     f'[ESQUINA] pared a {self.closest_front:.2f}m — girando izquierda')
                 self._change(State.GIRAR)

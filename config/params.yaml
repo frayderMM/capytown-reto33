@@ -9,7 +9,7 @@ box_detector:
 
 behavior_fsm:
   ros__parameters:
-    cruise_speed:     0.35    # [m/s] velocidad crucero
+    cruise_speed:     0.25    # [m/s] velocidad crucero
     alert_distance:   0.55    # [m] detectar obstaculo frontal
     stop_distance:    0.22    # [m] parar a 22cm de la caja
     alert_angle_deg:  45.0    # [°] cono frontal amplio — captura caja aunque el robot venga ladeado
