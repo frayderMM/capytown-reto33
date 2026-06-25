@@ -19,5 +19,5 @@ behavior_fsm:
     bypass_speed:     0.10    # [m/s] velocidad rodeo
     turn_speed:       0.40    # [rad/s] velocidad angular
     bypass_cooldown:  2.5     # [s] espera antes de detectar otra caja tras rodeo
-    corner_distance:  0.40    # [m] detectar esquina cuando pared esta a 40cm
+    corner_distance:  0.45    # [m] detectar esquina cuando pared esta a 45cm
     corner_turn_deg:  88.0    # [°] cuanto girar en esquina (aprox 90 grados)
