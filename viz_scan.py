@@ -113,8 +113,36 @@ def _en_arco(theta, a_min, a_max):
 
 
 # ─── matplotlib ──────────────────────────────────────────────────────────────
+FRENTE_ANGULO_VIZ = math.radians(40)
+LATERAL_LO_VIZ   = math.radians(60)
+LATERAL_HI_VIZ   = math.radians(120)
+
+
+def _sector_patch(ax, theta_center, half_width, radio=3.0, color="#ffffff", alpha=0.06):
+    import numpy as np
+    thetas = np.linspace(theta_center - half_width,
+                         theta_center + half_width, 40)
+    xs = [0] + [radio * math.cos(t) for t in thetas] + [0]
+    ys = [0] + [radio * math.sin(t) for t in thetas] + [0]
+    ax.fill(xs, ys, color=color, alpha=alpha, zorder=1)
+
+
+def dibujar_sectores(ax, radio=3.0):
+    """Muestra los sectores FRENTE, IZQ, DER usados por el código."""
+    # FRENTE: cerca de ±pi (LiDAR -X = físicamente adelante)
+    for tc in [math.pi, -math.pi]:
+        _sector_patch(ax, tc, FRENTE_ANGULO_VIZ, radio, color="#ef5350", alpha=0.10)
+
+    # IZQ: theta positivo ~+90°
+    _sector_patch(ax, math.pi/2, (LATERAL_HI_VIZ - LATERAL_LO_VIZ)/2,
+                  radio, color="#42a5f5", alpha=0.10)
+    # DER: theta negativo ~-90°
+    _sector_patch(ax, -math.pi/2, (LATERAL_HI_VIZ - LATERAL_LO_VIZ)/2,
+                  radio, color="#66bb6a", alpha=0.10)
+
+
 def construir_figura():
-    fig, axes = plt.subplots(1, 2, figsize=(12, 6))
+    fig, axes = plt.subplots(1, 2, figsize=(13, 7))
     fig.patch.set_facecolor("#1a1a2e")
     for ax in axes:
         ax.set_facecolor("#16213e")
@@ -125,58 +153,59 @@ def construir_figura():
 
     axes[0].set_title("Scan completo (verde=válido, rojo=eliminado)",
                        color="white", fontsize=10)
-    axes[1].set_title("Scan filtrado (solo puntos válidos)",
+    axes[1].set_title("Scan filtrado + sectores de detección",
                        color="white", fontsize=10)
     for ax in axes:
         ax.set_xlabel("x [m]", color="#aaa")
         ax.set_ylabel("y [m]", color="#aaa")
 
-    # marcador del robot
-    for ax in axes:
-        ax.plot(0, 0, "w^", markersize=10, zorder=5, label="robot")
-        ax.annotate("robot", (0, 0), color="white", fontsize=8,
-                    xytext=(0.05, 0.05), textcoords="data")
-
     fig.tight_layout()
     return fig, axes
 
 
+def _dibujar_robot(ax):
+    ax.plot(0, 0, "w^", markersize=10, zorder=6)
+    ax.annotate("", xy=(-0.6, 0), xytext=(0, 0),
+                arrowprops=dict(arrowstyle="->", color="#ef5350", lw=2.5),
+                zorder=7)
+    ax.text(-0.78, 0.08, "FRENTE", color="#ef5350", fontsize=8, fontweight="bold")
+    ax.text( 0.08,  0.55, "IZQ",   color="#42a5f5", fontsize=8)
+    ax.text( 0.08, -0.62, "DER",   color="#66bb6a", fontsize=8)
+    ax.text( 0.08,  0.10, "robot", color="white",   fontsize=7)
+
+
 def actualizar_figura(axes, validos, eliminados):
     for ax in axes:
-        # conserva robot marker (último artista) y borra el resto
-        artistas = ax.get_lines() + ax.collections
+        artistas = ax.get_lines() + ax.collections + ax.patches + ax.texts
         for a in artistas:
             a.remove()
 
-    # eje izquierdo — todos
     todos_x = [p[0] for p in validos + eliminados]
     todos_y = [p[1] for p in validos + eliminados]
+
+    M = (max(abs(v) for v in todos_x + todos_y) + 0.3) if todos_x else 3.0
+
+    # eje izquierdo — todos los puntos
     ax0 = axes[0]
     if eliminados:
-        ex = [p[0] for p in eliminados]
-        ey = [p[1] for p in eliminados]
-        ax0.scatter(ex, ey, s=PUNTO_TAM, color=COLOR_FILT,
-                    alpha=ALPHA, label="eliminados", zorder=3)
+        ax0.scatter([p[0] for p in eliminados], [p[1] for p in eliminados],
+                    s=PUNTO_TAM, color=COLOR_FILT, alpha=ALPHA, zorder=3)
     if validos:
         vx = [p[0] for p in validos]
         vy = [p[1] for p in validos]
-        ax0.scatter(vx, vy, s=PUNTO_TAM, color=COLOR_VALIDO,
-                    alpha=ALPHA, label="válidos", zorder=4)
-    ax0.plot(0, 0, "w^", markersize=10, zorder=5)
+        ax0.scatter(vx, vy, s=PUNTO_TAM, color=COLOR_VALIDO, alpha=ALPHA, zorder=4)
+    _dibujar_robot(ax0)
 
-    # eje derecho — solo válidos
+    # eje derecho — solo válidos + sectores de detección
     ax1 = axes[1]
+    dibujar_sectores(ax1, radio=M)
     if validos:
-        ax1.scatter(vx, vy, s=PUNTO_TAM, color=COLOR_VALIDO,
-                    alpha=ALPHA, zorder=4)
-    ax1.plot(0, 0, "w^", markersize=10, zorder=5)
+        ax1.scatter(vx, vy, s=PUNTO_TAM, color=COLOR_VALIDO, alpha=ALPHA, zorder=4)
+    _dibujar_robot(ax1)
 
-    # ajusta límites dinámicamente
-    if todos_x:
-        M = max(abs(v) for v in todos_x + todos_y) + 0.3
-        for ax in axes:
-            ax.set_xlim(-M, M)
-            ax.set_ylim(-M, M)
+    for ax in axes:
+        ax.set_xlim(-M, M)
+        ax.set_ylim(-M, M)
 
 
 # ─── main ────────────────────────────────────────────────────────────────────
