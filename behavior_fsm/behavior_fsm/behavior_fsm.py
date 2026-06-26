@@ -191,9 +191,10 @@ class BehaviorFSM(Node):
 
         elif self.fase_rodeo == 1:         # avanza bordeando
             if self.dist_frente <= self.d_parada:
-                # Obstáculo inesperado durante rodeo → saltar directo al giro de retorno
+                # Obstáculo inesperado durante rodeo → parar y saltar al giro de retorno
                 self.get_logger().warn(
                     f'Obstáculo en rodeo (d={self.dist_frente:.2f}m) — abortando avance')
+                self._pub(0.0, 0.0)
                 self.fase_rodeo = 2
                 self.t_inicio = self.get_clock().now()
             elif t < self.t_avance:
