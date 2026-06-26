@@ -17,8 +17,8 @@ Pipeline:
                         [robot] →
     pared der  ─────────────────────────────────
 
-    error > 0  →  robot desplazado hacia la izquierda  →  girar derecha (w < 0)
-    error < 0  →  robot desplazado hacia la derecha    →  girar izquierda (w > 0)
+    error > 0  →  robot desplazado hacia la derecha   →  girar izquierda (w > 0)
+    error < 0  →  robot desplazado hacia la izquierda →  girar derecha   (w < 0)
     → angular.z = Kp * error + Kd * d(error)/dt
 """
 

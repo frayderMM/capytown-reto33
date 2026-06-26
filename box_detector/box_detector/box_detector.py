@@ -32,8 +32,8 @@ class BoxDetector(Node):
         super().__init__('box_detector')
 
         # ---- Parametros (se pueden sobreescribir con params.yaml) ----
-        self.declare_parameter('umbral_salto', 0.15)      # m, salto que separa clusters
-        self.declare_parameter('min_puntos', 3)           # puntos minimos por cluster
+        self.declare_parameter('umbral_salto', 0.12)      # m, salto que separa clusters
+        self.declare_parameter('min_puntos', 4)           # puntos minimos por cluster
         self.declare_parameter('ancho_caja', 0.20)        # m, ancho nominal de la caja
         self.declare_parameter('tolerancia_ancho', 0.10)  # m, +/- sobre ancho_caja
         self.declare_parameter('rango_max_deteccion', 3.0)  # m, ignora cajas lejanas
