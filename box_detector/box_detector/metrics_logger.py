@@ -45,13 +45,14 @@ class MetricsLogger(Node):
         self.declare_parameter('ground_truth', [1.0, 0.5, 2.0, -0.5, 3.0, 0.4])
         self.declare_parameter('tolerancia_match', 0.30)
         self.declare_parameter('corrida', 0)          # 0 = auto (cuenta filas en CSV)
-        self.declare_parameter('archivo_csv', 'metricas_lidar.csv')
+        self.declare_parameter('archivo_csv', '~/metricas_lidar.csv')
 
         gt_plano = list(self.get_parameter('ground_truth').value)
         self.gt  = [(gt_plano[i], gt_plano[i + 1])
                     for i in range(0, len(gt_plano), 2)]
         self.tol         = self.get_parameter('tolerancia_match').value
-        self.archivo     = self.get_parameter('archivo_csv').value
+        self.archivo     = os.path.expanduser(
+                               self.get_parameter('archivo_csv').value)
         corrida_param    = self.get_parameter('corrida').value
         self.corrida_num = corrida_param if corrida_param > 0 else self._siguiente_corrida()
 

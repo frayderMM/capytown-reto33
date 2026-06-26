@@ -26,4 +26,4 @@ metrics_logger:
     tolerancia_match: 0.30      # m  maxima distancia para contar VP
     corrida: 0                  # 0 = autonumerar por filas en CSV existente
                                 # N = forzar numero de corrida
-    archivo_csv: 'metricas_lidar.csv'  # todas las corridas se acumulan aqui
+    archivo_csv: '~/metricas_lidar.csv'  # guardado en /root/ siempre

@@ -8,27 +8,27 @@ Robot Yahboom Pi5 - LiDAR MS200 - ROS2 Humble
 
 ```
 RC3/
-├── box_detector/        # Parte A: Censo de cajas con LiDAR
-│   ├── box_detector/
-│   │   ├── box_detector.py    # Nodo: detecta y cuenta cajas
-│   │   ├── lidar_utils.py     # Funciones puras de procesamiento LiDAR
-│   │   └── metrics_logger.py  # Nodo: guarda VP/FP/FN en CSV
-│   ├── config/params.yaml
-│   └── launch/lidar.launch.py
-│
-├── behavior_fsm/        # Parte B: Guardian con FSM
-│   ├── behavior_fsm/
-│   │   ├── behavior_fsm.py    # FSM 3 estados: CRUCERO/PARAR/RODEAR
-│   │   └── wall_follower.py   # Centrado lateral Split-and-Merge + PD
-│   ├── config/params.yaml
-│   └── launch/capytown.launch.py
-│
-└── lidar_viz.py         # Monitor visual matplotlib (corre en robot por VNC)
+bbox_detector/        # Parte A: Censo de cajas con LiDAR
+b   box_detector/
+b   b   box_detector.py    # Nodo: detecta y cuenta cajas
+b   b   lidar_utils.py     # Funciones puras de procesamiento LiDAR
+b   b   metrics_logger.py  # Nodo: guarda VP/FP/FN en CSV
+b   config/params.yaml
+b   launch/lidar.launch.py
+
+behavior_fsm/        # Parte B: Guardian con FSM
+b   behavior_fsm/
+b   b   behavior_fsm.py    # FSM 3 estados: CRUCERO/PARAR/RODEAR
+b   b   wall_follower.py   # Centrado lateral Split-and-Merge + PD
+b   config/params.yaml
+b   launch/capytown.launch.py
+
+lidar_viz.py         # Monitor visual matplotlib (corre en robot por VNC)
 ```
 
 ---
 
-## Instalacion en el robot
+## Instalacion en el robot (primera vez)
 
 ```bash
 # Dentro del docker friendly_pike
@@ -43,7 +43,7 @@ colcon build --packages-select box_detector behavior_fsm
 source install/setup.bash
 ```
 
-## Actualizar desde git
+## Actualizar desde git (entre sesiones)
 
 ```bash
 cd /root/frayder_ws/src/RC3
@@ -70,20 +70,35 @@ python3 /root/frayder_ws/src/RC3/lidar_viz.py
 
 ---
 
+## Flujo entre corridas (sin rebuild)
+
+El launch usa el yaml INSTALADO, no el fuente. Para cambiar ground_truth
+entre corridas sin perder 2 minutos en colcon build:
+
+```bash
+# Editar el yaml instalado directamente
+nano /root/frayder_ws/install/box_detector/share/box_detector/config/params.yaml
+# Cambiar la linea ground_truth: [x1,y1, x2,y2, x3,y3, x4,y4, x5,y5]
+# Guardar y relanzar - SIN colcon build
+```
+
+Solo hace falta colcon build cuando se cambia CODIGO Python (no yamls).
+
+El CSV de metricas se acumula en `/root/metricas_lidar.csv`.
+Cada Ctrl+C agrega una fila nueva. Completar colisiones y rodeo_exitoso a mano.
+
+---
+
 ## Parametros clave
 
-**Orientacion del LiDAR** - si el robot reacciona en direccion equivocada:
+**Orientacion del LiDAR** - si el robot reacciona al reves:
 ```yaml
-# behavior_fsm/config/params.yaml
+# En el yaml instalado:
 lidar_front_deg: 180.0   # Yahboom MS200 por defecto
-# lidar_front_deg: 0.0   # cambiar si el frente esta en 0 grados
+# lidar_front_deg: 0.0   # si el frente esta en 0 grados
 ```
 
-**Ground-truth** - actualizar antes de cada corrida con posiciones reales de las cajas:
+**Ground-truth** - posiciones reales de las 5 cajas en odom (medir con cinta):
 ```yaml
-# box_detector/config/params.yaml
 ground_truth: [x1, y1, x2, y2, x3, y3, x4, y4, x5, y5]
 ```
-
-**El CSV de metricas** se guarda en `/root/metricas_lidar.csv` al hacer Ctrl+C.
-Cada corrida agrega una fila. Los campos `colisiones` y `rodeo_exitoso` se llenan a mano.
