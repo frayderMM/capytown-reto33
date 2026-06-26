@@ -26,6 +26,7 @@ import math
 
 import rclpy
 from rclpy.node import Node
+from rclpy.qos import QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import LaserScan
 from std_msgs.msg import Float32
 
@@ -70,7 +71,9 @@ class WallFollower(Node):
         self._t_prev   = self.get_clock().now()
 
         # ── ROS I/O ───────────────────────────────────────────────────────
-        self.create_subscription(LaserScan, '/scan', self._cb_scan, 10)
+        _qos_scan = QoSProfile(depth=10)
+        _qos_scan.reliability = ReliabilityPolicy.BEST_EFFORT
+        self.create_subscription(LaserScan, '/scan', self._cb_scan, _qos_scan)
         self._pub = self.create_publisher(Float32, '/lateral_correction', 10)
 
         self.get_logger().info(

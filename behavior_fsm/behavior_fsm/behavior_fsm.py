@@ -34,6 +34,7 @@ import math
 
 import rclpy
 from rclpy.node import Node
+from rclpy.qos import QoSProfile, ReliabilityPolicy
 
 from sensor_msgs.msg import LaserScan
 from geometry_msgs.msg import Twist
@@ -89,7 +90,9 @@ class BehaviorFSM(Node):
         self._w_lateral    = 0.0   # correccion del wall_follower
 
         # ── ROS I/O ───────────────────────────────────────────────────────
-        self.create_subscription(LaserScan, '/scan',              self.cb_scan,    10)
+        _qos_scan = QoSProfile(depth=10)
+        _qos_scan.reliability = ReliabilityPolicy.BEST_EFFORT
+        self.create_subscription(LaserScan, '/scan',              self.cb_scan,    _qos_scan)
         self.create_subscription(Float32,   '/lateral_correction',self._cb_lat,    10)
         self.pub_cmd    = self.create_publisher(Twist,  '/cmd_vel',    10)
         self.pub_estado = self.create_publisher(String, '/fsm_state',  10)

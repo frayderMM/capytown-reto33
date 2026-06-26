@@ -48,6 +48,10 @@ class MetricsLogger(Node):
         self.declare_parameter('archivo_csv', '~/metricas_lidar.csv')
 
         gt_plano = list(self.get_parameter('ground_truth').value)
+        if len(gt_plano) % 2 != 0:
+            self.get_logger().warn(
+                f'ground_truth tiene {len(gt_plano)} valores (impar) — descartando el ultimo')
+            gt_plano = gt_plano[:-1]
         self.gt  = [(gt_plano[i], gt_plano[i + 1])
                     for i in range(0, len(gt_plano), 2)]
         self.tol         = self.get_parameter('tolerancia_match').value

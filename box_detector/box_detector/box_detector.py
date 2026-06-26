@@ -18,6 +18,7 @@ ESAN - Robotica de Moviles 2026-I  |  Proyecto CapyTown
 
 import rclpy
 from rclpy.node import Node
+from rclpy.qos import QoSProfile, ReliabilityPolicy
 
 from sensor_msgs.msg import LaserScan
 from nav_msgs.msg import Odometry
@@ -54,7 +55,9 @@ class BoxDetector(Node):
         self.cajas_censo = []
 
         # ---- Suscriptores y publicadores ----
-        self.create_subscription(LaserScan, '/scan', self.cb_scan, 10)
+        _qos_scan = QoSProfile(depth=10)
+        _qos_scan.reliability = ReliabilityPolicy.BEST_EFFORT
+        self.create_subscription(LaserScan, '/scan', self.cb_scan, _qos_scan)
         self.create_subscription(Odometry, '/odom', self.cb_odom, 10)
         self.pub_cajas = self.create_publisher(PoseArray, '/cajas_avistadas', 10)
         self.pub_markers = self.create_publisher(MarkerArray, '/cajas_markers', 10)
