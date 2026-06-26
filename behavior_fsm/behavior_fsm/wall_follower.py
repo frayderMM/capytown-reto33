@@ -229,7 +229,10 @@ class WallFollower(Node):
         error   = self._calcular_error(izq, der)
 
         if error is None:
-            return          # sin referencia lateral → no publicar
+            out = Float32(); out.data = 0.0
+            self._pub.publish(out)
+            self._err_prev = 0.0   # resetear derivada para evitar spike al reaparecer
+            return
 
         # Controlador PD
         now = self.get_clock().now()
