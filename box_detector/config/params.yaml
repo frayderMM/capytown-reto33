@@ -23,6 +23,7 @@ metrics_logger:
     # Ground-truth en marco odom como lista plana [x1,y1, x2,y2, ...]
     # ACTUALIZAR antes de cada corrida con las posiciones reales de las 5 cajas
     ground_truth: [1.0, 0.5, 2.0, -0.5, 3.0, 0.4]
-    tolerancia_match: 0.30      # m  distancia maxima para contar un VP
-    corrida: 0                  # 0 = nombre automatico con timestamp
-                                # N = guarda metricas_lidar_corrida_NN.csv
+    tolerancia_match: 0.30      # m  maxima distancia para contar VP
+    corrida: 0                  # 0 = autonumerar por filas en CSV existente
+                                # N = forzar numero de corrida
+    archivo_csv: 'metricas_lidar.csv'  # todas las corridas se acumulan aqui

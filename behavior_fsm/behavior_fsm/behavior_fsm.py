@@ -91,8 +91,9 @@ class BehaviorFSM(Node):
         # ── ROS I/O ───────────────────────────────────────────────────────
         self.create_subscription(LaserScan, '/scan',              self.cb_scan,    10)
         self.create_subscription(Float32,   '/lateral_correction',self._cb_lat,    10)
-        self.pub_cmd    = self.create_publisher(Twist,  '/cmd_vel',   10)
-        self.pub_estado = self.create_publisher(String, '/fsm_state', 10)
+        self.pub_cmd    = self.create_publisher(Twist,  '/cmd_vel',    10)
+        self.pub_estado = self.create_publisher(String, '/fsm_state',  10)
+        self.pub_parada = self.create_publisher(Float32,'/parada_dist',10)
         self.create_timer(0.1, self.loop_control)
 
         self.get_logger().info('BehaviorFSM listo — 3 estados, velocidad adaptativa')
@@ -156,8 +157,10 @@ class BehaviorFSM(Node):
 
         if self.estado == CRUCERO:
             if self.dist_frente <= self.d_parada:
-                # Elegir lado con más espacio antes de parar
                 self._rodeo_dir = 1.0 if self.dist_izq >= self.dist_der else -1.0
+                # Publicar distancia real de parada para métricas
+                msg_d = Float32(); msg_d.data = float(self.dist_frente)
+                self.pub_parada.publish(msg_d)
                 self._cambiar(PARAR)
                 return
 
@@ -187,7 +190,13 @@ class BehaviorFSM(Node):
                 self.t_inicio = self.get_clock().now()
 
         elif self.fase_rodeo == 1:         # avanza bordeando
-            if t < self.t_avance:
+            if self.dist_frente <= self.d_parada:
+                # Obstáculo inesperado durante rodeo → saltar directo al giro de retorno
+                self.get_logger().warn(
+                    f'Obstáculo en rodeo (d={self.dist_frente:.2f}m) — abortando avance')
+                self.fase_rodeo = 2
+                self.t_inicio = self.get_clock().now()
+            elif t < self.t_avance:
                 self._pub(self.v_cruise, 0.0)
             else:
                 self.fase_rodeo = 2

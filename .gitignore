@@ -9,6 +9,7 @@ __pycache__/
 # Docs y referencias locales (no van al robot)
 ROADMAP.md
 lidarlibro.md
+contexto.md
 *.svg
 *.png
 *.jpg
