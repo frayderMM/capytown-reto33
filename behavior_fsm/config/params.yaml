@@ -22,12 +22,12 @@ behavior_fsm:
 
     # --- Distancias de reacción ---
     dist_alerta: 0.45           # m  empieza a frenar progresivamente
-    dist_parada: 0.18           # m  para completamente (margen seguro > 15 cm)
+    dist_parada: 0.25           # m  para completamente
 
     # --- Velocidades ---
     vel_crucero: 0.18           # m/s  velocidad en zona libre
     vel_min:     0.05           # m/s  velocidad mínima al estar a dist_parada
-    vel_giro:    0.50           # rad/s  velocidad de giro en rodeo
+    vel_giro:    0.80           # rad/s  velocidad de giro en evasion
 
     # --- Pausa de estabilización antes de evadir ---
     pausa_parada: 0.30          # s  pausa breve al detectar obstaculo
