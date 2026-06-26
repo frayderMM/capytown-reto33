@@ -220,7 +220,7 @@ class LidarViz(Node):
 
 # ── Construccion de la figura ─────────────────────────────────────────────────
 def build_figure():
-    fig = plt.figure(figsize=(14, 8), facecolor=BG)
+    fig = plt.figure(figsize=(10, 6), facecolor=BG)
     gs  = gridspec.GridSpec(2, 2,
                             width_ratios=[2.2, 1],
                             height_ratios=[2.5, 1],
