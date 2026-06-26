@@ -65,11 +65,9 @@ C_ALERT  = '#e94560'
 C_OK     = '#2ecc71'
 
 FSM_COLORS = {
-    'CRUCERO':        '#2ecc71',
-    'CAJA_DETECTADA': '#f39c12',
-    'PARAR':          '#e94560',
-    'ESPERAR_3S':     '#f5c518',
-    'RODEAR':         '#9b59b6',
+    'CRUCERO': '#2ecc71',
+    'PARAR':   '#e94560',
+    'RODEAR':  '#9b59b6',
 }
 
 # ── Sectores ──────────────────────────────────────────────────────────────────

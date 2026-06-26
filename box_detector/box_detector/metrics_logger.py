@@ -12,7 +12,7 @@ declarado por parametro y calcula:
     tasa_deteccion = VP / (VP + FN)
     error_medio    : distancia media VP <-> caja real
 
-Al apagar el nodo (Ctrl+C) escribe 'metricas_lidar.csv'.
+Al apagar el nodo (Ctrl+C) escribe 'metricas_lidar_TIMESTAMP.csv'.
 
 ESAN - Robotica de Moviles 2026-I  |  Proyecto CapyTown
 """
