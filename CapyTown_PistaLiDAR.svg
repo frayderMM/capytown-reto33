@@ -1,0 +1,98 @@
+<svg viewBox="0 0 760 560" xmlns="http://www.w3.org/2000/svg" font-family="Arial, Helvetica, sans-serif" role="img" aria-labelledby="t d">
+  <title id="t">Plano de la pista del reto LiDAR CapyTown</title>
+  <desc id="d">Circuito en lazo de 300 x 180 cm con pasillo de 60 cm delimitado por paredes de MDF de 60 cm, isla central y 5 cajas de ejemplo.</desc>
+  <rect x="0" y="0" width="760" height="560" fill="#F8FAFC"/>
+
+  <!-- Encabezado -->
+  <text x="40" y="34" font-size="22" font-weight="700" fill="#0F766E">Pista del Reto LiDAR — "El Censo y el Guardián de las Cajas"</text>
+  <text x="40" y="54" font-size="13" fill="#64748B">Circuito en lazo · 300 × 180 cm · jirón de 60 cm · paredes MDF 30×60 cm (vista superior, escala 1:?)</text>
+
+  <!-- ====== PISO (origen en 70,80; 2 px = 1 cm) ====== -->
+  <g transform="translate(70,80)">
+    <!-- Piso del jiron (corredor) -->
+    <rect x="0" y="0" width="600" height="360" fill="#EEF2F6" stroke="none"/>
+    <!-- Isla central -->
+    <rect x="120" y="120" width="360" height="120" fill="#FEF3C7" stroke="#B45309" stroke-width="3"/>
+    <text x="300" y="176" font-size="14" font-weight="700" fill="#92400E" text-anchor="middle">ISLA CENTRAL</text>
+    <text x="300" y="196" font-size="11" fill="#92400E" text-anchor="middle">paredes MDF · 180 × 60 cm</text>
+
+    <!-- Trayectoria del robot (centro del corredor) -->
+    <rect x="60" y="60" width="480" height="240" rx="30" fill="none" stroke="#0D9488" stroke-width="2.5" stroke-dasharray="9 7"/>
+    <!-- Flechas de sentido (CCW visual): abajo->derecha, derecha->arriba, arriba->izquierda, izquierda->abajo -->
+    <polygon points="300,300 290,294 290,306" fill="#0D9488"/>
+    <polygon points="540,180 534,190 546,190" fill="#0D9488"/>
+    <polygon points="300,60 310,54 310,66" fill="#0D9488"/>
+    <polygon points="60,180 66,170 54,170" fill="#0D9488"/>
+
+    <!-- Paredes exteriores (MDF) como linea gruesa -->
+    <rect x="0" y="0" width="600" height="360" fill="none" stroke="#B45309" stroke-width="6"/>
+
+    <!-- Juntas de tablas (cada 60 cm = 120 px) en perimetro exterior -->
+    <g stroke="#FFFFFF" stroke-width="2">
+      <!-- lados horizontales: x = 120,240,360,480 -->
+      <line x1="120" y1="-4" x2="120" y2="8"/><line x1="240" y1="-4" x2="240" y2="8"/><line x1="360" y1="-4" x2="360" y2="8"/><line x1="480" y1="-4" x2="480" y2="8"/>
+      <line x1="120" y1="352" x2="120" y2="364"/><line x1="240" y1="352" x2="240" y2="364"/><line x1="360" y1="352" x2="360" y2="364"/><line x1="480" y1="352" x2="480" y2="364"/>
+      <!-- lados verticales: y = 120,240 -->
+      <line x1="-4" y1="120" x2="8" y2="120"/><line x1="-4" y1="240" x2="8" y2="240"/>
+      <line x1="592" y1="120" x2="604" y2="120"/><line x1="592" y1="240" x2="604" y2="240"/>
+    </g>
+
+    <!-- ====== CAJAS (20x20 cm = 40x40 px) ====== -->
+    <g>
+      <rect x="180" y="320" width="40" height="40" fill="#CA8A04" stroke="#713F12" stroke-width="2"/>
+      <text x="200" y="345" font-size="13" font-weight="700" fill="#FFFFFF" text-anchor="middle">C1</text>
+      <rect x="560" y="160" width="40" height="40" fill="#CA8A04" stroke="#713F12" stroke-width="2"/>
+      <text x="580" y="185" font-size="13" font-weight="700" fill="#FFFFFF" text-anchor="middle">C2</text>
+      <rect x="360" y="0" width="40" height="40" fill="#CA8A04" stroke="#713F12" stroke-width="2"/>
+      <text x="380" y="25" font-size="13" font-weight="700" fill="#FFFFFF" text-anchor="middle">C3</text>
+      <rect x="160" y="0" width="40" height="40" fill="#CA8A04" stroke="#713F12" stroke-width="2"/>
+      <text x="180" y="25" font-size="13" font-weight="700" fill="#FFFFFF" text-anchor="middle">C4</text>
+      <rect x="0" y="160" width="40" height="40" fill="#CA8A04" stroke="#713F12" stroke-width="2"/>
+      <text x="20" y="185" font-size="13" font-weight="700" fill="#FFFFFF" text-anchor="middle">C5</text>
+    </g>
+
+    <!-- ====== ROBOT / INICIO ====== -->
+    <circle cx="80" cy="300" r="16" fill="#0F172A"/>
+    <polygon points="96,300 84,292 84,308" fill="#14B8A6"/>
+    <text x="80" y="334" font-size="12" font-weight="700" fill="#0F172A" text-anchor="middle">INICIO / META</text>
+
+    <!-- ====== ANOTACION ancho del jiron (corredor superior) ====== -->
+    <g stroke="#475569" stroke-width="1.2">
+      <line x1="300" y1="2" x2="300" y2="118"/>
+      <polygon points="300,2 295,12 305,12" fill="#475569" stroke="none"/>
+      <polygon points="300,118 295,108 305,108" fill="#475569" stroke="none"/>
+    </g>
+    <rect x="276" y="50" width="48" height="18" fill="#F8FAFC"/>
+    <text x="300" y="63" font-size="12" font-weight="700" fill="#475569" text-anchor="middle">60 cm</text>
+
+    <!-- ====== COTAS exteriores ====== -->
+    <!-- ancho 300 cm (abajo) -->
+    <g stroke="#64748B" stroke-width="1.2">
+      <line x1="0" y1="392" x2="600" y2="392"/>
+      <line x1="0" y1="386" x2="0" y2="398"/><line x1="600" y1="386" x2="600" y2="398"/>
+    </g>
+    <text x="300" y="412" font-size="13" fill="#334155" text-anchor="middle">300 cm</text>
+    <!-- alto 180 cm (izquierda) -->
+    <g stroke="#64748B" stroke-width="1.2">
+      <line x1="-26" y1="0" x2="-26" y2="360"/>
+      <line x1="-32" y1="0" x2="-20" y2="0"/><line x1="-32" y1="360" x2="-20" y2="360"/>
+    </g>
+    <text x="-40" y="184" font-size="13" fill="#334155" text-anchor="middle" transform="rotate(-90 -40 184)">180 cm</text>
+  </g>
+
+  <!-- ====== LEYENDA ====== -->
+  <g transform="translate(70,500)" font-size="12" fill="#1E293B">
+    <rect x="0" y="-2" width="22" height="12" fill="none" stroke="#B45309" stroke-width="4"/>
+    <text x="30" y="9">Pared MDF (tablas 30×60)</text>
+
+    <rect x="210" y="-3" width="14" height="14" fill="#CA8A04" stroke="#713F12" stroke-width="2"/>
+    <text x="232" y="9">Caja 20×20 cm (5 en total)</text>
+
+    <circle cx="420" cy="4" r="8" fill="#0F172A"/><polygon points="430,4 422,-1 422,9" fill="#14B8A6"/>
+    <text x="436" y="9">Robot · inicio/meta</text>
+
+    <line x1="590" y1="4" x2="618" y2="4" stroke="#0D9488" stroke-width="2.5" stroke-dasharray="9 7"/>
+    <text x="624" y="9">Trayectoria</text>
+  </g>
+  <text x="70" y="538" font-size="11" fill="#64748B">Material aprox.: 16 tablas perímetro exterior + 8 tablas isla = 24 tablas MDF de 30×60 cm. Cajas en posiciones de ejemplo (se aleatorizan entre corridas).</text>
+</svg>

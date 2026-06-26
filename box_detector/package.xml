@@ -1,8 +1,9 @@
 <?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
-  <name>capytown_esan</name>
-  <version>0.3.0</version>
-  <description>CapyTown RC3 — LiDAR box detection and FSM guardian</description>
+  <name>box_detector</name>
+  <version>0.1.0</version>
+  <description>Parte A del reto CapyTown: censo de cajas con LiDAR 2D (ESAN Robotica de Moviles 2026-I).</description>
   <maintainer email="fraydermezamorveli@gmail.com">frayderMM</maintainer>
   <license>MIT</license>
 
@@ -11,7 +12,6 @@
   <exec_depend>nav_msgs</exec_depend>
   <exec_depend>geometry_msgs</exec_depend>
   <exec_depend>visualization_msgs</exec_depend>
-  <exec_depend>std_msgs</exec_depend>
 
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>

@@ -1,0 +1,59 @@
+# Parametros del guardian (Parte B) — version mejorada.
+#
+# Ejecutar:
+#   ros2 run behavior_fsm behavior_fsm  --ros-args --params-file params.yaml
+#   ros2 run behavior_fsm wall_follower --ros-args --params-file params.yaml
+
+behavior_fsm:
+  ros__parameters:
+
+    # --- Orientación del LiDAR ---
+    lidar_front_deg: 180.0      # ángulo donde está el FRENTE en el LiDAR
+                                # 180 = Yahboom MS200 montado con cable atrás (por defecto)
+                                # 0   = montaje estándar ROS
+                                # CAMBIAR si el robot reacciona en dirección equivocada
+
+    # --- Sector frontal de vigilancia ---
+    sector_frontal_deg: 45.0    # +/- grados al frente vigilados
+
+    # --- Sectores laterales (para elegir dirección de rodeo) ---
+    sector_lateral_lo:  60.0    # inicio sector lateral [grados]
+    sector_lateral_hi: 120.0    # fin sector lateral [grados]
+
+    # --- Distancias de reacción ---
+    dist_alerta: 0.45           # m  empieza a frenar progresivamente
+    dist_parada: 0.18           # m  para completamente (margen seguro > 15 cm)
+
+    # --- Velocidades ---
+    vel_crucero: 0.18           # m/s  velocidad en zona libre
+    vel_min:     0.05           # m/s  velocidad mínima al estar a dist_parada
+    vel_giro:    0.50           # rad/s  velocidad de giro en rodeo
+
+    # --- Pausa de estabilización antes del rodeo ---
+    pausa_parada: 0.30          # s  reemplaza los 3 s del diseño base
+
+    # --- Maniobra de rodeo ---
+    angulo_rodeo_deg: 35.0      # grados de giro (ligeramente mayor para dar más margen)
+    avance_rodeo_seg:  1.8      # s de avance lateral bordeando la caja
+
+wall_follower:
+  ros__parameters:
+    # --- Control lateral ---
+    dist_objetivo:  0.50        # m    distancia deseada a la pared (si solo hay una)
+    Kp:             0.80        # ganancia proporcional
+    Kd:             0.10        # ganancia derivativa
+    max_correccion: 0.40        # rad/s  saturación de salida
+
+    # --- Clasificación de segmentos ---
+    min_long_pared: 0.60        # m  longitud mínima para considerar un segmento pared
+    cos_lateral_min: 0.55       # cos del ángulo máximo con el eje X
+
+    # --- Algoritmo Split-and-Merge ---
+    umbral_split:   0.06        # m  tolerancia de rectitud
+    rango_max:      3.50        # m  distancia máxima a procesar
+    salto_dist:     0.35        # m  salto euclidiano para cortar grupo
+    salto_idx:      5           # N  huecos de índice para cortar grupo
+
+    # --- Zona angular ignorada (descomentar si el cable tapa el LiDAR) ---
+    # remove_min_deg: 135.0
+    # remove_max_deg: 225.0
