@@ -5,3 +5,13 @@ __pycache__/
 *.pyc
 *.egg-info/
 .DS_Store
+
+# Herramientas PC (no van al robot)
+lidar_viz.py
+ROADMAP.md
+*.svg
+*.png
+*.jpg
+
+# CSVs generados por metrics_logger
+metricas_lidar*.csv
