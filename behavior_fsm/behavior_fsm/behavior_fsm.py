@@ -63,6 +63,7 @@ class BehaviorFSM(Node):
         self.declare_parameter('pausa_parada',         0.30)
         self.declare_parameter('angulo_rodeo_deg',    35.0)
         self.declare_parameter('avance_rodeo_seg',     1.8)
+        self.declare_parameter('dist_abort_rodeo',     0.10)  # umbral emergencia en fase 1
 
         self.front_rad = math.radians(self.get_parameter('lidar_front_deg').value)
         self.sector   = math.radians(self.get_parameter('sector_frontal_deg').value)
@@ -74,8 +75,9 @@ class BehaviorFSM(Node):
         self.v_min    = self.get_parameter('vel_min').value
         self.w_giro   = self.get_parameter('vel_giro').value
         self.t_pausa  = self.get_parameter('pausa_parada').value
-        self.ang_rodeo= math.radians(self.get_parameter('angulo_rodeo_deg').value)
-        self.t_avance = self.get_parameter('avance_rodeo_seg').value
+        self.ang_rodeo    = math.radians(self.get_parameter('angulo_rodeo_deg').value)
+        self.t_avance     = self.get_parameter('avance_rodeo_seg').value
+        self.d_abort_rodeo= self.get_parameter('dist_abort_rodeo').value
 
         # ── Estado ────────────────────────────────────────────────────────
         self.estado        = CRUCERO
@@ -193,8 +195,8 @@ class BehaviorFSM(Node):
                 self.t_inicio = self.get_clock().now()
 
         elif self.fase_rodeo == 1:         # avanza bordeando
-            if self.dist_frente <= self.d_parada:
-                # Obstáculo inesperado durante rodeo → parar y saltar al giro de retorno
+            if self.dist_frente <= self.d_abort_rodeo:
+                # Umbral reducido: ignora el borde de la caja que giró al frente
                 self.get_logger().warn(
                     f'Obstáculo en rodeo (d={self.dist_frente:.2f}m) — abortando avance')
                 self._pub(0.0, 0.0)

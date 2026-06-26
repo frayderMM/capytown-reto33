@@ -33,8 +33,10 @@ behavior_fsm:
     pausa_parada: 0.30          # s  reemplaza los 3 s del diseño base
 
     # --- Maniobra de rodeo ---
-    angulo_rodeo_deg: 50.0      # grados de giro — aumentado para salir en un solo intento
+    angulo_rodeo_deg: 50.0      # grados de giro
     avance_rodeo_seg:  3.0      # s de avance lateral bordeando la caja
+    dist_abort_rodeo:  0.10     # m — umbral de emergencia en fase 1 (menor que d_parada)
+                                # evita que el borde de la caja aborte el avance
 
 wall_follower:
   ros__parameters:
