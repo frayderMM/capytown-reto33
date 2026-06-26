@@ -8,6 +8,7 @@ __pycache__/
 
 # Docs y referencias locales (no van al robot)
 ROADMAP.md
+VUELTA_COMPLETA.md
 lidarlibro.md
 contexto.md
 *.svg

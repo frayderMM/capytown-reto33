@@ -29,14 +29,13 @@ behavior_fsm:
     vel_min:     0.05           # m/s  velocidad mínima al estar a dist_parada
     vel_giro:    0.50           # rad/s  velocidad de giro en rodeo
 
-    # --- Pausa de estabilización antes del rodeo ---
-    pausa_parada: 0.30          # s  reemplaza los 3 s del diseño base
+    # --- Pausa de estabilización antes de evadir ---
+    pausa_parada: 0.30          # s  pausa breve al detectar obstaculo
 
-    # --- Maniobra de rodeo ---
-    angulo_rodeo_deg: 50.0      # grados de giro
-    avance_rodeo_seg:  3.0      # s de avance lateral bordeando la caja
-    dist_abort_rodeo:  0.10     # m — umbral de emergencia en fase 1 (menor que d_parada)
-                                # evita que el borde de la caja aborte el avance
+    # --- Gap navigation (evasion dinamica por huecos) ---
+    Kgap:           1.2         # rad/s por radian de gap (ganancia de giro hacia el hueco)
+    gap_sector_deg: 90.0        # ventana de busqueda del hueco [+-grados desde el frente]
+    t_evasion_max:  8.0         # s  timeout de seguridad en estado EVADIR
 
 wall_follower:
   ros__parameters:
