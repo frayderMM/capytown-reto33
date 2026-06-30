@@ -104,6 +104,7 @@ class BehaviorFSM(Node):
         self.dist_frente_giro = float('inf')  # sector estrecho (dispara GIRO)
         self.dist_izq         = float('inf')
         self.dist_der         = float('inf')
+        self.dist_min         = float('inf')  # minimo global, todos los angulos (emergencia)
         self._w_lateral       = 0.0
 
         # ── ROS I/O ───────────────────────────────────────────────────────
@@ -120,7 +121,7 @@ class BehaviorFSM(Node):
 
     # ── Callbacks ─────────────────────────────────────────────────────────
     def cb_scan(self, msg: LaserScan):
-        d_f = d_fg = d_l = d_r = float('inf')
+        d_f = d_fg = d_l = d_r = d_min = float('inf')
 
         for i, r in enumerate(msg.ranges):
             raw    = msg.angle_min + i * msg.angle_increment
@@ -130,6 +131,13 @@ class BehaviorFSM(Node):
             valid  = math.isfinite(r) and msg.range_min <= r <= msg.range_max
             if not valid:
                 continue
+
+            # Minimo global (todos los angulos): cubre tambien la zona
+            # "ciega" entre el cono frontal (sector_frontal_deg) y el
+            # sector lateral (sector_lateral_lo), que de otra forma no se
+            # mide en ningun lado. Usado solo para la parada de emergencia,
+            # asi un obstaculo en cualquier direccion la dispara igual.
+            d_min = min(d_min, r)
 
             if abs_af <= self.sector:       # sector ancho: vel adaptativa + emergencia
                 d_f = min(d_f, r)
@@ -146,6 +154,7 @@ class BehaviorFSM(Node):
         self.dist_frente_giro = d_fg
         self.dist_izq         = d_l
         self.dist_der         = d_r
+        self.dist_min         = d_min
 
     def _cb_lat(self, msg: Float32):
         self._w_lateral = msg.data
@@ -179,10 +188,13 @@ class BehaviorFSM(Node):
     # ── FSM principal ─────────────────────────────────────────────────────
     def loop_control(self):
 
-        # Contingencia de colisión — override de cualquier estado
-        if self.dist_frente < self.d_emerg:
+        # Contingencia de colisión — override de cualquier estado. Usa el
+        # minimo global (todos los angulos), no solo el cono frontal, para
+        # que tambien dispare ante algo muy cerca por un costado o en
+        # diagonal (zona que ningun sector frontal/lateral cubre).
+        if self.dist_min < self.d_emerg:
             self.get_logger().warn(
-                f'EMERGENCIA frente={self.dist_frente:.2f}m — stop total', throttle_duration_sec=1.0)
+                f'EMERGENCIA min={self.dist_min:.2f}m — stop total', throttle_duration_sec=1.0)
             self._pub(0.0, 0.0)
             return
 
