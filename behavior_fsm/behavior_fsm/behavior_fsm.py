@@ -67,6 +67,9 @@ class BehaviorFSM(Node):
         self.declare_parameter('fraccion_perp',         0.65)  # fraccion minima de rayos del cono estrecho
                                                                 # que deben ser < dist_obstaculo para disparar GIRO
                                                                 # (pared lateral = pocos rayos cercanos; caja frontal = casi todos)
+        self.declare_parameter('simetria_max',          0.10)  # m  diferencia maxima entre dist minima en
+                                                                # mitad izquierda y derecha del cono estrecho.
+                                                                # caja frontal: simetrico (~0). pared en angulo: muy asimetrico.
 
         self.front_rad   = math.radians(self.get_parameter('lidar_front_deg').value)
         self.sector      = math.radians(self.get_parameter('sector_frontal_deg').value)
@@ -87,9 +90,10 @@ class BehaviorFSM(Node):
         self.t_giro_min = self.get_parameter('t_giro_min').value
         self.t_giro_max = self.get_parameter('t_giro_max').value
 
-        self.d_izq_min   = self.get_parameter('dist_izq_min').value
-        self.Kizq        = self.get_parameter('Kizq').value
+        self.d_izq_min     = self.get_parameter('dist_izq_min').value
+        self.Kizq          = self.get_parameter('Kizq').value
         self.fraccion_perp = self.get_parameter('fraccion_perp').value
+        self.simetria_max  = self.get_parameter('simetria_max').value
 
         # ── Estado ────────────────────────────────────────────────────────
         self.estado   = CRUCERO
@@ -101,9 +105,11 @@ class BehaviorFSM(Node):
         self.dist_izq         = float('inf')
         self.dist_der         = float('inf')
         self._w_lateral       = 0.0
-        # contadores para test de perpendicularidad
+        # contadores y simetria para test de perpendicularidad
         self.cnt_fg_total     = 0
         self.cnt_fg_close     = 0
+        self.d_fg_left        = float('inf')  # min range en mitad izq del cono estrecho
+        self.d_fg_right       = float('inf')  # min range en mitad der del cono estrecho
 
         # ── ROS I/O ───────────────────────────────────────────────────────
         _qos = QoSProfile(depth=10)
@@ -120,6 +126,7 @@ class BehaviorFSM(Node):
     # ── Callbacks ─────────────────────────────────────────────────────────
     def cb_scan(self, msg: LaserScan):
         d_f = d_fg = d_l = d_r = float('inf')
+        d_fgl = d_fgr = float('inf')   # min range mitad izq/der del cono estrecho
         cnt_total = cnt_close = 0
 
         for i, r in enumerate(msg.ranges):
@@ -138,6 +145,10 @@ class BehaviorFSM(Node):
                 cnt_total += 1
                 if r <= self.d_obst:
                     cnt_close += 1
+                if af >= 0:
+                    d_fgl = min(d_fgl, r)  # mitad izquierda del cono
+                else:
+                    d_fgr = min(d_fgr, r)  # mitad derecha del cono
 
             if self.lat_lo <= abs_af <= self.lat_hi:
                 if af > 0:
@@ -151,6 +162,8 @@ class BehaviorFSM(Node):
         self.dist_der         = d_r
         self.cnt_fg_total     = cnt_total
         self.cnt_fg_close     = cnt_close
+        self.d_fg_left        = d_fgl
+        self.d_fg_right       = d_fgr
 
     def _cb_lat(self, msg: Float32):
         self._w_lateral = msg.data
@@ -193,11 +206,15 @@ class BehaviorFSM(Node):
 
         if self.estado == CRUCERO:
             # GIRO solo si hay linea PERPENDICULAR en el cono estrecho (±sector_giro).
-            # Pared lateral que entra en angulo produce pocos rayos cercanos (fraccion baja).
-            # Caja frontal perpendicular produce casi todos los rayos cercanos (fraccion alta).
+            # Test 1 — fraccion: caja frontal llena el cono; pared en angulo no.
             perp_ok = (self.cnt_fg_total > 0 and
                        self.cnt_fg_close / self.cnt_fg_total >= self.fraccion_perp)
-            if perp_ok and self.dist_frente_giro <= self.d_obst:
+            # Test 2 — simetria: caja perpendicular tiene d_izq_cono ≈ d_der_cono.
+            # Pared lateral entra solo por un lado → asimetria grande → no dispara.
+            simetrico = (math.isfinite(self.d_fg_left) and
+                         math.isfinite(self.d_fg_right) and
+                         abs(self.d_fg_left - self.d_fg_right) <= self.simetria_max)
+            if perp_ok and simetrico and self.dist_frente_giro <= self.d_obst:
                 d_msg = Float32(); d_msg.data = float(self.dist_frente_giro)
                 self.pub_parada.publish(d_msg)
                 self._cambiar(GIRO)

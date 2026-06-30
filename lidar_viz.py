@@ -190,10 +190,12 @@ class LidarViz(Node):
         self.d_right  = d_r
 
         # ── Deteccion de caja (recta tipo T al frente) ────────────────────
-        # Una caja presenta: cluster de puntos casi a la misma profundidad (xr)
-        # con ancho lateral (yr spread) entre BOX_W_MIN y BOX_W_MAX.
-        # Una pared de corredor es mas ancha (>35cm); los laterales son
-        # segmentos largos con xr variable.
+        # Una caja frontal perpendicular (forma T) tiene:
+        #   - cluster de puntos a la misma profundidad (xr constante)
+        #   - ancho lateral (yr spread) entre BOX_W_MIN y BOX_W_MAX
+        #   - cluster centrado: y_center cerca de 0 (no todo a un lado = pared en angulo)
+        # Una pared lateral que entra en el cono en angulo tiene todos sus puntos
+        # a un lado del eje (y_center grande) y se filtra por ese chequeo.
         self.box_frente      = False
         self.box_frente_dist = float('inf')
         if len(front_rf) >= 3:
@@ -202,9 +204,11 @@ class LidarViz(Node):
             # Tomar el cluster mas cercano (dentro de BOX_DEPTH en profundidad)
             cluster = [(x, y) for x, y in front_rf if x <= d_min_x + BOX_DEPTH]
             if len(cluster) >= 3:
-                ys     = [p[1] for p in cluster]
-                width  = max(ys) - min(ys)
-                if BOX_W_MIN <= width <= BOX_W_MAX:
+                ys       = [p[1] for p in cluster]
+                width    = max(ys) - min(ys)
+                y_center = (max(ys) + min(ys)) / 2.0
+                # Ancho razonable Y cluster centrado (no todo a un lado)
+                if BOX_W_MIN <= width <= BOX_W_MAX and abs(y_center) < 0.15:
                     self.box_frente      = True
                     self.box_frente_dist = d_min_x
 
@@ -420,14 +424,12 @@ def main():
             range_circ.set_radius(min(node.range_max, 1.4))
 
             # ── Alerta frontal en LiDAR ───────────────────────────────────
-            if node.d_front <= DIST_ALERT:
-                alert_txt.set_text(f'! FRENTE: {node.d_front:.2f} m')
+            # Solo dispara si se detecta una linea perpendicular tipo T (caja).
+            # La pared lateral que entra en angulo al cono no activa esta alerta.
+            if node.box_frente:
+                alert_txt.set_text(f'! CAJA PERPENDICULAR: {node.box_frente_dist:.2f} m')
                 alert_txt.set_color(C_ALERT)
                 ax_lidar.set_facecolor('#1a0a0a')
-            elif node.d_front <= DIST_WARN:
-                alert_txt.set_text(f'FRENTE: {node.d_front:.2f} m')
-                alert_txt.set_color(C_WARN)
-                ax_lidar.set_facecolor('#1a1208')
             else:
                 alert_txt.set_text('')
                 ax_lidar.set_facecolor(PANEL)
