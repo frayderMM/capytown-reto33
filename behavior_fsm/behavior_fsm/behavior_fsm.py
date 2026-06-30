@@ -56,7 +56,7 @@ class BehaviorFSM(Node):
         self.declare_parameter('dist_emergencia',      0.12)  # stop total si algo esta a < X m
 
         # --- Recuperacion (RESCATE: barrido + retroceso si EVADIR se atasca) ---
-        self.declare_parameter('topic_odom',                '/odom_raw')
+        self.declare_parameter('topic_odom',                '/odom')
         self.declare_parameter('gap_fallback_deg',           15.0)
         self.declare_parameter('barrido_max_deg',            300.0)
         self.declare_parameter('barrido_t_max',               10.0)
@@ -116,9 +116,11 @@ class BehaviorFSM(Node):
         # ── ROS I/O ───────────────────────────────────────────────────────
         _qos = QoSProfile(depth=10)
         _qos.reliability = ReliabilityPolicy.BEST_EFFORT
-        self.create_subscription(LaserScan, '/scan',               self.cb_scan, _qos)
-        self.create_subscription(Float32,   '/lateral_correction', self._cb_lat,  10)
-        self.create_subscription(Odometry,  self.topic_odom,       self.cb_odom,  10)
+        _qos_odom = QoSProfile(depth=10)
+        _qos_odom.reliability = ReliabilityPolicy.BEST_EFFORT
+        self.create_subscription(LaserScan, '/scan',               self.cb_scan,  _qos)
+        self.create_subscription(Float32,   '/lateral_correction', self._cb_lat,   10)
+        self.create_subscription(Odometry,  self.topic_odom,       self.cb_odom, _qos_odom)
         self.pub_cmd    = self.create_publisher(Twist,   '/cmd_vel',     10)
         self.pub_estado = self.create_publisher(String,  '/fsm_state',   10)
         self.pub_parada = self.create_publisher(Float32, '/parada_dist', 10)

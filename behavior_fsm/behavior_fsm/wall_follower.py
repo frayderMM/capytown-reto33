@@ -200,28 +200,35 @@ class WallFollower(Node):
             if cos_x < self._cos_lat:
                 continue                   # pared frontal, no lateral
             my = s['mean_y']
+            # Con lidar_front_deg=180 (front en raw=π): pared DERECHA tiene
+            # raw≈π/2 → sin(π/2)=+1 → mean_y > 0; pared IZQUIERDA raw≈3π/2
+            # → sin(3π/2)=-1 → mean_y < 0.
             if my > 0.15:
-                izq.append(s)             # a la izquierda (y > 0)
+                der.append(s)             # a la derecha  (y > 0 en scan frame)
             elif my < -0.15:
-                der.append(s)             # a la derecha  (y < 0)
+                izq.append(s)             # a la izquierda (y < 0 en scan frame)
 
         # La mas cercana de cada lado (menor |mean_y|)
-        pared_izq = min(izq, key=lambda s:  s['mean_y']) if izq else None
-        pared_der = max(der, key=lambda s:  s['mean_y']) if der else None
+        pared_izq = max(izq, key=lambda s: s['mean_y']) if izq else None  # menos negativo = más cercana
+        pared_der = min(der, key=lambda s: s['mean_y']) if der else None  # menor positivo = más cercana
         return pared_izq, pared_der
 
     def _calcular_error(self, izq, der):
         """
         Error de seguimiento — pegado a la pared derecha (no centrado).
 
-        Pared derecha visible (con o sin izquierda): error = dist_objetivo + mean_y_der
-        Solo izquierda visible (respaldo, sin referencia derecha):
-                                  error = mean_y_izq - dist_objetivo
+        der visible (mean_y > 0): error = d_obj - mean_y_der
+            cero cuando mean_y == d_obj (robot a distancia exacta de pared der).
+            positivo = robot desplazado a la derecha → girar izquierda (w > 0).
+        Solo izq visible (mean_y < 0, respaldo):
+            error estimado via distancia a pared izq, asumiendo jiron de 0.60 m.
         """
         if der:
-            return self._d_obj + der['mean_y']
+            return self._d_obj - der['mean_y']
         if izq:
-            return izq['mean_y'] - self._d_obj
+            # -izq['mean_y'] = distancia real a pared izq (positivo)
+            # 0.60 - d_obj = distancia ideal a pared izq cuando robot está a d_obj de der
+            return -izq['mean_y'] - (0.60 - self._d_obj)
         return None
 
     # ── Callback principal ────────────────────────────────────────────────

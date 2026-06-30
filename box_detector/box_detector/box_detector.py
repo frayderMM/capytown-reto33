@@ -57,8 +57,10 @@ class BoxDetector(Node):
         # ---- Suscriptores y publicadores ----
         _qos_scan = QoSProfile(depth=10)
         _qos_scan.reliability = ReliabilityPolicy.BEST_EFFORT
+        _qos_odom = QoSProfile(depth=10)
+        _qos_odom.reliability = ReliabilityPolicy.BEST_EFFORT
         self.create_subscription(LaserScan, '/scan', self.cb_scan, _qos_scan)
-        self.create_subscription(Odometry, '/odom', self.cb_odom, 10)
+        self.create_subscription(Odometry, '/odom', self.cb_odom, _qos_odom)
         self.pub_cajas = self.create_publisher(PoseArray, '/cajas_avistadas', 10)
         self.pub_markers = self.create_publisher(MarkerArray, '/cajas_markers', 10)
 
