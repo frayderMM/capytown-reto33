@@ -38,7 +38,8 @@ class BehaviorFSM(Node):
 
         # ── Parámetros ────────────────────────────────────────────────────
         self.declare_parameter('lidar_front_deg',    180.0)
-        self.declare_parameter('sector_frontal_deg',  45.0)
+        self.declare_parameter('sector_frontal_deg',  30.0)  # sector ancho: vel adaptativa + emergencia
+        self.declare_parameter('sector_giro_deg',     12.0)  # sector estrecho: UNICO que dispara GIRO
         self.declare_parameter('sector_lateral_lo',   60.0)
         self.declare_parameter('sector_lateral_hi',  120.0)
 
@@ -58,10 +59,11 @@ class BehaviorFSM(Node):
         self.declare_parameter('t_giro_min',            0.5)   # s  minimo en GIRO antes de poder salir
         self.declare_parameter('t_giro_max',            6.0)   # s  salvavidas: vuelve a CRUCERO igual
 
-        self.front_rad  = math.radians(self.get_parameter('lidar_front_deg').value)
-        self.sector     = math.radians(self.get_parameter('sector_frontal_deg').value)
-        self.lat_lo     = math.radians(self.get_parameter('sector_lateral_lo').value)
-        self.lat_hi     = math.radians(self.get_parameter('sector_lateral_hi').value)
+        self.front_rad   = math.radians(self.get_parameter('lidar_front_deg').value)
+        self.sector      = math.radians(self.get_parameter('sector_frontal_deg').value)
+        self.sector_giro = math.radians(self.get_parameter('sector_giro_deg').value)
+        self.lat_lo      = math.radians(self.get_parameter('sector_lateral_lo').value)
+        self.lat_hi      = math.radians(self.get_parameter('sector_lateral_hi').value)
 
         self.d_alerta   = self.get_parameter('dist_alerta').value
         self.d_obst     = self.get_parameter('dist_obstaculo').value
@@ -81,10 +83,11 @@ class BehaviorFSM(Node):
         self.t_inicio = self.get_clock().now()
 
         # ── Sensores ──────────────────────────────────────────────────────
-        self.dist_frente = float('inf')
-        self.dist_izq    = float('inf')
-        self.dist_der    = float('inf')
-        self._w_lateral  = 0.0
+        self.dist_frente      = float('inf')  # sector ancho (vel + emergencia)
+        self.dist_frente_giro = float('inf')  # sector estrecho (dispara GIRO)
+        self.dist_izq         = float('inf')
+        self.dist_der         = float('inf')
+        self._w_lateral       = 0.0
 
         # ── ROS I/O ───────────────────────────────────────────────────────
         _qos = QoSProfile(depth=10)
@@ -100,7 +103,7 @@ class BehaviorFSM(Node):
 
     # ── Callbacks ─────────────────────────────────────────────────────────
     def cb_scan(self, msg: LaserScan):
-        d_f = d_l = d_r = float('inf')
+        d_f = d_fg = d_l = d_r = float('inf')
 
         for i, r in enumerate(msg.ranges):
             raw    = msg.angle_min + i * msg.angle_increment
@@ -111,8 +114,10 @@ class BehaviorFSM(Node):
             if not valid:
                 continue
 
-            if abs_af <= self.sector:
+            if abs_af <= self.sector:       # sector ancho: vel adaptativa + emergencia
                 d_f = min(d_f, r)
+            if abs_af <= self.sector_giro:  # sector estrecho: dispara GIRO
+                d_fg = min(d_fg, r)
 
             if self.lat_lo <= abs_af <= self.lat_hi:
                 if af > 0:
@@ -120,9 +125,10 @@ class BehaviorFSM(Node):
                 else:
                     d_r = min(d_r, r)
 
-        self.dist_frente = d_f
-        self.dist_izq    = d_l
-        self.dist_der    = d_r
+        self.dist_frente      = d_f
+        self.dist_frente_giro = d_fg
+        self.dist_izq         = d_l
+        self.dist_der         = d_r
 
     def _cb_lat(self, msg: Float32):
         self._w_lateral = msg.data
@@ -164,8 +170,10 @@ class BehaviorFSM(Node):
             return
 
         if self.estado == CRUCERO:
-            if self.dist_frente <= self.d_obst:
-                d_msg = Float32(); d_msg.data = float(self.dist_frente)
+            # Solo el sector estrecho (±12°) dispara el GIRO para evitar
+            # que la pared lateral cercana (8 cm) active el estado erroneamente.
+            if self.dist_frente_giro <= self.d_obst:
+                d_msg = Float32(); d_msg.data = float(self.dist_frente_giro)
                 self.pub_parada.publish(d_msg)
                 self._cambiar(GIRO)
                 return

@@ -13,8 +13,10 @@ behavior_fsm:
                                 # 0   = montaje estándar ROS
                                 # CAMBIAR si el robot reacciona en dirección equivocada
 
-    # --- Sector frontal de vigilancia ---
-    sector_frontal_deg: 45.0    # +/- grados al frente vigilados
+    # --- Sectores frontales ---
+    sector_frontal_deg: 30.0    # +/- grados vigilados para vel. adaptativa y emergencia
+    sector_giro_deg:    12.0    # +/- grados ESTRECHO que dispara GIRO (a 8cm de pared la
+                                # pared aparece a ~38cm en este sector, por encima del umbral 30cm)
 
     # --- Sectores laterales (para medir pared izq/der) ---
     sector_lateral_lo:  60.0    # inicio sector lateral [grados]

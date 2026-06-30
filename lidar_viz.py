@@ -61,7 +61,8 @@ C_ALERT = '#e94560'
 C_OK    = '#2ecc71'
 
 # ── Constantes ────────────────────────────────────────────────────────────────
-FRONT_HALF = math.radians(45.0)
+FRONT_HALF      = math.radians(30.0)   # sector ancho (vel + emergencia)
+FRONT_GIRO_HALF = math.radians(12.0)   # sector estrecho (dispara GIRO)
 SIDE_LO    = math.radians(60.0)
 SIDE_HI    = math.radians(120.0)
 
@@ -148,13 +149,17 @@ class LidarViz(Node):
                                 math.cos(theta - self.front_rad))
             abs_af = abs(af)
 
-            if abs_af <= FRONT_HALF:
-                color = C_FRONT; d_f = min(d_f, r)
+            if abs_af <= FRONT_GIRO_HALF:
+                # Cono estrecho (±12°): el UNICO que puede disparar GIRO en la FSM.
+                # Se muestra blanco para distinguirlo del sector frontal ancho.
+                color = '#ffffff'; d_f = min(d_f, r)
                 if r <= BOX_MAX_R:
-                    # Proyectar en frame robot: x hacia adelante, y lateral
-                    xr =  r * math.cos(af)
-                    yr =  r * math.sin(af)
+                    xr = r * math.cos(af)
+                    yr = r * math.sin(af)
                     front_rf.append((xr, yr))
+            elif abs_af <= FRONT_HALF:
+                # Sector ancho (±30°): solo vel. adaptativa y emergencia, NO dispara GIRO.
+                color = C_FRONT; d_f = min(d_f, r)
             elif SIDE_LO <= abs_af <= SIDE_HI:
                 if af > 0:
                     color = C_LEFT;  d_l = min(d_l, r)
