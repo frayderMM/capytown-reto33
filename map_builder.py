@@ -101,7 +101,14 @@ class MapBuilder(Node):
         self.robot_x   = 0.0
         self.robot_y   = 0.0
         self.robot_yaw = 0.0
+        self.dist_izq  = float('inf')   # distancia lateral izquierda (m)
+        self.dist_der  = float('inf')   # distancia lateral derecha (m)
         self._lock     = threading.Lock()
+
+        # Sectores laterales: 60°–120° a cada lado del frente
+        self._lat_lo = math.radians(60.0)
+        self._lat_hi = math.radians(120.0)
+        self._lidar_front = math.pi   # 180° = Yahboom MS200
 
         qos = QoSProfile(depth=10)
         qos.reliability = ReliabilityPolicy.BEST_EFFORT
@@ -123,15 +130,28 @@ class MapBuilder(Node):
             rx, ry, ryaw = self.robot_x, self.robot_y, self.robot_yaw
 
         rc, rr = mundo_a_celda(rx, ry)
+        d_izq = float('inf')
+        d_der = float('inf')
 
         for i in range(0, len(msg.ranges), RAY_STEP):
             r = msg.ranges[i]
-            if not math.isfinite(r) or r < msg.range_min or r > msg.range_max:
+            valid = math.isfinite(r) and msg.range_min <= r <= msg.range_max
+            if not valid:
                 continue
 
             raw_ang   = msg.angle_min + i * msg.angle_increment
-            world_ang = ryaw + (raw_ang - LIDAR_FRONT_RAD)
+            af        = math.atan2(math.sin(raw_ang - self._lidar_front),
+                                   math.cos(raw_ang - self._lidar_front))
+            abs_af    = abs(af)
 
+            # Distancias laterales (sectores 60°–120°)
+            if self._lat_lo <= abs_af <= self._lat_hi:
+                if af > 0:
+                    d_izq = min(d_izq, r)
+                else:
+                    d_der = min(d_der, r)
+
+            world_ang = ryaw + (raw_ang - LIDAR_FRONT_RAD)
             ex = rx + r * math.cos(world_ang)
             ey = ry + r * math.sin(world_ang)
             ec, er = mundo_a_celda(ex, ey)
@@ -145,9 +165,15 @@ class MapBuilder(Node):
             if 0 <= er < ROWS and 0 <= ec < COLS:
                 self.grid[er, ec] = CEL_OCUPADO
 
+        with self._lock:
+            self.dist_izq = d_izq
+            self.dist_der = d_der
+
     def snapshot(self):
         with self._lock:
-            return self.grid.copy(), (self.robot_x, self.robot_y, self.robot_yaw)
+            return (self.grid.copy(),
+                    (self.robot_x, self.robot_y, self.robot_yaw),
+                    (self.dist_izq, self.dist_der))
 
 
 # ── Visualizacion ─────────────────────────────────────────────────────────────
@@ -193,7 +219,12 @@ def main():
 
     # Trayectoria
     traj_x, traj_y = [], []
-    traj_line, = ax.plot([], [], 'b-', linewidth=1, alpha=0.5, label='Trayectoria')
+    traj_line, = ax.plot([], [], 'b-', linewidth=1, alpha=0.5)
+
+    # Líneas laterales (centrado)
+    lat_izq_line, = ax.plot([], [], color='#AA00FF', lw=2.0, alpha=0.85, zorder=6)
+    lat_der_line, = ax.plot([], [], color='#FF8800', lw=2.0, alpha=0.85, zorder=6)
+    lat_text_arts = []   # textos y barra de centrado que se recrean cada tick
 
     ax.set_xlim(0, MAP_W)
     ax.set_ylim(MAP_H, 0)          # y invertido: 0 arriba, 1.80 abajo
@@ -201,26 +232,32 @@ def main():
     ax.set_ylabel('Y (m) — Sur')
     ax.set_title('Mapa de ocupacion CapyTown | gris=desconocido | blanco=libre | negro=pared')
     ax.grid(True, alpha=0.2, linestyle=':')
-    ax.legend(loc='upper right', fontsize=8)
 
     # Leyenda de colores
     leyenda = [
-        mpatches.Patch(color='white',  label='Libre'),
-        mpatches.Patch(color='black',  label='Ocupado'),
-        mpatches.Patch(color='gray',   label='Desconocido'),
+        mpatches.Patch(color='white',   label='Libre'),
+        mpatches.Patch(color='black',   label='Ocupado'),
+        mpatches.Patch(color='gray',    label='Desconocido'),
+        plt.Line2D([0],[0], color='#AA00FF', lw=2, label='Dist pared IZQ'),
+        plt.Line2D([0],[0], color='#FF8800', lw=2, label='Dist pared DER'),
+        plt.Line2D([0],[0], color='blue',    lw=1, label='Trayectoria'),
     ]
     ax.legend(handles=leyenda, loc='lower right', fontsize=8)
 
     def on_close(event):
-        grid, _ = node.snapshot()
+        grid, _, __ = node.snapshot()
         guardar_mapa(grid)
 
     fig.canvas.mpl_connect('close_event', on_close)
 
+    # Anchura del corredor (60 cm) — centro ideal = 30 cm de cada pared
+    CORREDOR_W = 0.60
+    CENTRO_IDEAL = CORREDOR_W / 2.0   # 0.30 m
+
     # ── Loop de visualizacion ────────────────────────────────────────────────
     try:
         while rclpy.ok():
-            grid, (rx, ry, ryaw) = node.snapshot()
+            grid, (rx, ry, ryaw), (d_izq, d_der) = node.snapshot()
             img_plot.set_data(grid)
 
             # Posicion en metros del mapa (no en odom)
@@ -239,14 +276,63 @@ def main():
                 a.remove()
             arrow_arts.clear()
             arrow_len = 0.08
-            # yaw: en odom, positivo = norte. En pantalla, norte = arriba = menor y.
             arr = ax.annotate(
                 '', xy=(mx + arrow_len * math.cos(ryaw),
-                        my - arrow_len * math.sin(ryaw)),   # - porque y invertido
+                        my - arrow_len * math.sin(ryaw)),
                 xytext=(mx, my),
                 arrowprops=dict(arrowstyle='->', color='red', lw=2)
             )
             arrow_arts.append(arr)
+
+            # ── Líneas de centrado lateral ───────────────────────────────
+            for art in lat_text_arts:
+                try: art.remove()
+                except Exception: pass
+            lat_text_arts.clear()
+
+            ang_izq = ryaw + math.pi * 0.5   # 90° izquierda
+            ang_der = ryaw - math.pi * 0.5   # 90° derecha
+
+            if math.isfinite(d_izq) and d_izq < 1.5:
+                wl_x = mx + d_izq * math.cos(ang_izq)
+                wl_y = my - d_izq * math.sin(ang_izq)   # y invertido en pantalla
+                lat_izq_line.set_data([mx, wl_x], [my, wl_y])
+                mid_x = (mx + wl_x) * 0.5
+                mid_y = (my + wl_y) * 0.5
+                t = ax.text(mid_x - 0.06, mid_y, f'IZQ\n{d_izq:.2f}m',
+                            fontsize=7, color='#AA00FF', ha='center',
+                            bbox=dict(boxstyle='round,pad=0.2', fc='white', alpha=0.8),
+                            zorder=8)
+                lat_text_arts.append(t)
+            else:
+                lat_izq_line.set_data([], [])
+
+            if math.isfinite(d_der) and d_der < 1.5:
+                wr_x = mx + d_der * math.cos(ang_der)
+                wr_y = my - d_der * math.sin(ang_der)
+                lat_der_line.set_data([mx, wr_x], [my, wr_y])
+                mid_x = (mx + wr_x) * 0.5
+                mid_y = (my + wr_y) * 0.5
+                t = ax.text(mid_x + 0.06, mid_y, f'DER\n{d_der:.2f}m',
+                            fontsize=7, color='#FF8800', ha='center',
+                            bbox=dict(boxstyle='round,pad=0.2', fc='white', alpha=0.8),
+                            zorder=8)
+                lat_text_arts.append(t)
+            else:
+                lat_der_line.set_data([], [])
+
+            # Barra de centrado + HUD
+            if math.isfinite(d_izq) and math.isfinite(d_der):
+                error = d_izq - CENTRO_IDEAL   # + = pegado a isla, - = pegado a pared ext
+                color_err = '#AA00FF' if error > 0.03 else '#FF8800' if error < -0.03 else 'green'
+                hud = ax.text(
+                    0.02, 0.04,
+                    f'IZQ {d_izq:.2f}m │ DER {d_der:.2f}m │ error {error*100:+.0f}cm',
+                    transform=ax.transAxes, fontsize=9,
+                    color=color_err, fontweight='bold',
+                    bbox=dict(boxstyle='round', fc='white', alpha=0.85),
+                    zorder=15)
+                lat_text_arts.append(hud)
 
             fig.canvas.draw_idle()
             plt.pause(0.3)
@@ -254,7 +340,7 @@ def main():
     except KeyboardInterrupt:
         pass
     finally:
-        grid, _ = node.snapshot()
+        grid, _, __ = node.snapshot()
         guardar_mapa(grid)
         node.destroy_node()
         rclpy.shutdown()
