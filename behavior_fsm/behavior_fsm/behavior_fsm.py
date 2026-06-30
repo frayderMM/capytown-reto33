@@ -63,6 +63,11 @@ class BehaviorFSM(Node):
         self.declare_parameter('dist_izq_min',          0.15)  # m  nunca acercarse mas de esto a la izq
         self.declare_parameter('Kizq',                  3.0)   # ganancia de repulsion (rad/s / m)
 
+        # --- Perpendicularidad para deteccion de caja ---
+        self.declare_parameter('fraccion_perp',         0.65)  # fraccion minima de rayos del cono estrecho
+                                                                # que deben ser < dist_obstaculo para disparar GIRO
+                                                                # (pared lateral = pocos rayos cercanos; caja frontal = casi todos)
+
         self.front_rad   = math.radians(self.get_parameter('lidar_front_deg').value)
         self.sector      = math.radians(self.get_parameter('sector_frontal_deg').value)
         self.sector_giro = math.radians(self.get_parameter('sector_giro_deg').value)
@@ -82,8 +87,9 @@ class BehaviorFSM(Node):
         self.t_giro_min = self.get_parameter('t_giro_min').value
         self.t_giro_max = self.get_parameter('t_giro_max').value
 
-        self.d_izq_min  = self.get_parameter('dist_izq_min').value
-        self.Kizq       = self.get_parameter('Kizq').value
+        self.d_izq_min   = self.get_parameter('dist_izq_min').value
+        self.Kizq        = self.get_parameter('Kizq').value
+        self.fraccion_perp = self.get_parameter('fraccion_perp').value
 
         # ── Estado ────────────────────────────────────────────────────────
         self.estado   = CRUCERO
@@ -95,6 +101,9 @@ class BehaviorFSM(Node):
         self.dist_izq         = float('inf')
         self.dist_der         = float('inf')
         self._w_lateral       = 0.0
+        # contadores para test de perpendicularidad
+        self.cnt_fg_total     = 0
+        self.cnt_fg_close     = 0
 
         # ── ROS I/O ───────────────────────────────────────────────────────
         _qos = QoSProfile(depth=10)
@@ -111,6 +120,7 @@ class BehaviorFSM(Node):
     # ── Callbacks ─────────────────────────────────────────────────────────
     def cb_scan(self, msg: LaserScan):
         d_f = d_fg = d_l = d_r = float('inf')
+        cnt_total = cnt_close = 0
 
         for i, r in enumerate(msg.ranges):
             raw    = msg.angle_min + i * msg.angle_increment
@@ -121,10 +131,13 @@ class BehaviorFSM(Node):
             if not valid:
                 continue
 
-            if abs_af <= self.sector:       # sector ancho: vel adaptativa + emergencia
+            if abs_af <= self.sector:       # sector ancho: emergencia
                 d_f = min(d_f, r)
             if abs_af <= self.sector_giro:  # sector estrecho: dispara GIRO
                 d_fg = min(d_fg, r)
+                cnt_total += 1
+                if r <= self.d_obst:
+                    cnt_close += 1
 
             if self.lat_lo <= abs_af <= self.lat_hi:
                 if af > 0:
@@ -136,6 +149,8 @@ class BehaviorFSM(Node):
         self.dist_frente_giro = d_fg
         self.dist_izq         = d_l
         self.dist_der         = d_r
+        self.cnt_fg_total     = cnt_total
+        self.cnt_fg_close     = cnt_close
 
     def _cb_lat(self, msg: Float32):
         self._w_lateral = msg.data
@@ -177,16 +192,18 @@ class BehaviorFSM(Node):
             return
 
         if self.estado == CRUCERO:
-            # Solo el sector estrecho (±12°) dispara el GIRO para evitar
-            # que la pared lateral cercana (8 cm) active el estado erroneamente.
-            if self.dist_frente_giro <= self.d_obst:
+            # GIRO solo si hay linea PERPENDICULAR en el cono estrecho (±sector_giro).
+            # Pared lateral que entra en angulo produce pocos rayos cercanos (fraccion baja).
+            # Caja frontal perpendicular produce casi todos los rayos cercanos (fraccion alta).
+            perp_ok = (self.cnt_fg_total > 0 and
+                       self.cnt_fg_close / self.cnt_fg_total >= self.fraccion_perp)
+            if perp_ok and self.dist_frente_giro <= self.d_obst:
                 d_msg = Float32(); d_msg.data = float(self.dist_frente_giro)
                 self.pub_parada.publish(d_msg)
                 self._cambiar(GIRO)
                 return
-            v = self._vel_adaptativa()
+            v = self.v_cruise  # velocidad constante, sin frenado progresivo
             # Repulsion pared izquierda tiene prioridad absoluta sobre wall_follower.
-            # si nos acercamos mas de d_izq_min, girar a la derecha (w negativo).
             if math.isfinite(self.dist_izq) and self.dist_izq < self.d_izq_min:
                 exceso = self.d_izq_min - self.dist_izq
                 w = -self.Kizq * exceso

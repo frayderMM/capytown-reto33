@@ -38,6 +38,11 @@ behavior_fsm:
     dist_izq_min:  0.15         # m  nunca acercarse mas de esto a la pared izquierda
     Kizq:          3.0          # ganancia de repulsion (rad/s por metro de exceso)
 
+    # --- Deteccion de linea perpendicular (caja) ---
+    fraccion_perp: 0.65         # fraccion minima de rayos en cono estrecho que deben
+                                # estar a <= dist_obstaculo para disparar GIRO.
+                                # pared lateral en angulo = fraccion baja; caja frontal = ~1.0
+
     # --- Temporizacion del giro ---
     t_giro_min: 0.5              # s  minimo en GIRO antes de poder salir (evita parpadeo)
     t_giro_max: 6.0               # s  salvavidas: vuelve a CRUCERO igual si tarda demasiado
