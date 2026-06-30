@@ -56,7 +56,7 @@ class BehaviorFSM(Node):
         self.declare_parameter('dist_emergencia',      0.12)  # stop total si algo esta a < X m
 
         # --- Recuperacion (RESCATE: barrido + retroceso si EVADIR se atasca) ---
-        self.declare_parameter('topic_odom',                '/odom')
+        self.declare_parameter('topic_odom',                '/odom_raw')
         self.declare_parameter('gap_fallback_deg',           15.0)
         self.declare_parameter('barrido_max_deg',            300.0)
         self.declare_parameter('barrido_t_max',               10.0)

@@ -18,6 +18,9 @@ box_detector:
     # --- Deduplicacion ---
     dist_duplicado: 0.30        # m  dos detecciones son la misma caja si estan a < esto
 
+    # --- Odometria ---
+    topic_odom: '/odom_raw'     # topico de odometria del yahboom_driver (confirmado con ros2 topic hz)
+
 metrics_logger:
   ros__parameters:
     # Ground-truth en marco odom como lista plana [x1,y1, x2,y2, ...]

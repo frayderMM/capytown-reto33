@@ -39,6 +39,7 @@ class BoxDetector(Node):
         self.declare_parameter('tolerancia_ancho', 0.10)  # m, +/- sobre ancho_caja
         self.declare_parameter('rango_max_deteccion', 3.0)  # m, ignora cajas lejanas
         self.declare_parameter('dist_duplicado', 0.30)    # m, mismas cajas si < esto
+        self.declare_parameter('topic_odom', '/odom_raw') # topico de odometria del yahboom_driver
 
         self.umbral_salto = self.get_parameter('umbral_salto').value
         self.min_puntos = int(self.get_parameter('min_puntos').value)
@@ -46,6 +47,7 @@ class BoxDetector(Node):
         self.tol_ancho = self.get_parameter('tolerancia_ancho').value
         self.rango_max = self.get_parameter('rango_max_deteccion').value
         self.dist_dup = self.get_parameter('dist_duplicado').value
+        self.topic_odom = self.get_parameter('topic_odom').value
 
         # ---- Estado ----
         # Pose actual del robot en el marco odom (x, y, yaw).
@@ -60,7 +62,7 @@ class BoxDetector(Node):
         _qos_odom = QoSProfile(depth=10)
         _qos_odom.reliability = ReliabilityPolicy.BEST_EFFORT
         self.create_subscription(LaserScan, '/scan', self.cb_scan, _qos_scan)
-        self.create_subscription(Odometry, '/odom', self.cb_odom, _qos_odom)
+        self.create_subscription(Odometry, self.topic_odom, self.cb_odom, _qos_odom)
         self.pub_cajas = self.create_publisher(PoseArray, '/cajas_avistadas', 10)
         self.pub_markers = self.create_publisher(MarkerArray, '/cajas_markers', 10)
 
