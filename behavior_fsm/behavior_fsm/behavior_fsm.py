@@ -40,6 +40,12 @@ class BehaviorFSM(Node):
         self.declare_parameter('sector_frontal_deg',  30.0)  # +/- grados del cono frontal
         self.declare_parameter('sector_lateral_lo',   60.0)
         self.declare_parameter('sector_lateral_hi',  120.0)
+        self.declare_parameter('excluir_atras_deg',   60.0)  # +/- grados detras del robot
+                                                               # excluidos del minimo global:
+                                                               # el cable/soporte del LiDAR
+                                                               # queda justo ahi y se leia como
+                                                               # obstaculo fijo a ~12cm, disparando
+                                                               # EMERGENCIA en casi todos los ciclos
 
         # --- Offsets LiDAR -> borde fisico del robot (NO es el mismo en
         # cada direccion) -- las distancias del LiDAR se corrigen con esto
@@ -69,6 +75,7 @@ class BehaviorFSM(Node):
         self.sector    = math.radians(self.get_parameter('sector_frontal_deg').value)
         self.lat_lo    = math.radians(self.get_parameter('sector_lateral_lo').value)
         self.lat_hi    = math.radians(self.get_parameter('sector_lateral_hi').value)
+        self.atras_lim = math.pi - math.radians(self.get_parameter('excluir_atras_deg').value) / 2.0
 
         self.off_frente = self.get_parameter('offset_frente').value
         self.off_atras  = self.get_parameter('offset_atras').value
@@ -119,10 +126,12 @@ class BehaviorFSM(Node):
             if not valid:
                 continue
 
-            # Minimo global (todos los angulos): cubre tambien la zona
-            # "ciega" entre el cono frontal y el sector lateral, que de
-            # otra forma no se mide en ningun lado. Solo para emergencia.
-            d_min = min(d_min, r)
+            # Minimo global (casi todos los angulos, excepto el cono
+            # trasero donde esta el cable/soporte del LiDAR): cubre la
+            # zona "ciega" entre el cono frontal y el sector lateral, que
+            # de otra forma no se mide en ningun lado. Solo para emergencia.
+            if abs_af <= self.atras_lim:
+                d_min = min(d_min, r)
 
             if abs_af <= self.sector:
                 d_f = min(d_f, r)

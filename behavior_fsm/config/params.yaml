@@ -17,6 +17,10 @@ behavior_fsm:
     sector_frontal_deg: 30.0    # +/- grados del cono frontal
     sector_lateral_lo:  60.0    # inicio sector lateral [grados]
     sector_lateral_hi: 120.0    # fin sector lateral [grados]
+    excluir_atras_deg:  60.0    # +/- grados detras del robot excluidos del minimo
+                                 # global -- el cable/soporte del LiDAR esta justo
+                                 # ahi y se leia como obstaculo fijo a ~12cm,
+                                 # disparando EMERGENCIA en casi todos los ciclos
 
     # --- Offsets LiDAR -> borde fisico del robot (medidos en el chasis,
     # NO son iguales en cada direccion) -- todas las distancias del LiDAR
