@@ -31,8 +31,12 @@ behavior_fsm:
     # --- Velocidades ---
     vel_crucero:       0.18     # m/s  velocidad en zona libre
     vel_min:           0.05     # m/s  velocidad mínima al estar a dist_obstaculo
-    vel_giro_gradual:  0.35     # rad/s  giro fijo a la izquierda en GIRO
+    vel_giro_gradual:  0.45     # rad/s  giro fijo a la izquierda en GIRO
     vel_avance_giro:   0.08     # m/s  avance lento mientras gira (no gira en el sitio)
+
+    # --- Repulsion de pared izquierda ---
+    dist_izq_min:  0.15         # m  nunca acercarse mas de esto a la pared izquierda
+    Kizq:          3.0          # ganancia de repulsion (rad/s por metro de exceso)
 
     # --- Temporizacion del giro ---
     t_giro_min: 0.5              # s  minimo en GIRO antes de poder salir (evita parpadeo)

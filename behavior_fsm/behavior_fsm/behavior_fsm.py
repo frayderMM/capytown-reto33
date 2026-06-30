@@ -52,12 +52,16 @@ class BehaviorFSM(Node):
         # --- Velocidades ---
         self.declare_parameter('vel_crucero',          0.18)
         self.declare_parameter('vel_min',              0.05)
-        self.declare_parameter('vel_giro_gradual',      0.35)  # rad/s  giro fijo a la izquierda
+        self.declare_parameter('vel_giro_gradual',      0.45)  # rad/s  giro fijo a la izquierda
         self.declare_parameter('vel_avance_giro',       0.08)  # m/s  avance lento mientras gira
 
         # --- Temporizacion del giro ---
         self.declare_parameter('t_giro_min',            0.5)   # s  minimo en GIRO antes de poder salir
         self.declare_parameter('t_giro_max',            6.0)   # s  salvavidas: vuelve a CRUCERO igual
+
+        # --- Repulsion pared izquierda ---
+        self.declare_parameter('dist_izq_min',          0.15)  # m  nunca acercarse mas de esto a la izq
+        self.declare_parameter('Kizq',                  3.0)   # ganancia de repulsion (rad/s / m)
 
         self.front_rad   = math.radians(self.get_parameter('lidar_front_deg').value)
         self.sector      = math.radians(self.get_parameter('sector_frontal_deg').value)
@@ -77,6 +81,9 @@ class BehaviorFSM(Node):
 
         self.t_giro_min = self.get_parameter('t_giro_min').value
         self.t_giro_max = self.get_parameter('t_giro_max').value
+
+        self.d_izq_min  = self.get_parameter('dist_izq_min').value
+        self.Kizq       = self.get_parameter('Kizq').value
 
         # ── Estado ────────────────────────────────────────────────────────
         self.estado   = CRUCERO
@@ -178,7 +185,13 @@ class BehaviorFSM(Node):
                 self._cambiar(GIRO)
                 return
             v = self._vel_adaptativa()
-            w = self._w_lateral if self.dist_frente >= self.d_alerta else 0.0
+            # Repulsion pared izquierda tiene prioridad absoluta sobre wall_follower.
+            # si nos acercamos mas de d_izq_min, girar a la derecha (w negativo).
+            if math.isfinite(self.dist_izq) and self.dist_izq < self.d_izq_min:
+                exceso = self.d_izq_min - self.dist_izq
+                w = -self.Kizq * exceso
+            else:
+                w = self._w_lateral if self.dist_frente >= self.d_alerta else 0.0
             self._pub(v, w)
 
         elif self.estado == GIRO:
