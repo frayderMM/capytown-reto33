@@ -139,7 +139,8 @@ class LidarViz(Node):
         d_f = d_l = d_r = float('inf')
         front_rf = []   # (xr, yr) puntos en frame robot dentro del sector frontal
 
-        for i, r in enumerate(msg.ranges):
+        for i in range(0, len(msg.ranges), 4):
+            r = msg.ranges[i]
             if not math.isfinite(r) or r == 0.0:
                 continue
             if r < msg.range_min or r > msg.range_max:
@@ -257,7 +258,7 @@ def build_figure():
     ax_lidar.scatter([0], [0], s=80, c='white', zorder=6)
     ax_lidar.annotate('', xy=(0, 0.25), xytext=(0, 0),
                       arrowprops=dict(arrowstyle='->', color=C_ARROW, lw=2.5), zorder=7)
-    scatter    = ax_lidar.scatter([], [], s=3, zorder=4)
+    scatter    = ax_lidar.scatter([], [], s=18, zorder=4)
     traj_line, = ax_lidar.plot([], [], color=C_TRAJ, lw=1.2, alpha=0.6, zorder=3)
     box_patches = []
     range_circ = plt.Circle((0, 0), 1.5, color='#223344', fill=False, lw=1, ls='--', zorder=2)
