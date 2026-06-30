@@ -46,6 +46,7 @@ class BehaviorFSM(Node):
         # --- Distancias de reaccion ---
         self.declare_parameter('dist_alerta',          0.55)  # m  empieza a frenar progresivamente
         self.declare_parameter('dist_obstaculo',        0.40)  # m  dispara el giro (caja/pared al frente)
+        self.declare_parameter('dist_cerca_pared',      0.25)  # m  "pegado" a pared lateral: elige cono de disparo
         self.declare_parameter('dist_pared_lateral',     0.55)  # m  umbral para considerar "pared der detectada"
         self.declare_parameter('dist_emergencia',        0.12)  # m  stop total override
 
@@ -71,6 +72,7 @@ class BehaviorFSM(Node):
 
         self.d_alerta   = self.get_parameter('dist_alerta').value
         self.d_obst     = self.get_parameter('dist_obstaculo').value
+        self.d_cerca    = self.get_parameter('dist_cerca_pared').value
         self.d_pared_lat = self.get_parameter('dist_pared_lateral').value
         self.d_emerg    = self.get_parameter('dist_emergencia').value
 
@@ -177,10 +179,17 @@ class BehaviorFSM(Node):
             return
 
         if self.estado == CRUCERO:
-            # Solo el sector estrecho (±12°) dispara el GIRO para evitar
-            # que la pared lateral cercana (8 cm) active el estado erroneamente.
-            if self.dist_frente_giro <= self.d_obst:
-                d_msg = Float32(); d_msg.data = float(self.dist_frente_giro)
+            # Cono adaptativo: si hay pared lateral cerca (der o izq), usar
+            # el sector estrecho (±12°) para que esa misma pared no dispare
+            # un falso GIRO. Si no hay ninguna pared lateral cerca (robot
+            # centrado o encarando una esquina en diagonal), usar el sector
+            # ancho (±30°) para detectar la esquina antes.
+            near_wall = ((math.isfinite(self.dist_der) and self.dist_der < self.d_cerca)
+                         or (math.isfinite(self.dist_izq) and self.dist_izq < self.d_cerca))
+            trigger_dist = self.dist_frente_giro if near_wall else self.dist_frente
+
+            if trigger_dist <= self.d_obst:
+                d_msg = Float32(); d_msg.data = float(trigger_dist)
                 self.pub_parada.publish(d_msg)
                 self._cambiar(GIRO)
                 return
@@ -208,7 +217,14 @@ class BehaviorFSM(Node):
                 self._cambiar(CRUCERO)
                 return
 
-            self._pub(self.v_giro, self.w_giro)
+            w = self.w_giro
+            # Repulsion pared izquierda tambien activa durante el giro: si
+            # ya estamos a menos de d_izq_min, frenamos el cierre hacia la
+            # izquierda (sin invertir el sentido, solo evita chocar).
+            if math.isfinite(self.dist_izq) and self.dist_izq < self.d_izq_min:
+                exceso = self.d_izq_min - self.dist_izq
+                w = max(0.0, self.w_giro - self.Kizq * exceso)
+            self._pub(self.v_giro, w)
 
 
 def main(args=None):

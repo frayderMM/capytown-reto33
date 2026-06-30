@@ -25,6 +25,9 @@ behavior_fsm:
     # --- Distancias de reacción ---
     dist_alerta:        0.45    # m  empieza a frenar progresivamente
     dist_obstaculo:      0.30    # m  dispara el giro (caja/pared detectada al frente)
+    dist_cerca_pared:    0.25    # m  "pegado" a pared lateral: si esta cerca usa el cono
+                                 # estrecho (anti falso-positivo); si no, el cono ancho
+                                 # (detecta esquinas antes cuando no esta pegado)
     dist_pared_lateral:  0.55    # m  umbral para considerar que la pared der. reapareció
     dist_emergencia:     0.12    # m  stop total si el frente esta a menos de esto (override)
 
