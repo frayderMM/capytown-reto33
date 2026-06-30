@@ -174,9 +174,11 @@ class BehaviorFSM(Node):
         self.dist_atras  = d_b
 
         # Hueco = bucket con mayor rango promedio dentro de la ventana
+        # Suavizado EMA para evitar oscilacion rapida de direccion en esquinas
         if bucket_count:
             best = max(bucket_sum, key=lambda k: bucket_sum[k] / bucket_count[k])
-            self._gap_ang = math.radians(best)
+            new_gap = math.radians(best)
+            self._gap_ang = 0.35 * new_gap + 0.65 * self._gap_ang
 
     def _cb_lat(self, msg: Float32):
         self._w_lateral = msg.data
@@ -264,16 +266,17 @@ class BehaviorFSM(Node):
                 self._iniciar_barrido()
                 return
 
-            # Frente despejado → evasión completada
-            if self.dist_frente > self.d_alerta:
+            # Frente despejado Y mínimo 0.5 s girando → evasión completada.
+            # Sin el mínimo, el robot entra y sale de EVADIR tan rápido que
+            # oscila en las esquinas sin completar el giro.
+            if self.dist_frente > self.d_alerta and self._t_estado() > 0.5:
                 self._cambiar(CRUCERO)
                 return
 
             gap = self._gap_ang
-            # Si el hueco calculado es ~0° (sin apertura clara) y no se
-            # puede avanzar, no quedarse en w≈0: girar hacia el lado con
-            # mas espacio (dist_izq/dist_der), en vez de esperar el timeout.
-            if abs(gap) < self.gap_fallback and self.dist_frente <= self.d_parada:
+            # En esquinas el gap suavizado puede ser pequeño o ambiguo:
+            # usar las distancias laterales reales para elegir sentido.
+            if abs(gap) < self.gap_fallback or self.dist_frente <= self.d_parada:
                 w = self.w_giro if self.dist_izq >= self.dist_der else -self.w_giro
             else:
                 w = max(-self.w_giro, min(self.w_giro, self.Kgap * gap))

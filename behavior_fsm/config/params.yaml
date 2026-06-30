@@ -42,7 +42,7 @@ behavior_fsm:
 
     # --- Recuperacion (RESCATE: barrido + retroceso si EVADIR se atasca) ---
     topic_odom: '/odom'            # topico de odometria del yahboom_driver
-    gap_fallback_deg: 15.0         # deg  margen para usar fallback lateral en EVADIR
+    gap_fallback_deg: 30.0         # deg  margen para usar fallback lateral en EVADIR
     barrido_max_deg: 300.0         # deg  giro acumulado max en fase BARRIDO antes de retroceder
     barrido_t_max: 10.0            # s    limite de seguridad (reloj) para fase BARRIDO
     vel_retroceso: 0.08            # m/s  velocidad de reversa en RETROCEDER
