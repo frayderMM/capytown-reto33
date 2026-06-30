@@ -26,11 +26,18 @@ cd /root/frayder_ws && colcon build --packages-select behavior_fsm box_detector 
 ros2 launch behavior_fsm capytown.launch.py
 ```
 
-## 5 — Correr el visualizador (Terminal B)
+## 5 — Correr el mapa (Terminal B)
 ```bash
 docker exec -it friendly_pike bash
 source /root/frayder_ws/install/setup.bash
 python3 /root/frayder_ws/src/capytown-reto33/map_builder.py
+```
+
+## 6 — Correr el visor LiDAR (Terminal C)
+```bash
+docker exec -it friendly_pike bash
+source /root/frayder_ws/install/setup.bash
+python3 /root/frayder_ws/src/capytown-reto33/lidar_viz.py
 ```
 
 ## Posición de inicio del robot
