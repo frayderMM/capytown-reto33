@@ -62,10 +62,12 @@ MAX_GAUGE    = 0.70   # m  maximo del gauge
 DIST_IZQ_MIN  = 0.15  # m  zona de repulsion (= dist_izq_min en FSM)
 DIST_IZQ_WARN = 0.25  # m  inicio de advertencia
 
-BOX_W_MIN   = 0.10   # m  ancho minimo caja
-BOX_W_MAX   = 0.35   # m  ancho maximo caja
-BOX_DEPTH   = 0.10   # m  profundidad maxima del cluster
-BOX_MAX_R   = 1.20   # m  solo busca cajas dentro de este rango
+# Deteccion de obstaculo perpendicular por consistencia de profundidad (std_x)
+DETECT_HALF   = math.radians(15.0)  # sector de busqueda (un poco mas ancho que ±12° del GIRO)
+DETECT_MAX_R  = 0.40   # m  solo considerar puntos dentro de este rango
+PERP_STD_MAX  = 0.04   # m  max desviacion estandar de x (profundidad) permitida.
+                        # pared perpendicular: std_x ≈ 0. Pared diagonal: std_x grande.
+MIN_FRONT_PTS = 6      # minimo de puntos para considerar deteccion valida
 
 MAX_TRAJ    = 400
 MAX_VEL_T   = 10.0
@@ -142,11 +144,10 @@ class LidarViz(Node):
                                 math.cos(theta - self.front_rad))
             abs_af = abs(af)
 
+            # Coloreado y medicion de distancias por sector
             if abs_af <= FRONT_GIRO_HALF:
-                color = '__front__'   # placeholder: se reemplaza tras deteccion
+                color = '__front__'   # placeholder: naranja o cyan segun deteccion
                 d_f = min(d_f, r)
-                if r <= BOX_MAX_R:
-                    front_rf.append((r * math.cos(af), r * math.sin(af)))
             elif SIDE_LO <= abs_af <= SIDE_HI:
                 if af > 0:
                     color = C_LEFT;  d_l = min(d_l, r)
@@ -154,6 +155,10 @@ class LidarViz(Node):
                     color = C_RIGHT; d_r = min(d_r, r)
             else:
                 color = C_OTHER
+
+            # Colectar puntos cercanos en sector de deteccion (independiente del color)
+            if abs_af <= DETECT_HALF and r <= DETECT_MAX_R:
+                front_rf.append((r * math.cos(af), r * math.sin(af)))
 
             xd, yd = self._sensor_to_display(theta, r)
             if (prev_xd is not None and prev_r is not None
@@ -168,24 +173,23 @@ class LidarViz(Node):
         self.d_left  = d_l
         self.d_right = d_r
 
-        # ── Deteccion de caja (recta tipo T perpendicular) ────────────────
-        # Cluster mas cercano en el cono ±12°:
-        #   - profundidad similar (dentro de BOX_DEPTH)
-        #   - ancho lateral entre BOX_W_MIN y BOX_W_MAX
-        #   - centro del cluster proximo al eje del robot (no todo a un lado)
+        # ── Deteccion de obstaculo perpendicular (recta tipo T) ──────────
+        # Logica: superficie perpendicular → todos los puntos en el cono tienen
+        # casi la misma profundidad x (std_x baja). Pared diagonal o lateral
+        # → x varía con el angulo → std_x alta.
+        #
+        # std_x < PERP_STD_MAX = 4 cm → obstaculo perpendicular.
+        # No depende del ancho ni del centro: solo de la geometria de profundidad.
         self.box_frente      = False
         self.box_frente_dist = float('inf')
-        if len(front_rf) >= 3:
-            front_rf.sort(key=lambda p: p[0])
-            d_min_x = front_rf[0][0]
-            cluster = [(x, y) for x, y in front_rf if x <= d_min_x + BOX_DEPTH]
-            if len(cluster) >= 3:
-                ys       = [p[1] for p in cluster]
-                width    = max(ys) - min(ys)
-                y_center = (max(ys) + min(ys)) / 2.0
-                if BOX_W_MIN <= width <= BOX_W_MAX and abs(y_center) < 0.15:
-                    self.box_frente      = True
-                    self.box_frente_dist = d_min_x
+        if len(front_rf) >= MIN_FRONT_PTS:
+            xs    = [p[0] for p in front_rf]
+            n     = len(xs)
+            mx    = sum(xs) / n
+            std_x = math.sqrt(sum((x - mx) ** 2 for x in xs) / n)
+            if std_x < PERP_STD_MAX:
+                self.box_frente      = True
+                self.box_frente_dist = mx   # profundidad media al obstaculo
 
         # Asignar color definitivo al sector frontal segun si hay caja o no
         front_color = C_FRONT_BOX if self.box_frente else C_FRONT_OK
