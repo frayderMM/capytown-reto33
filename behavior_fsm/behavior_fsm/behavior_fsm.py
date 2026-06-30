@@ -2,20 +2,20 @@
 """
 behavior_fsm.py  —  PARTE B: "El Guardian"
 
-Control reactivo continuo (sin estados discretos ni pared "objetivo"):
-en cada ciclo calcula el espacio libre real hasta el borde del robot
-(la distancia que da el LiDAR menos el offset fisico LiDAR→borde, que
-es distinto al frente/atras/costados) y combina dos señales graduales:
+Control reactivo continuo (sin estados discretos, sin seguir ninguna
+pared ni mantener distancia a ningun lado): en cada ciclo calcula el
+espacio libre real hasta el borde del robot (la distancia que da el
+LiDAR menos el offset fisico LiDAR→borde, distinto al frente/atras/
+costados) y combina dos señales graduales:
 
   - velocidad: progresiva, baja segun se cierra el espacio al frente.
-  - giro: progresivo, se anticipa antes de llegar al limite y elige el
-    lado con MAS espacio libre (no siempre el mismo lado), mas una
-    repulsion lateral simetrica (izq y der) para no rozar ninguna pared
-    mientras avanza o gira.
+  - giro: progresivo, solo reacciona cuando hay algo perpendicular al
+    frente (no a paredes laterales paralelas al avance), eligiendo el
+    lado con MAS espacio libre para girar.
 
-No persigue ninguna pared como referencia (no hay "pegarse a la
-derecha"): el unico objetivo es evadir lo que tenga cerca, por
-cualquier lado, sin choques y sin frenarse mas de lo necesario.
+La parada de emergencia (omnidireccional) es la unica que vigila los
+costados, usando los offsets reales LiDAR->borde para no chocar por
+ningun lado.
 
 ESAN - Robotica de Moviles 2026-I  |  Proyecto CapyTown
 """
@@ -63,13 +63,7 @@ class BehaviorFSM(Node):
         # --- Velocidades ---
         self.declare_parameter('vel_crucero', 0.22)
         self.declare_parameter('vel_min',     0.08)
-        self.declare_parameter('w_giro_max',  0.45)  # rad/s  maximo aporte de giro por anticipacion
-        self.declare_parameter('w_max',       0.60)  # rad/s  saturacion total (giro + repulsion)
-
-        # --- Repulsion lateral simetrica (izq Y der, evita rozar cualquier pared) ---
-        self.declare_parameter('dist_lado_alerta', 0.20)  # m  empieza el taper progresivo
-        self.declare_parameter('dist_lado_min',    0.05)  # m  margen real minimo a cualquier lado
-        self.declare_parameter('K_lado',           3.0)   # ganancia de repulsion (rad/s / m)
+        self.declare_parameter('w_giro_max',  0.45)  # rad/s  maximo giro al evadir un frente bloqueado
 
         self.front_rad = math.radians(self.get_parameter('lidar_front_deg').value)
         self.sector    = math.radians(self.get_parameter('sector_frontal_deg').value)
@@ -88,11 +82,6 @@ class BehaviorFSM(Node):
         self.v_cruise  = self.get_parameter('vel_crucero').value
         self.v_min     = self.get_parameter('vel_min').value
         self.w_giro_max = self.get_parameter('w_giro_max').value
-        self.w_max     = self.get_parameter('w_max').value
-
-        self.d_lado_alerta = self.get_parameter('dist_lado_alerta').value
-        self.d_lado_min    = self.get_parameter('dist_lado_min').value
-        self.K_lado        = self.get_parameter('K_lado').value
 
         # ── Sensores ──────────────────────────────────────────────────────
         self.dist_frente = float('inf')  # cono ancho frontal
@@ -174,6 +163,8 @@ class BehaviorFSM(Node):
         c_min    = self.dist_min - self.off_lados
 
         # Contingencia de colision — por cualquier lado, override total.
+        # Es la UNICA logica que vigila los costados; no hay seguimiento
+        # ni repulsion continua de pared, solo evitar el choque real.
         if c_min < self.d_emerg:
             self.get_logger().warn(
                 f'EMERGENCIA margen_min={c_min:.2f}m — stop total', throttle_duration_sec=1.0)
@@ -183,9 +174,10 @@ class BehaviorFSM(Node):
 
         v = self._vel_adaptativa(c_frente)
 
-        # Giro anticipado: por debajo de dist_alerta empieza a sesgar el
-        # giro gradualmente (no un salto brusco), eligiendo el lado con
-        # MAS espacio libre -- no siempre el mismo lado.
+        # Giro: solo reacciona a lo que tiene perpendicular al frente
+        # (no a paredes laterales paralelas al avance). Progresivo desde
+        # dist_alerta hasta el maximo en dist_obstaculo, eligiendo el
+        # lado con MAS espacio libre para girar -- no siempre el mismo.
         w = 0.0
         if c_frente < self.d_alerta:
             ratio = max(0.0, min(1.0, (self.d_alerta - c_frente) / (self.d_alerta - self.d_obst)))
@@ -198,18 +190,6 @@ class BehaviorFSM(Node):
                 self.pub_parada.publish(d_msg)
         else:
             self._en_evasion = False
-
-        # Repulsion lateral simetrica: gradual desde dist_lado_alerta,
-        # se suma al giro para no rozar ninguna pared mientras avanza o
-        # gira. Nunca prioriza un lado sobre otro -- ambos se evaluan.
-        if c_izq < self.d_lado_alerta:
-            exceso = (self.d_lado_alerta - c_izq) / (self.d_lado_alerta - self.d_lado_min)
-            w -= max(0.0, min(1.0, exceso)) * self.K_lado
-        if c_der < self.d_lado_alerta:
-            exceso = (self.d_lado_alerta - c_der) / (self.d_lado_alerta - self.d_lado_min)
-            w += max(0.0, min(1.0, exceso)) * self.K_lado
-
-        w = max(-self.w_max, min(self.w_max, w))
 
         self.get_logger().info(
             f'c_frente={c_frente:.2f} c_izq={c_izq:.2f} c_der={c_der:.2f}  v={v:.2f} w={w:.2f}',

@@ -41,13 +41,7 @@ behavior_fsm:
     vel_min:      0.08     # m/s  velocidad minima al estar a dist_obstaculo
                             # (subida de 0.05: nunca se detiene del todo si no
                             # hay emergencia real, siempre sigue avanzando)
-    w_giro_max:   0.45     # rad/s  maximo aporte de giro por anticipacion
-    w_max:        0.60     # rad/s  saturacion total (giro + repulsion lateral)
-
-    # --- Repulsion lateral simetrica (izq Y der, evita rozar cualquier pared) ---
-    dist_lado_alerta: 0.20      # m  empieza el taper progresivo
-    dist_lado_min:    0.05      # m  margen real minimo a cualquier lado
-    K_lado:           3.0       # ganancia de repulsion (rad/s por metro de exceso)
+    w_giro_max:   0.45     # rad/s  maximo giro al evadir un frente bloqueado
 
 wall_follower:
   ros__parameters:
