@@ -243,14 +243,21 @@ class BehaviorFSM(Node):
 
             # Calibracion progresiva con la pared izquierda durante el giro:
             # de w_giro completo cuando hay espacio (>= d_izq_alerta) a un
-            # frenado proporcional del cierre segun nos acercamos a
-            # d_izq_min (no un corte brusco). Nunca invierte el sentido,
-            # solo evita chocar -- la guia activa sigue siendo la derecha.
+            # frenado proporcional segun nos acercamos a d_izq_min (no un
+            # corte brusco). Por debajo de d_izq_min, frenar a 0 no basta
+            # para rectificar si el rumbo ya apunta a la pared -- corrige
+            # activamente alejandose (w negativo), igual que en CRUCERO.
             w = self.w_giro
-            if math.isfinite(self.dist_izq) and self.dist_izq < self.d_izq_alerta:
+            if math.isfinite(self.dist_izq) and self.dist_izq < self.d_izq_min:
+                exceso = self.d_izq_min - self.dist_izq
+                w = -self.Kizq * exceso
+            elif math.isfinite(self.dist_izq) and self.dist_izq < self.d_izq_alerta:
                 ratio = max(0.0, min(1.0,
                     (self.dist_izq - self.d_izq_min) / (self.d_izq_alerta - self.d_izq_min)))
                 w = self.w_giro * ratio
+            self.get_logger().info(
+                f'GIRO  dist_izq={self.dist_izq:.2f}  w={w:.2f}',
+                throttle_duration_sec=0.5)
             self._pub(self.v_giro, w)
 
 
