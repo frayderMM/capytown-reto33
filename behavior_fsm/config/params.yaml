@@ -1,75 +1,64 @@
-# Parametros del guardian (Parte B) — version mejorada.
+# Parametros del guardian (Parte B) — CRUCERO / GIRO / RODEO
 #
 # Ejecutar:
-#   ros2 run behavior_fsm behavior_fsm  --ros-args --params-file params.yaml
-#   ros2 run behavior_fsm wall_follower --ros-args --params-file params.yaml
+#   ros2 launch behavior_fsm capytown.launch.py
 
 behavior_fsm:
   ros__parameters:
 
-    # --- Orientación del LiDAR ---
-    lidar_front_deg: 180.0      # ángulo donde está el FRENTE en el LiDAR
-                                # 180 = Yahboom MS200 montado con cable atrás (por defecto)
-                                # 0   = montaje estándar ROS
-                                # CAMBIAR si el robot reacciona en dirección equivocada
+    # --- Orientacion del LiDAR ---
+    lidar_front_deg: 180.0      # 180 = Yahboom MS200 montado con cable atras
 
-    # --- Sectores frontales ---
-    sector_frontal_deg: 30.0    # +/- grados vigilados para vel. adaptativa y emergencia
-    sector_giro_deg:    12.0    # +/- grados ESTRECHO que dispara GIRO (a 8cm de pared la
-                                # pared aparece a ~38cm en este sector, por encima del umbral 30cm)
+    # --- Sector emergencia (ancho) ---
+    sector_frontal_deg: 30.0
 
-    # --- Sectores laterales (para medir pared izq/der) ---
-    sector_lateral_lo:  60.0    # inicio sector lateral [grados]
-    sector_lateral_hi: 120.0    # fin sector lateral [grados]
+    # --- Sectores laterales ---
+    sector_lateral_lo:  60.0
+    sector_lateral_hi: 120.0
 
-    # --- Distancias de reacción ---
-    dist_alerta:        0.45    # m  empieza a frenar progresivamente
-    dist_obstaculo:      0.30    # m  dispara el giro (caja/pared detectada al frente)
-    dist_pared_lateral:  0.55    # m  umbral para considerar que la pared der. reapareció
-    dist_emergencia:     0.12    # m  stop total si el frente esta a menos de esto (override)
+    # --- Deteccion de caja (mismo criterio que lidar_viz.py v7) ---
+    detect_half_deg:  20.0   # sector de busqueda [deg, semiangulo]
+    detect_max_r:     0.45   # m  rango maximo para considerar un punto
+    perp_std_max:     0.04   # m  max std de profundidad (superficie perpendicular)
+    box_w_min:        0.08   # m  ancho minimo de la caja
+    box_w_max:        0.23   # m  ancho maximo (>= se descarta, es pared)
+    min_box_pts:      5      # puntos minimos para considerar deteccion valida
+
+    # --- Distancias de reaccion ---
+    dist_alerta:        0.45  # m  frente libre para salir de GIRO o RODEO
+    dist_pared_lateral: 0.55  # m  pared derecha reapareció (umbral salida RODEO)
+    dist_emergencia:    0.12  # m  stop total (override de cualquier estado)
 
     # --- Velocidades ---
-    vel_crucero:       0.18     # m/s  velocidad en zona libre
-    vel_min:           0.05     # m/s  velocidad mínima al estar a dist_obstaculo
-    vel_giro_gradual:  0.45     # rad/s  giro fijo a la izquierda en GIRO
-    vel_avance_giro:   0.08     # m/s  avance lento mientras gira (no gira en el sitio)
+    vel_crucero:      0.18   # m/s  velocidad en CRUCERO
+    vel_giro_gradual: 0.45   # rad/s  giro izquierda en GIRO
+    vel_avance_giro:  0.08   # m/s  avance lineal mientras gira
 
-    # --- Repulsion de pared izquierda ---
-    dist_izq_min:  0.15         # m  nunca acercarse mas de esto a la pared izquierda
-    Kizq:          3.0          # ganancia de repulsion (rad/s por metro de exceso)
-
-    # --- Deteccion de linea perpendicular (caja) ---
-    fraccion_perp: 0.55         # fraccion minima de rayos en cono estrecho que deben
-                                # estar a <= dist_obstaculo para disparar GIRO.
-                                # pared lateral en angulo = fraccion baja; caja frontal = ~1.0
-
-    # --- Cooldown post-GIRO ---
-    t_cooldown: 1.5             # s  tiempo minimo en CRUCERO tras salir de un GIRO
-                                # antes de poder disparar otro GIRO.
-                                # Evita re-disparo por pared izq justo al terminar el giro.
+    # --- RODEO: avance recto para pasar junto a la caja ---
+    t_rodeo:  1.5            # s   tiempo maximo en RODEO
+    v_rodeo:  0.15           # m/s velocidad en RODEO
+    w_rodeo:  0.0            # rad/s angular en RODEO (0.0 = recto; <0 = curva a la derecha)
 
     # --- Temporizacion del giro ---
-    t_giro_min: 0.5              # s  minimo en GIRO antes de poder salir (evita parpadeo)
-    t_giro_max: 6.0               # s  salvavidas: vuelve a CRUCERO igual si tarda demasiado
+    t_giro_min: 0.5          # s  minimo en GIRO antes de evaluar salida
+    t_giro_max: 6.0          # s  salvavidas: vuelve a CRUCERO aunque no cumpla condicion
+
+    # --- Cooldown post-GIRO ---
+    t_cooldown: 1.5          # s  cooldown post-GIRO para no re-disparar con la pared izq
+
+    # --- Repulsion pared izquierda ---
+    dist_izq_min: 0.15       # m  distancia minima a la pared izquierda
+    Kizq:         3.0        # ganancia de repulsion [rad/s por metro de exceso]
 
 wall_follower:
   ros__parameters:
-    # --- Control lateral ---
-    dist_objetivo:  0.08        # m    distancia deseada a la pared DERECHA (objetivo 8 cm confirmado en pista)
-    Kp:             0.80        # ganancia proporcional
-    Kd:             0.10        # ganancia derivativa
-    max_correccion: 0.40        # rad/s  saturación de salida
-
-    # --- Clasificación de segmentos ---
-    min_long_pared: 0.60        # m  longitud mínima para considerar un segmento pared
-    cos_lateral_min: 0.55       # cos del ángulo máximo con el eje X
-
-    # --- Algoritmo Split-and-Merge ---
-    umbral_split:   0.06        # m  tolerancia de rectitud
-    rango_max:      3.50        # m  distancia máxima a procesar
-    salto_dist:     0.35        # m  salto euclidiano para cortar grupo
-    salto_idx:      5           # N  huecos de índice para cortar grupo
-
-    # --- Zona angular ignorada (descomentar si el cable tapa el LiDAR) ---
-    # remove_min_deg: 135.0
-    # remove_max_deg: 225.0
+    dist_objetivo:   0.08
+    Kp:              0.80
+    Kd:              0.10
+    max_correccion:  0.40
+    min_long_pared:  0.60
+    cos_lateral_min: 0.55
+    umbral_split:    0.06
+    rango_max:       3.50
+    salto_dist:      0.35
+    salto_idx:       5
