@@ -1,14 +1,17 @@
 #!/usr/bin/env python3
 """
 lidar_viz.py — Monitor visual en tiempo real del robot CapyTown.
+VERSION: v6
 
 Panel izquierdo : mapa LiDAR con sector frontal coloreado por estado.
+  - cyan   : sector ±12° libre (sin caja)
+  - naranja: caja 25 cm perpendicular detectada → se dibuja rectángulo en el mapa
 Panel derecho   : DER (grande) + IZQ (grande) + historial velocidad.
 
-Colores del sector frontal (±12°):
-  cyan   (#00bcd4) — zona libre, sin caja detectada
-  naranja (#f39c12) — CAJA PERPENDICULAR detectada al frente
+Deteccion de caja: std_x < 4 cm (perpendicular) + 8 cm <= ancho <= 32 cm (25 cm ± margen)
 """
+
+VIZ_VERSION = 'v6'
 
 import math
 import argparse
@@ -62,12 +65,13 @@ MAX_GAUGE    = 0.70   # m  maximo del gauge
 DIST_IZQ_MIN  = 0.15  # m  zona de repulsion (= dist_izq_min en FSM)
 DIST_IZQ_WARN = 0.25  # m  inicio de advertencia
 
-# Deteccion de obstaculo perpendicular por consistencia de profundidad (std_x)
-DETECT_HALF   = math.radians(15.0)  # sector de busqueda (un poco mas ancho que ±12° del GIRO)
-DETECT_MAX_R  = 0.40   # m  solo considerar puntos dentro de este rango
-PERP_STD_MAX  = 0.04   # m  max desviacion estandar de x (profundidad) permitida.
-                        # pared perpendicular: std_x ≈ 0. Pared diagonal: std_x grande.
-MIN_FRONT_PTS = 6      # minimo de puntos para considerar deteccion valida
+# Deteccion de caja (~25 cm): perpendicular (std_x) + ancho lateral
+DETECT_HALF   = math.radians(20.0)  # sector de busqueda para caja
+DETECT_MAX_R  = 0.45   # m  rango maximo de busqueda
+PERP_STD_MAX  = 0.04   # m  max std de profundidad (x). perpendicular → std_x≈0
+BOX_W_MIN     = 0.08   # m  ancho minimo de caja
+BOX_W_MAX     = 0.32   # m  ancho maximo de caja (25 cm + margen)
+MIN_FRONT_PTS = 5      # minimo de puntos para considerar deteccion valida
 
 MAX_TRAJ    = 400
 MAX_VEL_T   = 10.0
@@ -89,6 +93,9 @@ class LidarViz(Node):
 
         self.box_frente      = False
         self.box_frente_dist = float('inf')
+        self.box_cx          = 0.0   # profundidad (x robot) del centro de la caja
+        self.box_cy          = 0.0   # lateral (y robot) del centro de la caja
+        self.box_w           = 0.0   # ancho detectado de la caja
 
         self.vel_lin    = 0.0
         self.vel_ang    = 0.0
@@ -173,23 +180,28 @@ class LidarViz(Node):
         self.d_left  = d_l
         self.d_right = d_r
 
-        # ── Deteccion de obstaculo perpendicular (recta tipo T) ──────────
-        # Logica: superficie perpendicular → todos los puntos en el cono tienen
-        # casi la misma profundidad x (std_x baja). Pared diagonal o lateral
-        # → x varía con el angulo → std_x alta.
-        #
-        # std_x < PERP_STD_MAX = 4 cm → obstaculo perpendicular.
-        # No depende del ancho ni del centro: solo de la geometria de profundidad.
+        # ── Deteccion de caja (~25 cm perpendicular) ─────────────────────
+        # Doble chequeo:
+        #   1. std_x < PERP_STD_MAX  → todos los puntos a la misma profundidad
+        #      (superficie perpendicular al robot). Pared diagonal → std_x grande.
+        #   2. BOX_W_MIN <= y_spread <= BOX_W_MAX → ancho compatible con caja 25 cm.
+        #      Filtra paredes largas (> 32 cm en el cono) y puntos sueltos (< 8 cm).
         self.box_frente      = False
         self.box_frente_dist = float('inf')
+        self.box_cx = self.box_cy = self.box_w = 0.0
         if len(front_rf) >= MIN_FRONT_PTS:
             xs    = [p[0] for p in front_rf]
+            ys    = [p[1] for p in front_rf]
             n     = len(xs)
             mx    = sum(xs) / n
             std_x = math.sqrt(sum((x - mx) ** 2 for x in xs) / n)
-            if std_x < PERP_STD_MAX:
+            y_spread = max(ys) - min(ys)
+            if std_x < PERP_STD_MAX and BOX_W_MIN <= y_spread <= BOX_W_MAX:
                 self.box_frente      = True
-                self.box_frente_dist = mx   # profundidad media al obstaculo
+                self.box_frente_dist = mx
+                self.box_cx          = mx
+                self.box_cy          = (max(ys) + min(ys)) / 2.0
+                self.box_w           = y_spread
 
         # Asignar color definitivo al sector frontal segun si hay caja o no
         front_color = C_FRONT_BOX if self.box_frente else C_FRONT_OK
@@ -268,7 +280,7 @@ def build_figure():
     ax_lidar.set_ylim(-1.5, 1.5)
     ax_lidar.set_aspect('equal')
     ax_lidar.grid(True, color=BORDER, lw=0.5, ls='--')
-    ax_lidar.set_title('LiDAR — Vista en tiempo real', color=C_TEXT, fontsize=12, pad=8)
+    ax_lidar.set_title(f'LiDAR — Vista en tiempo real  [{VIZ_VERSION}]', color=C_TEXT, fontsize=12, pad=8)
     ax_lidar.set_xlabel('← IZQ   DER →', color=C_DIM, fontsize=8)
     ax_lidar.set_ylabel('↑ FRENTE', color=C_DIM, fontsize=8)
     for d, label in [(0.3, '30cm'), (0.5, '50cm'), (1.0, '1m'), (1.5, '1.5m')]:
@@ -385,6 +397,7 @@ def main():
      alert_txt, box_front_txt,
      der_artists, izq_artists, vel_line) = build_figure()
     plt.show()
+    box_scan_patches = []   # rectangulo de caja detectada por scan (se borra cada frame)
 
     try:
         while rclpy.ok():
@@ -418,10 +431,27 @@ def main():
 
             range_circ.set_radius(min(node.range_max, 1.4))
 
-            # ── Alerta frontal en LiDAR ───────────────────────────────────
-            # Solo dispara si box_frente = True (T perpendicular detectada).
+            # ── Rectángulo de caja detectada por scan ─────────────────────
+            # Se dibuja en el mapa en la posicion real del obstaculo detectado.
+            # display: xd = -cy_robot (lateral), yd = cx_robot (profundidad)
+            for p in box_scan_patches:
+                p.remove()
+            box_scan_patches.clear()
             if node.box_frente:
-                alert_txt.set_text(f'! CAJA: {node.box_frente_dist*100:.0f} cm')
+                xd_c = -node.box_cy          # centro x en display
+                yd_c =  node.box_cx          # centro y en display
+                hw   =  node.box_w / 2.0    # semiancho
+                depth = 0.06                 # grosor del rectangulo en display
+                rect = mpatches.FancyBboxPatch(
+                    (xd_c - hw, yd_c - depth / 2), node.box_w, depth,
+                    boxstyle='square,pad=0.01', lw=3,
+                    edgecolor=C_FRONT_BOX, facecolor=C_FRONT_BOX + '55', zorder=7)
+                ax_lidar.add_patch(rect)
+                box_scan_patches.append(rect)
+
+            # ── Alerta frontal en LiDAR ───────────────────────────────────
+            if node.box_frente:
+                alert_txt.set_text(f'! CAJA: {node.box_frente_dist*100:.0f} cm  ancho:{node.box_w*100:.0f} cm')
                 alert_txt.set_color(C_FRONT_BOX)
                 box_front_txt.set_text('▶ CAJA PERPENDICULAR DETECTADA ◀')
                 box_front_txt.set_color(C_FRONT_BOX)
