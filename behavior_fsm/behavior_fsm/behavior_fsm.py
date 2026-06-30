@@ -64,12 +64,12 @@ class BehaviorFSM(Node):
         self.declare_parameter('Kizq',                  3.0)   # ganancia de repulsion (rad/s / m)
 
         # --- Perpendicularidad para deteccion de caja ---
-        self.declare_parameter('fraccion_perp',         0.65)  # fraccion minima de rayos del cono estrecho
+        self.declare_parameter('fraccion_perp',         0.55)  # fraccion minima de rayos del cono estrecho
                                                                 # que deben ser < dist_obstaculo para disparar GIRO
-                                                                # (pared lateral = pocos rayos cercanos; caja frontal = casi todos)
-        self.declare_parameter('simetria_max',          0.10)  # m  diferencia maxima entre dist minima en
-                                                                # mitad izquierda y derecha del cono estrecho.
-                                                                # caja frontal: simetrico (~0). pared en angulo: muy asimetrico.
+        # --- Cooldown post-GIRO ---
+        self.declare_parameter('t_cooldown',            1.5)   # s  tiempo minimo en CRUCERO tras un GIRO
+                                                                # antes de poder disparar otro GIRO.
+                                                                # Evita re-disparo inmediato por pared izq al salir del giro.
 
         self.front_rad   = math.radians(self.get_parameter('lidar_front_deg').value)
         self.sector      = math.radians(self.get_parameter('sector_frontal_deg').value)
@@ -93,7 +93,7 @@ class BehaviorFSM(Node):
         self.d_izq_min     = self.get_parameter('dist_izq_min').value
         self.Kizq          = self.get_parameter('Kizq').value
         self.fraccion_perp = self.get_parameter('fraccion_perp').value
-        self.simetria_max  = self.get_parameter('simetria_max').value
+        self.t_cooldown    = self.get_parameter('t_cooldown').value
 
         # ── Estado ────────────────────────────────────────────────────────
         self.estado   = CRUCERO
@@ -105,11 +105,11 @@ class BehaviorFSM(Node):
         self.dist_izq         = float('inf')
         self.dist_der         = float('inf')
         self._w_lateral       = 0.0
-        # contadores y simetria para test de perpendicularidad
+        # contadores para test de perpendicularidad
         self.cnt_fg_total     = 0
         self.cnt_fg_close     = 0
-        self.d_fg_left        = float('inf')  # min range en mitad izq del cono estrecho
-        self.d_fg_right       = float('inf')  # min range en mitad der del cono estrecho
+        # timestamp (s) de la ultima salida de GIRO; -inf = nunca hubo GIRO previo
+        self.t_ultimo_giro    = -float('inf')
 
         # ── ROS I/O ───────────────────────────────────────────────────────
         _qos = QoSProfile(depth=10)
@@ -126,7 +126,6 @@ class BehaviorFSM(Node):
     # ── Callbacks ─────────────────────────────────────────────────────────
     def cb_scan(self, msg: LaserScan):
         d_f = d_fg = d_l = d_r = float('inf')
-        d_fgl = d_fgr = float('inf')   # min range mitad izq/der del cono estrecho
         cnt_total = cnt_close = 0
 
         for i, r in enumerate(msg.ranges):
@@ -145,10 +144,6 @@ class BehaviorFSM(Node):
                 cnt_total += 1
                 if r <= self.d_obst:
                     cnt_close += 1
-                if af >= 0:
-                    d_fgl = min(d_fgl, r)  # mitad izquierda del cono
-                else:
-                    d_fgr = min(d_fgr, r)  # mitad derecha del cono
 
             if self.lat_lo <= abs_af <= self.lat_hi:
                 if af > 0:
@@ -162,8 +157,6 @@ class BehaviorFSM(Node):
         self.dist_der         = d_r
         self.cnt_fg_total     = cnt_total
         self.cnt_fg_close     = cnt_close
-        self.d_fg_left        = d_fgl
-        self.d_fg_right       = d_fgr
 
     def _cb_lat(self, msg: Float32):
         self._w_lateral = msg.data
@@ -184,6 +177,9 @@ class BehaviorFSM(Node):
         self.get_logger().info(
             f'{self.estado} → {nuevo}  '
             f'(frente={self.dist_frente:.2f} m  der={self.dist_der:.2f} m)')
+        if self.estado == GIRO and nuevo == CRUCERO:
+            # Registrar el momento en que salimos de GIRO para aplicar cooldown
+            self.t_ultimo_giro = self.get_clock().now().nanoseconds * 1e-9
         self.estado   = nuevo
         self.t_inicio = self.get_clock().now()
 
@@ -205,16 +201,15 @@ class BehaviorFSM(Node):
             return
 
         if self.estado == CRUCERO:
-            # GIRO solo si hay linea PERPENDICULAR en el cono estrecho (±sector_giro).
-            # Test 1 — fraccion: caja frontal llena el cono; pared en angulo no.
+            # GIRO solo si:
+            # 1) fraccion de rayos cercanos alta (linea perpendicular llena el cono)
+            # 2) cooldown post-GIRO expirado (evita re-disparo inmediato por pared
+            #    izquierda al salir de un giro antes de reorientarse)
             perp_ok = (self.cnt_fg_total > 0 and
                        self.cnt_fg_close / self.cnt_fg_total >= self.fraccion_perp)
-            # Test 2 — simetria: caja perpendicular tiene d_izq_cono ≈ d_der_cono.
-            # Pared lateral entra solo por un lado → asimetria grande → no dispara.
-            simetrico = (math.isfinite(self.d_fg_left) and
-                         math.isfinite(self.d_fg_right) and
-                         abs(self.d_fg_left - self.d_fg_right) <= self.simetria_max)
-            if perp_ok and simetrico and self.dist_frente_giro <= self.d_obst:
+            ahora = self.get_clock().now().nanoseconds * 1e-9
+            cooldown_ok = (ahora - self.t_ultimo_giro) >= self.t_cooldown
+            if perp_ok and cooldown_ok and self.dist_frente_giro <= self.d_obst:
                 d_msg = Float32(); d_msg.data = float(self.dist_frente_giro)
                 self.pub_parada.publish(d_msg)
                 self._cambiar(GIRO)

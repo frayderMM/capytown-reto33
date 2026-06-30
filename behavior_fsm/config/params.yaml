@@ -39,11 +39,14 @@ behavior_fsm:
     Kizq:          3.0          # ganancia de repulsion (rad/s por metro de exceso)
 
     # --- Deteccion de linea perpendicular (caja) ---
-    fraccion_perp: 0.65         # fraccion minima de rayos en cono estrecho que deben
+    fraccion_perp: 0.55         # fraccion minima de rayos en cono estrecho que deben
                                 # estar a <= dist_obstaculo para disparar GIRO.
                                 # pared lateral en angulo = fraccion baja; caja frontal = ~1.0
-    simetria_max:  0.10         # m  max diferencia entre dist minima izq y der del cono.
-                                # caja perpendicular: ~0 (simetrico). pared lateral: grande.
+
+    # --- Cooldown post-GIRO ---
+    t_cooldown: 1.5             # s  tiempo minimo en CRUCERO tras salir de un GIRO
+                                # antes de poder disparar otro GIRO.
+                                # Evita re-disparo por pared izq justo al terminar el giro.
 
     # --- Temporizacion del giro ---
     t_giro_min: 0.5              # s  minimo en GIRO antes de poder salir (evita parpadeo)
