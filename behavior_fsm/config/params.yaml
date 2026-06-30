@@ -16,39 +16,25 @@ behavior_fsm:
     # --- Sector frontal de vigilancia ---
     sector_frontal_deg: 45.0    # +/- grados al frente vigilados
 
-    # --- Sectores laterales (para elegir dirección de rodeo) ---
+    # --- Sectores laterales (para medir pared izq/der) ---
     sector_lateral_lo:  60.0    # inicio sector lateral [grados]
     sector_lateral_hi: 120.0    # fin sector lateral [grados]
 
     # --- Distancias de reacción ---
-    dist_alerta: 0.45           # m  empieza a frenar progresivamente
-    dist_parada: 0.25           # m  para completamente
+    dist_alerta:        0.55    # m  empieza a frenar progresivamente
+    dist_obstaculo:      0.40    # m  dispara el giro (caja/pared detectada al frente)
+    dist_pared_lateral:  0.55    # m  umbral para considerar que la pared der. reapareció
+    dist_emergencia:     0.12    # m  stop total si el frente esta a menos de esto (override)
 
     # --- Velocidades ---
-    vel_crucero: 0.18           # m/s  velocidad en zona libre
-    vel_min:     0.05           # m/s  velocidad mínima al estar a dist_parada
-    vel_giro:    0.80           # rad/s  velocidad de giro en evasion
+    vel_crucero:       0.18     # m/s  velocidad en zona libre
+    vel_min:           0.05     # m/s  velocidad mínima al estar a dist_obstaculo
+    vel_giro_gradual:  0.35     # rad/s  giro fijo a la izquierda en GIRO
+    vel_avance_giro:   0.08     # m/s  avance lento mientras gira (no gira en el sitio)
 
-    # --- Pausa de estabilización antes de evadir ---
-    pausa_parada: 0.30          # s  pausa breve al detectar obstaculo
-
-    # --- Contingencia de colisión ---
-    dist_emergencia: 0.12       # m  stop total si el frente esta a menos de esto (override)
-
-    # --- Gap navigation (evasion dinamica por huecos) ---
-    Kgap:           1.2         # rad/s por radian de gap (ganancia de giro hacia el hueco)
-    gap_sector_deg: 90.0        # ventana de busqueda del hueco [+-grados desde el frente]
-    t_evasion_max:  8.0         # s  timeout de seguridad en estado EVADIR
-
-    # --- Recuperacion (RESCATE: barrido + retroceso si EVADIR se atasca) ---
-    topic_odom: '/odom_raw'        # topico de odometria del yahboom_driver (confirmado con ros2 topic hz)
-    gap_fallback_deg: 30.0         # deg  margen para usar fallback lateral en EVADIR
-    barrido_max_deg: 300.0         # deg  giro acumulado max en fase BARRIDO antes de retroceder
-    barrido_t_max: 10.0            # s    limite de seguridad (reloj) para fase BARRIDO
-    vel_retroceso: 0.08            # m/s  velocidad de reversa en RETROCEDER
-    retroceso_dist: 0.25           # m    distancia objetivo de reversa
-    retroceso_t_max: 3.0           # s    limite de seguridad (reloj) para RETROCEDER
-    dist_seguridad_retroceso: 0.20 # m    distancia trasera minima para permitir retroceso
+    # --- Temporizacion del giro ---
+    t_giro_min: 0.5              # s  minimo en GIRO antes de poder salir (evita parpadeo)
+    t_giro_max: 6.0               # s  salvavidas: vuelve a CRUCERO igual si tarda demasiado
 
 wall_follower:
   ros__parameters:

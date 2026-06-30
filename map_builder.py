@@ -2,11 +2,16 @@
 """
 map_builder.py  —  Mapa de ocupacion en tiempo real para CapyTown RC3
 
-Suscribe a /scan + /odom + /cmd_vel + /fsm_state + /box_count.
+Suscribe a /scan + /odom_raw + /cmd_vel + /fsm_state + /cajas_avistadas.
 Muestra el mapa a la izquierda y un panel de telemetria a la derecha.
 
+Pensado para la logica simple CRUCERO/GIRO de behavior_fsm.py:
+  CRUCERO → pegado a la pared derecha.
+  GIRO    → giro izquierdo fijo (amplio) hasta que la pared derecha
+             reaparece dentro de dist_pared_lateral.
+
 Uso:
-    python3 /root/frayder_ws/src/capytown_esan/map_builder.py
+    python3 /root/yahboomcar_ws/src/capytown-reto33/map_builder.py
 
 Guarda al cerrar:
     ~/mapa_capytown.png   imagen del mapa
@@ -31,8 +36,8 @@ from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import LaserScan
 from nav_msgs.msg import Odometry
-from geometry_msgs.msg import Twist
-from std_msgs.msg import String, Int32
+from geometry_msgs.msg import Twist, PoseArray
+from std_msgs.msg import String
 
 
 # ── Parámetros del mapa ───────────────────────────────────────────────────────
@@ -45,21 +50,22 @@ ORIG_X = 0.30
 ORIG_Y = 1.50
 
 LIDAR_FRONT_RAD = math.pi   # 180° = Yahboom MS200
+TOPIC_ODOM      = '/odom_raw'
 
 CEL_DESCONOCIDO = 128
 CEL_LIBRE       = 240
 CEL_OCUPADO     =  20
 RAY_STEP        = 3
 
-D_ALERTA    = 0.45
-D_PARADA    = 0.25
+D_ALERTA    = 0.55   # empieza a frenar
+D_OBST      = 0.40   # dispara GIRO
+D_PARED_LAT = 0.55   # umbral para volver a CRUCERO (pared der. detectada)
 CORREDOR_W  = 0.60
 
-COLOR_TRAJ = {'CRUCERO': 'lime', 'PARAR': 'orange', 'EVADIR': 'red'}
+COLOR_TRAJ = {'CRUCERO': 'lime', 'GIRO': 'red'}
 COLOR_FSM  = {
-    'CRUCERO': ('green',      '#E8FFE8'),
-    'PARAR':   ('darkorange', '#FFF3E0'),
-    'EVADIR':  ('red',        '#FFE8E8'),
+    'CRUCERO': ('green', '#E8FFE8'),
+    'GIRO':    ('red',   '#FFE8E8'),
 }
 
 
@@ -114,7 +120,6 @@ class MapBuilder(Node):
         self.dist_izq    = float('inf')
         self.dist_der    = float('inf')
         self.dist_frente = float('inf')
-        self.gap_ang     = 0.0
         self.fsm_state   = 'CRUCERO'
         self.vel_v       = 0.0
         self.vel_w       = 0.0
@@ -124,15 +129,14 @@ class MapBuilder(Node):
         self._lat_lo     = math.radians(60.0)
         self._lat_hi     = math.radians(120.0)
         self._sector_f   = math.radians(45.0)
-        self._gap_sector = math.radians(90.0)
 
         qos = QoSProfile(depth=10)
         qos.reliability = ReliabilityPolicy.BEST_EFFORT
-        self.create_subscription(LaserScan, '/scan',      self._cb_scan, qos)
-        self.create_subscription(Odometry,  '/odom',      self._cb_odom, 10)
-        self.create_subscription(Twist,     '/cmd_vel',   self._cb_cmd,  10)
-        self.create_subscription(String,    '/fsm_state', self._cb_fsm,  10)
-        self.create_subscription(Int32,     '/box_count', self._cb_box,  10)
+        self.create_subscription(LaserScan,  '/scan',             self._cb_scan, qos)
+        self.create_subscription(Odometry,   TOPIC_ODOM,          self._cb_odom, qos)
+        self.create_subscription(Twist,      '/cmd_vel',          self._cb_cmd,  10)
+        self.create_subscription(String,     '/fsm_state',        self._cb_fsm,  10)
+        self.create_subscription(PoseArray,  '/cajas_avistadas',  self._cb_box,  10)
 
         self.get_logger().info(
             f'map_builder listo | {COLS}x{ROWS} celdas | panel lateral activo')
@@ -153,9 +157,9 @@ class MapBuilder(Node):
         with self._lock:
             self.fsm_state = msg.data
 
-    def _cb_box(self, msg: Int32):
+    def _cb_box(self, msg: PoseArray):
         with self._lock:
-            self.box_count = msg.data
+            self.box_count = len(msg.poses)
 
     def _cb_scan(self, msg: LaserScan):
         with self._lock:
@@ -163,7 +167,6 @@ class MapBuilder(Node):
 
         rc, rr = mundo_a_celda(rx, ry)
         d_izq = d_der = d_f = float('inf')
-        bucket_sum = {}; bucket_count = {}
 
         for i in range(0, len(msg.ranges), RAY_STEP):
             r     = msg.ranges[i]
@@ -180,15 +183,7 @@ class MapBuilder(Node):
                 if self._lat_lo <= abs_af <= self._lat_hi:
                     if af > 0: d_izq = min(d_izq, r)
                     else:      d_der = min(d_der, r)
-
-            # Gap: incluye rayos sin retorno como espacio abierto
-            if abs_af <= self._gap_sector:
-                r_gap  = r if valid else msg.range_max
-                bucket = round(math.degrees(af) / 10.0) * 10
-                bucket_sum[bucket]   = bucket_sum.get(bucket, 0.0) + r_gap
-                bucket_count[bucket] = bucket_count.get(bucket, 0) + 1
-
-            if not valid:
+            else:
                 continue
 
             # Mapa de ocupación via Bresenham
@@ -203,21 +198,17 @@ class MapBuilder(Node):
             if 0 <= er < ROWS and 0 <= ec < COLS:
                 self.grid[er, ec] = CEL_OCUPADO
 
-        gap = (math.radians(max(bucket_sum, key=lambda k: bucket_sum[k] / bucket_count[k]))
-               if bucket_count else 0.0)
-
         with self._lock:
             self.dist_izq    = d_izq
             self.dist_der    = d_der
             self.dist_frente = d_f
-            self.gap_ang     = gap
 
     def snapshot(self):
         with self._lock:
             return (
                 self.grid.copy(),
                 (self.robot_x, self.robot_y, self.robot_yaw),
-                (self.dist_izq, self.dist_der, self.dist_frente, self.gap_ang),
+                (self.dist_izq, self.dist_der, self.dist_frente),
                 (self.vel_v, self.vel_w),
                 self.fsm_state,
                 self.box_count,
@@ -225,7 +216,7 @@ class MapBuilder(Node):
 
 
 # ── Panel lateral ─────────────────────────────────────────────────────────────
-def draw_panel(ax2, fsm, vel_v, vel_w, d_izq, d_der, d_f, gap_ang, box_count, rx, ry):
+def draw_panel(ax2, fsm, vel_v, vel_w, d_izq, d_der, d_f, box_count, rx, ry):
     ax2.clear()
     ax2.axis('off')
     ax2.set_xlim(0, 1)
@@ -267,15 +258,11 @@ def draw_panel(ax2, fsm, vel_v, vel_w, d_izq, d_der, d_f, gap_ang, box_count, rx
     for label, dist, c in [('IZQ', d_izq, '#AA00FF'), ('DER', d_der, '#FF8800')]:
         fill    = min(dist, CORREDOR_W) / CORREDOR_W if math.isfinite(dist) else 1.0
         ds      = f'{dist:.2f}m' if math.isfinite(dist) else '--'
-        # etiqueta
         ax2.text(0.04, y, label, va='top', fontsize=8, color=c, fontweight='bold')
-        # barra fondo
         ax2.add_patch(plt.Rectangle((0.20, y - 0.024), BAR_W, 0.022,
                                     fc='#EEEEEE', ec='none', zorder=1))
-        # barra rellena
         ax2.add_patch(plt.Rectangle((0.20, y - 0.024), BAR_W * fill, 0.022,
                                     fc=c, ec='none', alpha=0.75, zorder=2))
-        # marca ideal (centro = 0.30m / 0.60m = 50%)
         ax2.plot([0.20 + BAR_W * 0.5] * 2, [y - 0.028, y + 0.002],
                  color='black', lw=1.5, zorder=3)
         ax2.text(0.80, y, ds, va='top', fontsize=8, color=c, ha='left')
@@ -291,19 +278,22 @@ def draw_panel(ax2, fsm, vel_v, vel_w, d_izq, d_der, d_f, gap_ang, box_count, rx
     # ── Distancia frontal ─────────────────────────────────────────────────────
     txt('DISTANCIA FRONTAL', dy=0.028, fs=8, color='#888888')
     if math.isfinite(d_f):
-        cf   = 'red' if d_f < D_PARADA else ('darkorange' if d_f < D_ALERTA else 'green')
-        zona = 'STOP !' if d_f < D_PARADA else ('ALERTA' if d_f < D_ALERTA else 'LIBRE')
+        cf   = 'red' if d_f < D_OBST else ('darkorange' if d_f < D_ALERTA else 'green')
+        zona = 'GIRO !' if d_f < D_OBST else ('ALERTA' if d_f < D_ALERTA else 'LIBRE')
         txt(f'{d_f:.2f} m  [{zona}]', dy=0.065, fs=11, color=cf, bold=True)
     else:
         txt('> rango  [LIBRE]', dy=0.065, fs=11, color='green')
     sep()
 
-    # ── Gap ───────────────────────────────────────────────────────────────────
-    txt('GAP (hueco libre)', dy=0.028, fs=8, color='#888888')
-    gd  = math.degrees(gap_ang)
-    cg  = 'gray' if abs(gd) < 5 else ('#AA00FF' if gd > 0 else '#FF8800')
-    dsg = 'FRENTE' if abs(gd) < 5 else ('← izq' if gd > 0 else 'der →')
-    txt(f'{gd:+.0f}°  {dsg}', dy=0.065, fs=11, color=cg, bold=True)
+    # ── Pared derecha (condición de salida de GIRO) ────────────────────────────
+    txt('PARED DER. (umbral GIRO→CRUCERO)', dy=0.028, fs=8, color='#888888')
+    if math.isfinite(d_der):
+        ok = d_der < D_PARED_LAT
+        cg = 'green' if ok else 'gray'
+        msg = f'{d_der:.2f} m  {"[DETECTADA]" if ok else "[no visible]"}'
+    else:
+        cg, msg = 'gray', '--  [no visible]'
+    txt(msg, dy=0.065, fs=11, color=cg, bold=True)
     sep()
 
     # ── Corredor y cajas ──────────────────────────────────────────────────────
@@ -360,8 +350,7 @@ def main():
         plt.Line2D([0],[0], color='#AA00FF', lw=2,   label='IZQ'),
         plt.Line2D([0],[0], color='#FF8800', lw=2,   label='DER'),
         plt.Line2D([0],[0], color='lime',    lw=1.5, label='CRUCERO'),
-        plt.Line2D([0],[0], color='orange',  lw=1.5, label='PARAR'),
-        plt.Line2D([0],[0], color='red',     lw=1.5, label='EVADIR'),
+        plt.Line2D([0],[0], color='red',     lw=1.5, label='GIRO'),
     ]
     ax.legend(handles=leyenda, loc='lower right', fontsize=7, ncol=2)
 
@@ -386,7 +375,7 @@ def main():
     # ── Loop de visualización ─────────────────────────────────────────────────
     try:
         while rclpy.ok():
-            grid, (rx, ry, ryaw), (d_izq, d_der, d_f, gap_ang), \
+            grid, (rx, ry, ryaw), (d_izq, d_der, d_f), \
                 (vel_v, vel_w), fsm, box_count = node.snapshot()
 
             img_plot.set_data(grid)
@@ -419,23 +408,12 @@ def main():
             # Zonas de detección frontal (cuñas semitransparentes)
             map_yaw_deg = -math.degrees(ryaw)
             for radius, color, alpha in [(D_ALERTA, 'yellow', 0.15),
-                                          (D_PARADA, 'red',    0.25)]:
+                                          (D_OBST,   'red',    0.25)]:
                 w = Wedge((mx, my), radius,
                           map_yaw_deg - 45, map_yaw_deg + 45,
                           fc=color, ec=color, alpha=alpha, zorder=3)
                 ax.add_patch(w)
                 dyn_arts.append(w)
-
-            # Flecha del gap (solo si el hueco no está al frente)
-            if abs(gap_ang) > math.radians(5):
-                world_gap = ryaw + gap_ang
-                gx = mx + 0.28 * math.cos(world_gap)
-                gy = my - 0.28 * math.sin(world_gap)
-                arr = ax.annotate(
-                    '', xy=(gx, gy), xytext=(mx, my),
-                    arrowprops=dict(arrowstyle='-|>', color='yellow',
-                                    lw=2.5, mutation_scale=18), zorder=9)
-                dyn_arts.append(arr)
 
             # Flecha de heading del robot
             hl = 0.09
@@ -460,8 +438,7 @@ def main():
                 dyn_arts.append(l)
 
             # Panel lateral
-            draw_panel(ax2, fsm, vel_v, vel_w, d_izq, d_der, d_f,
-                       gap_ang, box_count, rx, ry)
+            draw_panel(ax2, fsm, vel_v, vel_w, d_izq, d_der, d_f, box_count, rx, ry)
 
             fig.canvas.draw_idle()
             plt.pause(0.3)
