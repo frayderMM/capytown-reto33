@@ -2,42 +2,53 @@
 
 ## 1 — Entrar al robot
 ```bash
-ssh yahboom@10.42.0.1
-docker exec -it friendly_pike bash
+ssh pi@10.42.0.1
+sudo docker exec -it friendly_pike bash
 ```
 
-## 2 — Primera vez (clonar)
+## 2 — Primera vez (clonar en el robot)
 ```bash
 echo "nameserver 8.8.8.8" > /etc/resolv.conf
-mkdir -p /root/frayder_ws/src/capytown-reto33
-git clone https://github.com/frayderMM/capytown-reto33.git /root/frayder_ws/src/capytown-reto33
-cd /root/frayder_ws && colcon build --packages-select behavior_fsm box_detector && source install/setup.bash
+cd /root/yahboomcar_ws/src
+git clone https://github.com/frayderMM/capytown-reto33.git capytown-reto33
+cd /root/yahboomcar_ws && colcon build --packages-select box_detector behavior_fsm && source install/setup.bash
 ```
 
 ## 3 — Pull y build (siguientes veces)
 ```bash
 echo "nameserver 8.8.8.8" > /etc/resolv.conf
-cd /root/frayder_ws/src/capytown-reto33 && git fetch origin && git reset --hard origin/main
-cd /root/frayder_ws && colcon build --packages-select behavior_fsm box_detector && source install/setup.bash
+cd /root/yahboomcar_ws/src/capytown-reto33 && git fetch origin && git reset --hard origin/main
+cd /root/yahboomcar_ws && colcon build --packages-select box_detector behavior_fsm && source install/setup.bash
 ```
 
-## 4 — Correr el robot (Terminal A)
+## 4 — Correr (3 terminales)
+
+**Terminal A — bringup (LiDAR + base + odometría)**
 ```bash
+sudo docker exec -it friendly_pike bash
+source /root/yahboomcar_ws/install/setup.bash
+ros2 launch capytown_esan bringup.launch.py
+```
+
+**Terminal B — FSM (comportamiento del robot)**
+```bash
+sudo docker exec -it friendly_pike bash
+source /root/yahboomcar_ws/install/setup.bash
 ros2 launch behavior_fsm capytown.launch.py
 ```
 
-## 5 — Correr el mapa (Terminal B)
+**Terminal C — mapa**
 ```bash
-docker exec -it friendly_pike bash
-source /root/frayder_ws/install/setup.bash
-python3 /root/frayder_ws/src/capytown-reto33/map_builder.py
+sudo docker exec -it friendly_pike bash
+source /root/yahboomcar_ws/install/setup.bash
+python3 /root/yahboomcar_ws/src/capytown-reto33/map_builder.py
 ```
 
-## 6 — Correr el visor LiDAR (Terminal C)
+**Terminal D — visor LiDAR**
 ```bash
-docker exec -it friendly_pike bash
-source /root/frayder_ws/install/setup.bash
-python3 /root/frayder_ws/src/capytown-reto33/lidar_viz.py
+sudo docker exec -it friendly_pike bash
+source /root/yahboomcar_ws/install/setup.bash
+python3 /root/yahboomcar_ws/src/capytown-reto33/lidar_viz.py
 ```
 
 ## Posición de inicio del robot

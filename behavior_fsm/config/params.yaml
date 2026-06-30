@@ -41,7 +41,7 @@ behavior_fsm:
     t_evasion_max:  8.0         # s  timeout de seguridad en estado EVADIR
 
     # --- Recuperacion (RESCATE: barrido + retroceso si EVADIR se atasca) ---
-    topic_odom: '/odom_raw'        # topico de odometria (usar '/odom' si hay EKF)
+    topic_odom: '/odom'            # topico de odometria del yahboom_driver
     gap_fallback_deg: 15.0         # deg  margen para usar fallback lateral en EVADIR
     barrido_max_deg: 300.0         # deg  giro acumulado max en fase BARRIDO antes de retroceder
     barrido_t_max: 10.0            # s    limite de seguridad (reloj) para fase BARRIDO
