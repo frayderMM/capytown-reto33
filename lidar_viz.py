@@ -11,7 +11,7 @@ Panel derecho   : DER (grande) + IZQ (grande) + historial velocidad.
 Deteccion de caja: std_x < 4 cm (perpendicular) + 8 cm <= ancho <= 32 cm (25 cm ± margen)
 """
 
-VIZ_VERSION = 'v7'
+VIZ_VERSION = 'v8'
 
 import math
 import argparse
@@ -23,7 +23,7 @@ from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import LaserScan
 from geometry_msgs.msg import Twist, PoseArray
-from std_msgs.msg import Float32
+from std_msgs.msg import Float32, String
 from nav_msgs.msg import Odometry
 
 import matplotlib
@@ -45,6 +45,7 @@ C_LEFT      = '#4f8ef7'   # azul: sector izquierdo
 C_RIGHT     = '#2ecc71'   # verde: sector derecho
 C_OTHER     = '#3a4a5a'   # gris: resto
 C_BOX       = '#f39c12'   # naranja: cajas censadas en odom
+C_RODEO     = '#b07fff'   # purpura: estado RODEO
 C_TRAJ      = '#8b949e'
 C_ARROW     = '#f5c518'
 C_TEXT      = '#e6edf3'
@@ -97,6 +98,8 @@ class LidarViz(Node):
         self.box_cy          = 0.0   # lateral (y robot) del centro de la caja
         self.box_w           = 0.0   # ancho detectado de la caja
 
+        self.fsm_state  = 'CRUCERO'
+
         self.vel_lin    = 0.0
         self.vel_ang    = 0.0
         self.lat_corr   = 0.0
@@ -113,11 +116,12 @@ class LidarViz(Node):
 
         qos = QoSProfile(depth=10)
         qos.reliability = ReliabilityPolicy.BEST_EFFORT
-        self.create_subscription(LaserScan, '/scan',               self._cb_scan,  qos)
-        self.create_subscription(Odometry,  '/odom_raw',           self._cb_odom,  qos)
-        self.create_subscription(Twist,     '/cmd_vel',            self._cb_cmd,   10)
-        self.create_subscription(Float32,   '/lateral_correction', self._cb_lat,   10)
-        self.create_subscription(PoseArray, '/cajas_avistadas',    self._cb_cajas, 10)
+        self.create_subscription(LaserScan, '/scan',               self._cb_scan,   qos)
+        self.create_subscription(Odometry,  '/odom_raw',           self._cb_odom,   qos)
+        self.create_subscription(Twist,     '/cmd_vel',            self._cb_cmd,    10)
+        self.create_subscription(Float32,   '/lateral_correction', self._cb_lat,    10)
+        self.create_subscription(PoseArray, '/cajas_avistadas',    self._cb_cajas,  10)
+        self.create_subscription(String,    '/fsm_state',          self._cb_estado, 10)
 
     def _sensor_to_display(self, theta, r):
         phi = self.front_rad - theta
@@ -222,6 +226,9 @@ class LidarViz(Node):
     def _cb_lat(self, msg: Float32):
         self.lat_corr = msg.data
 
+    def _cb_estado(self, msg: String):
+        self.fsm_state = msg.data
+
     def _cb_cajas(self, msg: PoseArray):
         self.cajas_odom = [(p.position.x, p.position.y) for p in msg.poses]
 
@@ -302,6 +309,12 @@ def build_figure():
     # Texto de caja en parte superior del lidar
     box_front_txt = ax_lidar.text(0, 1.42, '', color=C_FRONT_BOX, fontsize=11,
                                   ha='center', va='top', fontweight='bold', zorder=9)
+    # Estado FSM — esquina inferior izquierda del panel lidar
+    state_badge = ax_lidar.text(-1.45, -1.45, 'CRUCERO', color=C_OK,
+                                fontsize=14, fontweight='bold',
+                                ha='left', va='bottom', zorder=10,
+                                bbox=dict(boxstyle='round,pad=0.3',
+                                          fc=BG, ec=C_OK, lw=2.0, alpha=0.92))
     ax_lidar.legend(handles=[
         mpatches.Patch(color=C_FRONT_OK,  label='FRENTE (sin caja)'),
         mpatches.Patch(color=C_FRONT_BOX, label='FRENTE (CAJA!)'),
@@ -378,7 +391,7 @@ def build_figure():
 
     return (fig, ax_lidar, ax_der, ax_izq, ax_vel,
             lc, traj_line, box_patches, range_circ,
-            alert_txt, box_front_txt,
+            alert_txt, box_front_txt, state_badge,
             der_artists, izq_artists, vel_line)
 
 
@@ -394,7 +407,7 @@ def main():
     plt.ion()
     (fig, ax_lidar, ax_der, ax_izq, ax_vel,
      lc, traj_line, box_patches, range_circ,
-     alert_txt, box_front_txt,
+     alert_txt, box_front_txt, state_badge,
      der_artists, izq_artists, vel_line) = build_figure()
     plt.show()
     box_scan_patches = []   # rectangulo de caja detectada por scan (se borra cada frame)
@@ -455,11 +468,9 @@ def main():
                 alert_txt.set_color(C_FRONT_BOX)
                 box_front_txt.set_text('▶ CAJA PERPENDICULAR DETECTADA ◀')
                 box_front_txt.set_color(C_FRONT_BOX)
-                ax_lidar.set_facecolor('#1a1000')
             else:
                 alert_txt.set_text('')
                 box_front_txt.set_text('')
-                ax_lidar.set_facecolor(PANEL)
 
             # ── Panel DER ─────────────────────────────────────────────────
             dr = node.d_right
@@ -527,6 +538,19 @@ def main():
                 ts = [t - t_now + MAX_VEL_T for t in node.vel_times]
                 vel_line.set_data(ts, list(node.vel_vals))
                 ax_vel.set_xlim(0, MAX_VEL_T)
+
+            # ── Estado FSM ────────────────────────────────────────────────
+            st = node.fsm_state
+            if st == 'GIRO':
+                sc, bg_col = C_WARN,  '#1a1000'
+            elif st == 'RODEO':
+                sc, bg_col = C_RODEO, '#110a1a'
+            else:
+                sc, bg_col = C_OK,    PANEL
+            state_badge.set_text(st)
+            state_badge.set_color(sc)
+            state_badge.get_bbox_patch().set_edgecolor(sc)
+            ax_lidar.set_facecolor(bg_col if not node.box_frente else '#1a1000')
 
             fig.canvas.draw_idle()
             plt.pause(0.05)
