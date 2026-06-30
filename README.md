@@ -79,7 +79,7 @@ entre corridas sin perder 2 minutos en colcon build:
 # Editar el yaml instalado directamente
 nano /root/frayder_ws/install/box_detector/share/box_detector/config/params.yaml
 # Cambiar la linea ground_truth: [x1,y1, x2,y2, x3,y3, x4,y4, x5,y5]
-# Guardar y relanzar - SIN colcon build
+# Guardar y relanzar - S
 ```
 
 Solo hace falta colcon build cuando se cambia CODIGO Python (no yamls).
