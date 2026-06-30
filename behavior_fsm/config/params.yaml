@@ -21,8 +21,8 @@ behavior_fsm:
     sector_lateral_hi: 120.0    # fin sector lateral [grados]
 
     # --- Distancias de reacción ---
-    dist_alerta:        0.55    # m  empieza a frenar progresivamente
-    dist_obstaculo:      0.40    # m  dispara el giro (caja/pared detectada al frente)
+    dist_alerta:        0.45    # m  empieza a frenar progresivamente
+    dist_obstaculo:      0.30    # m  dispara el giro (caja/pared detectada al frente)
     dist_pared_lateral:  0.55    # m  umbral para considerar que la pared der. reapareció
     dist_emergencia:     0.12    # m  stop total si el frente esta a menos de esto (override)
 
@@ -39,7 +39,7 @@ behavior_fsm:
 wall_follower:
   ros__parameters:
     # --- Control lateral ---
-    dist_objetivo:  0.18        # m    distancia deseada a la pared DERECHA (jiron de 60cm de ancho — ajustar en pista real)
+    dist_objetivo:  0.08        # m    distancia deseada a la pared DERECHA (objetivo 8 cm confirmado en pista)
     Kp:             0.80        # ganancia proporcional
     Kd:             0.10        # ganancia derivativa
     max_correccion: 0.40        # rad/s  saturación de salida

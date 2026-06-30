@@ -328,10 +328,17 @@ def build_figure():
     ax_gauge.plot([0.05, 0.95], [0.19, 0.19], color=BORDER, lw=0.8)
 
     # Indicador de caja al frente
-    lbl_box = ax_gauge.text(0.5, 0.12, '  SIN CAJA  ', ha='center', va='center',
+    lbl_box = ax_gauge.text(0.5, 0.18, '  SIN CAJA  ', ha='center', va='center',
                             color=C_DIM, fontsize=11, fontweight='bold',
                             bbox=dict(boxstyle='round,pad=0.4', fc='#222', ec=BORDER, lw=1.5))
     gauge_artists['lbl_box'] = lbl_box
+
+    # Pared izquierda (dato secundario)
+    ax_gauge.text(0.05, 0.06, 'IZQ:', ha='left', va='center',
+                  color=C_DIM, fontsize=8)
+    lbl_izq = ax_gauge.text(0.25, 0.06, '---', ha='left', va='center',
+                            color=C_LEFT, fontsize=9, fontweight='bold')
+    gauge_artists['lbl_izq'] = lbl_izq
 
     # ── Velocidad ──────────────────────────────────────────────────────────
     ax_vel.set_title('Vel. lineal (m/s)', color=C_TEXT, fontsize=9, pad=4)
@@ -457,6 +464,12 @@ def main():
                 ga['lbl_val'].set_color(C_DIM)
                 ga['lbl_err'].set_text('pared derecha no visible')
                 ga['lbl_err'].set_color(C_DIM)
+
+            # IZQ (secundario)
+            if math.isfinite(node.d_left):
+                ga['lbl_izq'].set_text(f'{node.d_left*100:.1f} cm')
+            else:
+                ga['lbl_izq'].set_text('---')
 
             # Indicador caja
             if node.box_frente:
