@@ -221,11 +221,16 @@ class BehaviorFSM(Node):
 
         # ── GIRO ──────────────────────────────────────────────────────────
         elif self.estado == GIRO:
+            # Seguridad: pared izquierda demasiado cerca → abortar giro
+            if math.isfinite(self.dist_izq) and self.dist_izq < self.d_emerg:
+                self._cambiar(RODEO)
+                return
             if self._t_estado() > self.t_giro_max:
                 self._cambiar(CRUCERO)
                 return
-            if (self._t_estado() > self.t_giro_min
-                    and self.dist_frente > self.d_alerta):
+            # Salida por TIEMPO FIJO: no usar dist_frente porque la pared izq
+            # entra al cono frontal durante el giro y nunca dejaria salir.
+            if self._t_estado() >= self.t_giro_min:
                 if self.dist_der < self.d_pared_lat:
                     self._cambiar(CRUCERO)  # pared derecha reaparecio → saltar RODEO
                 else:

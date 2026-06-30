@@ -30,21 +30,26 @@ behavior_fsm:
     dist_emergencia:    0.12  # m  stop total (override de cualquier estado)
 
     # --- Velocidades ---
-    vel_crucero:      0.18   # m/s  velocidad en CRUCERO
-    vel_giro_gradual: 0.45   # rad/s  giro izquierda en GIRO
-    vel_avance_giro:  0.08   # m/s  avance lineal mientras gira
+    vel_crucero:      0.14   # m/s  velocidad en CRUCERO (reducida para mas control)
+    vel_giro_gradual: 0.40   # rad/s  giro izquierda en GIRO
+    vel_avance_giro:  0.06   # m/s  avance lineal mientras gira
 
     # --- RODEO: avance recto para pasar junto a la caja ---
     t_rodeo:  1.5            # s   tiempo maximo en RODEO
-    v_rodeo:  0.15           # m/s velocidad en RODEO
+    v_rodeo:  0.13           # m/s velocidad en RODEO
     w_rodeo:  0.0            # rad/s angular en RODEO (0.0 = recto; <0 = curva a la derecha)
 
     # --- Temporizacion del giro ---
-    t_giro_min: 0.5          # s  minimo en GIRO antes de evaluar salida
-    t_giro_max: 6.0          # s  salvavidas: vuelve a CRUCERO aunque no cumpla condicion
+    # t_giro_min es el tiempo FIJO de giro. El GIRO sale por tiempo, no por dist_frente,
+    # porque la pared izq entra al cono frontal y bloquearia la salida por distancia.
+    # 1.2s x 0.40 rad/s = 0.48 rad ≈ 27 grados de giro
+    t_giro_min: 1.2          # s  tiempo fijo de giro (ajustar segun angulo necesario)
+    t_giro_max: 4.0          # s  salvavidas
 
-    # --- Cooldown post-GIRO ---
-    t_cooldown: 1.5          # s  cooldown post-GIRO para no re-disparar con la pared izq
+    # --- Cooldown post-maniobra (GIRO+RODEO) ---
+    # Una vez completada la maniobra, no puede detectar otra caja hasta pasado este tiempo.
+    # 3s x 0.14 m/s = ~42 cm de recorrido libre antes de poder re-detectar.
+    t_cooldown: 3.0          # s  cooldown post-GIRO/RODEO
 
     # --- Repulsion pared izquierda ---
     dist_izq_min: 0.15       # m  distancia minima a la pared izquierda
