@@ -11,7 +11,7 @@ Panel derecho   : DER (grande) + IZQ (grande) + historial velocidad.
 Deteccion de caja: std_x < 4 cm (perpendicular) + 8 cm <= ancho <= 32 cm (25 cm ± margen)
 """
 
-VIZ_VERSION = 'v6'
+VIZ_VERSION = 'v7'
 
 import math
 import argparse
@@ -70,7 +70,7 @@ DETECT_HALF   = math.radians(20.0)  # sector de busqueda para caja
 DETECT_MAX_R  = 0.45   # m  rango maximo de busqueda
 PERP_STD_MAX  = 0.04   # m  max std de profundidad (x). perpendicular → std_x≈0
 BOX_W_MIN     = 0.08   # m  ancho minimo de caja
-BOX_W_MAX     = 0.32   # m  ancho maximo de caja (25 cm + margen)
+BOX_W_MAX     = 0.23   # m  ancho maximo de caja (20 cm + 3 cm margen de medicion)
 MIN_FRONT_PTS = 5      # minimo de puntos para considerar deteccion valida
 
 MAX_TRAJ    = 400
