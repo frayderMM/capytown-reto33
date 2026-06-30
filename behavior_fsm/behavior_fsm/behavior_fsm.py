@@ -162,17 +162,28 @@ class BehaviorFSM(Node):
         c_der    = (self.dist_der - self.off_lados) if math.isfinite(self.dist_der) else float('inf')
         c_min    = self.dist_min - self.off_lados
 
-        # Contingencia de colision — por cualquier lado, override total.
-        # Es la UNICA logica que vigila los costados; no hay seguimiento
-        # ni repulsion continua de pared, solo evitar el choque real.
-        if c_min < self.d_emerg:
+        # Avanzar depende SOLO del frente -- los costados nunca lo frenan.
+        v = self._vel_adaptativa(c_frente)
+
+        # Emergencia de frente: ahi si no hay forma de "girar para evitarlo"
+        # sin parar primero (seguir de frente lo choca de lleno).
+        if c_frente < self.d_emerg:
             self.get_logger().warn(
-                f'EMERGENCIA margen_min={c_min:.2f}m — stop total', throttle_duration_sec=1.0)
+                f'EMERGENCIA frente={c_frente:.2f}m — stop total', throttle_duration_sec=1.0)
             self._pub(0.0, 0.0, 'EMERGENCIA')
             self._en_evasion = False
             return
 
-        v = self._vel_adaptativa(c_frente)
+        # Algo muy cerca por un costado/diagonal (frente libre): en vez de
+        # parar, gira al maximo hacia el lado con MAS espacio mientras
+        # sigue avanzando -- se recalibra sin detenerse.
+        if c_min < self.d_emerg:
+            lado = 1.0 if c_izq >= c_der else -1.0
+            self.get_logger().warn(
+                f'cerca por un costado (margen={c_min:.2f}m) — girando hacia el lado mas libre',
+                throttle_duration_sec=1.0)
+            self._pub(v, lado * self.w_giro_max, 'RECALIBRAR')
+            return
 
         # Giro: solo reacciona a lo que tiene perpendicular al frente
         # (no a paredes laterales paralelas al avance). Progresivo desde
