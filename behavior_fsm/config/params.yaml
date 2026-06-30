@@ -32,6 +32,9 @@ behavior_fsm:
     # --- Pausa de estabilización antes de evadir ---
     pausa_parada: 0.30          # s  pausa breve al detectar obstaculo
 
+    # --- Contingencia de colisión ---
+    dist_emergencia: 0.12       # m  stop total si el frente esta a menos de esto (override)
+
     # --- Gap navigation (evasion dinamica por huecos) ---
     Kgap:           1.2         # rad/s por radian de gap (ganancia de giro hacia el hueco)
     gap_sector_deg: 90.0        # ventana de busqueda del hueco [+-grados desde el frente]

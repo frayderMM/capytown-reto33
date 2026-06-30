@@ -49,6 +49,7 @@ class BehaviorFSM(Node):
         self.declare_parameter('Kgap',                 1.2)   # rad/s por radian de gap
         self.declare_parameter('gap_sector_deg',       90.0)  # ventana de busqueda del hueco
         self.declare_parameter('t_evasion_max',        8.0)   # timeout de seguridad
+        self.declare_parameter('dist_emergencia',      0.12)  # stop total si algo esta a < X m
 
         self.front_rad  = math.radians(self.get_parameter('lidar_front_deg').value)
         self.sector     = math.radians(self.get_parameter('sector_frontal_deg').value)
@@ -63,6 +64,7 @@ class BehaviorFSM(Node):
         self.Kgap       = self.get_parameter('Kgap').value
         self.gap_sector = math.radians(self.get_parameter('gap_sector_deg').value)
         self.t_ev_max   = self.get_parameter('t_evasion_max').value
+        self.d_emerg    = self.get_parameter('dist_emergencia').value
 
         # ── Estado ────────────────────────────────────────────────────────
         self.estado   = CRUCERO
@@ -162,6 +164,13 @@ class BehaviorFSM(Node):
 
     # ── FSM principal ─────────────────────────────────────────────────────
     def loop_control(self):
+
+        # Contingencia de colisión — override de cualquier estado
+        if self.dist_frente < self.d_emerg:
+            self.get_logger().warn(
+                f'EMERGENCIA frente={self.dist_frente:.2f}m — stop total', throttle_duration_sec=1.0)
+            self._pub(0.0, 0.0)
+            return
 
         if self.estado == CRUCERO:
             if self.dist_frente <= self.d_parada:
