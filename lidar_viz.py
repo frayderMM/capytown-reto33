@@ -244,27 +244,27 @@ def build_figure():
         ax.tick_params(colors=C_DIM, labelsize=8)
 
     # ── LiDAR ─────────────────────────────────────────────────────────────
-    ax_lidar.set_xlim(-4.5, 4.5)
-    ax_lidar.set_ylim(-4.5, 4.5)
+    ax_lidar.set_xlim(-1.5, 1.5)
+    ax_lidar.set_ylim(-1.5, 1.5)
     ax_lidar.set_aspect('equal')
     ax_lidar.grid(True, color=BORDER, lw=0.5, ls='--')
     ax_lidar.set_title('LiDAR — Vista en tiempo real', color=C_TEXT, fontsize=12, pad=8)
     ax_lidar.set_xlabel('← IZQ   DER →', color=C_DIM, fontsize=8)
     ax_lidar.set_ylabel('↑ FRENTE', color=C_DIM, fontsize=8)
-    for d in [1, 2, 3, 4]:
+    for d, label in [(0.3, '30cm'), (0.5, '50cm'), (1.0, '1m'), (1.5, '1.5m')]:
         ax_lidar.add_patch(plt.Circle((0, 0), d, color=BORDER, fill=False, lw=0.7, ls=':'))
-        ax_lidar.text(0.05, d + 0.08, f'{d}m', color=BORDER, fontsize=7)
+        ax_lidar.text(0.01, d + 0.02, label, color=BORDER, fontsize=7)
     ax_lidar.scatter([0], [0], s=80, c='white', zorder=6)
-    ax_lidar.annotate('', xy=(0, 0.7), xytext=(0, 0),
+    ax_lidar.annotate('', xy=(0, 0.25), xytext=(0, 0),
                       arrowprops=dict(arrowstyle='->', color=C_ARROW, lw=2.5), zorder=7)
     scatter    = ax_lidar.scatter([], [], s=3, zorder=4)
     traj_line, = ax_lidar.plot([], [], color=C_TRAJ, lw=1.2, alpha=0.6, zorder=3)
     box_patches = []
-    range_circ = plt.Circle((0, 0), 8.0, color='#223344', fill=False, lw=1, ls='--', zorder=2)
+    range_circ = plt.Circle((0, 0), 1.5, color='#223344', fill=False, lw=1, ls='--', zorder=2)
     ax_lidar.add_patch(range_circ)
-    alert_txt = ax_lidar.text(0, -4.2, '', color=C_ALERT, fontsize=11,
+    alert_txt = ax_lidar.text(0, -1.42, '', color=C_ALERT, fontsize=11,
                               ha='center', va='bottom', fontweight='bold', zorder=8)
-    box_front_txt = ax_lidar.text(0, 3.9, '', color=C_BOX, fontsize=10,
+    box_front_txt = ax_lidar.text(0, 1.42, '', color=C_BOX, fontsize=10,
                                   ha='center', va='top', fontweight='bold', zorder=9)
     ax_lidar.legend(handles=[
         mpatches.Patch(color=C_FRONT, label='FRENTE'),
@@ -405,7 +405,7 @@ def main():
                 box_patches.append(rect)
 
             # ── Rango sensor ──────────────────────────────────────────────
-            range_circ.set_radius(min(node.range_max, 4.4))
+            range_circ.set_radius(min(node.range_max, 1.4))
 
             # ── Alerta frontal en LiDAR ───────────────────────────────────
             if node.d_front <= DIST_ALERT:
