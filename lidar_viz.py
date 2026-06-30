@@ -4,16 +4,14 @@ lidar_viz.py — Monitor visual en tiempo real del robot CapyTown.
 
 Ventana matplotlib con:
   [izquierda] Mapa LiDAR
-    - Nube de puntos coloreada por sector (frente/izq/der)
-    - Cajas detectadas (odom) como cuadrados naranjas
-    - Caja en FRENTE resaltada (recta tipo T, ancho ~20cm) en rojo
+    - Nube de puntos coloreada por sector (frente/izq/der), cualquier
+      obstaculo (no distingue caja/pared/persona)
     - Rastro de trayectoria (ultimas posiciones por odom)
     - Circulo de rango del sensor
 
   [derecha-arriba] Gauge de pared derecha
     - Barra horizontal: 0–70 cm, banda verde centrada en objetivo 8 cm
     - Numero exacto en cm (grande, color segun error)
-    - Indicador BOX cuando hay una caja perpendicular al frente
 
   [derecha-abajo] Historial de velocidad lineal (ultimos 10 s)
 
@@ -31,7 +29,7 @@ import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import LaserScan
-from geometry_msgs.msg import Twist, PoseArray
+from geometry_msgs.msg import Twist
 from std_msgs.msg import Float32
 from nav_msgs.msg import Odometry
 
@@ -52,7 +50,6 @@ C_FRONT = '#e94560'
 C_LEFT  = '#4f8ef7'
 C_RIGHT = '#2ecc71'
 C_OTHER = '#3a4a5a'
-C_BOX   = '#f39c12'
 C_TRAJ  = '#8b949e'
 C_ARROW = '#f5c518'
 C_TEXT  = '#e6edf3'
@@ -70,11 +67,6 @@ SIDE_HI    = math.radians(120.0)
 TARGET_DER  = 0.08   # m  objetivo de pegamiento a la pared derecha
 TOL_OK      = 0.02   # m  +/- tolerancia para considerar "en objetivo"
 MAX_GAUGE   = 0.70   # m  maximo del gauge
-
-BOX_W_MIN   = 0.10   # m  ancho minimo para clasificar como caja (no pared)
-BOX_W_MAX   = 0.35   # m  ancho maximo (caja CapyTown ~20cm +/- margen)
-BOX_DEPTH   = 0.10   # m  profundidad maxima del cluster (face plana)
-BOX_MAX_R   = 1.20   # m  solo busca cajas dentro de este rango frontal
 
 DIST_WARN   = 0.50
 DIST_ALERT  = 0.30
@@ -96,14 +88,9 @@ class LidarViz(Node):
         self.range_min  = 0.0
         self.range_max  = 8.0
 
-        # Deteccion de caja al frente (recta tipo T)
-        self.box_frente      = False   # hay caja perpendicular al frente
-        self.box_frente_dist = float('inf')  # distancia a esa caja
-
         self.vel_lin    = 0.0
         self.vel_ang    = 0.0
         self.lat_corr   = 0.0
-        self.cajas_odom = []
 
         self.robot_x    = 0.0
         self.robot_y    = 0.0
@@ -120,7 +107,6 @@ class LidarViz(Node):
         self.create_subscription(Odometry,  '/odom_raw',           self._cb_odom,  qos)
         self.create_subscription(Twist,     '/cmd_vel',            self._cb_cmd,   10)
         self.create_subscription(Float32,   '/lateral_correction', self._cb_lat,   10)
-        self.create_subscription(PoseArray, '/cajas_avistadas',    self._cb_cajas, 10)
 
     # ── Transformaciones ──────────────────────────────────────────────────────
     def _sensor_to_display(self, theta, r):
@@ -139,7 +125,6 @@ class LidarViz(Node):
         segs      = []   # [[(x0,y0),(x1,y1)], ...]  segmentos de linea
         seg_cols  = []   # color por segmento
         d_f = d_l = d_r = float('inf')
-        front_rf  = []   # (xr, yr) en frame robot, cono estrecho, para deteccion caja
         prev_xd = prev_yd = prev_r = None
 
         for i in range(0, len(msg.ranges), 4):
@@ -161,8 +146,6 @@ class LidarViz(Node):
             # aparezca como "obstáculo frontal" en el visor.
             if abs_af <= FRONT_GIRO_HALF:
                 color = '#ffffff'; d_f = min(d_f, r)
-                if r <= BOX_MAX_R:
-                    front_rf.append((r * math.cos(af), r * math.sin(af)))
             elif SIDE_LO <= abs_af <= SIDE_HI:
                 if af > 0:
                     color = C_LEFT;  d_l = min(d_l, r)
@@ -189,25 +172,6 @@ class LidarViz(Node):
         self.d_left   = d_l
         self.d_right  = d_r
 
-        # ── Deteccion de caja (recta tipo T al frente) ────────────────────
-        # Una caja presenta: cluster de puntos casi a la misma profundidad (xr)
-        # con ancho lateral (yr spread) entre BOX_W_MIN y BOX_W_MAX.
-        # Una pared de corredor es mas ancha (>35cm); los laterales son
-        # segmentos largos con xr variable.
-        self.box_frente      = False
-        self.box_frente_dist = float('inf')
-        if len(front_rf) >= 3:
-            front_rf.sort(key=lambda p: p[0])   # ordenar por profundidad
-            d_min_x = front_rf[0][0]
-            # Tomar el cluster mas cercano (dentro de BOX_DEPTH en profundidad)
-            cluster = [(x, y) for x, y in front_rf if x <= d_min_x + BOX_DEPTH]
-            if len(cluster) >= 3:
-                ys     = [p[1] for p in cluster]
-                width  = max(ys) - min(ys)
-                if BOX_W_MIN <= width <= BOX_W_MAX:
-                    self.box_frente      = True
-                    self.box_frente_dist = d_min_x
-
     def _cb_cmd(self, msg: Twist):
         self.vel_lin = msg.linear.x
         self.vel_ang = msg.angular.z
@@ -220,9 +184,6 @@ class LidarViz(Node):
 
     def _cb_lat(self, msg: Float32):
         self.lat_corr = msg.data
-
-    def _cb_cajas(self, msg: PoseArray):
-        self.cajas_odom = [(p.position.x, p.position.y) for p in msg.poses]
 
     def _cb_odom(self, msg: Odometry):
         p = msg.pose.pose.position
@@ -272,18 +233,14 @@ def build_figure():
     lc = LineCollection([], linewidths=3.0, zorder=4)
     ax_lidar.add_collection(lc)
     traj_line, = ax_lidar.plot([], [], color=C_TRAJ, lw=1.2, alpha=0.6, zorder=3)
-    box_patches = []
     range_circ = plt.Circle((0, 0), 1.5, color='#223344', fill=False, lw=1, ls='--', zorder=2)
     ax_lidar.add_patch(range_circ)
     alert_txt = ax_lidar.text(0, -1.42, '', color=C_ALERT, fontsize=11,
                               ha='center', va='bottom', fontweight='bold', zorder=8)
-    box_front_txt = ax_lidar.text(0, 1.42, '', color=C_BOX, fontsize=10,
-                                  ha='center', va='top', fontweight='bold', zorder=9)
     ax_lidar.legend(handles=[
         mpatches.Patch(color='#ffffff', label='FRENTE ±12°'),
         mpatches.Patch(color=C_LEFT,    label='IZQ'),
         mpatches.Patch(color=C_RIGHT,   label='DER'),
-        mpatches.Patch(color=C_BOX,     label='Caja'),
     ], loc='upper right', facecolor=BG, labelcolor=C_TEXT, fontsize=8, framealpha=0.9)
 
     # ── Gauge pared derecha ────────────────────────────────────────────────
@@ -292,7 +249,7 @@ def build_figure():
     ax_gauge.set_ylim(0, 1)
     ax_gauge.set_title('PARED DERECHA', color=C_TEXT, fontsize=11, pad=6)
     # Artistas del gauge (se actualizan en el loop)
-    gauge_artists = {}   # claves: 'bar_bg', 'bar_fill', 'needle', 'lbl_val', 'lbl_err', 'lbl_box'
+    gauge_artists = {}   # claves: 'bar_fill', 'needle', 'lbl_val', 'lbl_err', 'lbl_izq'
 
     # Fondo del gauge (barra horizontal)
     ax_gauge.add_patch(mpatches.FancyBboxPatch(
@@ -345,12 +302,6 @@ def build_figure():
     # Separador
     ax_gauge.plot([0.05, 0.95], [0.19, 0.19], color=BORDER, lw=0.8)
 
-    # Indicador de caja al frente
-    lbl_box = ax_gauge.text(0.5, 0.18, '  SIN CAJA  ', ha='center', va='center',
-                            color=C_DIM, fontsize=11, fontweight='bold',
-                            bbox=dict(boxstyle='round,pad=0.4', fc='#222', ec=BORDER, lw=1.5))
-    gauge_artists['lbl_box'] = lbl_box
-
     # Pared izquierda (dato secundario)
     ax_gauge.text(0.05, 0.06, 'IZQ:', ha='left', va='center',
                   color=C_DIM, fontsize=8)
@@ -367,8 +318,8 @@ def build_figure():
     vel_line, = ax_vel.plot([], [], color=C_FRONT, lw=1.5)
 
     return (fig, ax_lidar, ax_gauge, ax_vel,
-            lc, traj_line, box_patches, range_circ,
-            alert_txt, box_front_txt, gauge_artists, vel_line)
+            lc, traj_line, range_circ,
+            alert_txt, gauge_artists, vel_line)
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
@@ -382,8 +333,8 @@ def main():
 
     plt.ion()
     (fig, ax_lidar, ax_gauge, ax_vel,
-     lc, traj_line, box_patches, range_circ,
-     alert_txt, box_front_txt, gauge_artists, vel_line) = build_figure()
+     lc, traj_line, range_circ,
+     alert_txt, gauge_artists, vel_line) = build_figure()
     plt.show()
 
     try:
@@ -403,19 +354,6 @@ def main():
                 tys = [node._odom_to_display(x, y)[1] for x, y in node.traj_odom]
                 traj_line.set_data(txs, tys)
 
-            # ── Cajas censadas ────────────────────────────────────────────
-            for p in box_patches:
-                p.remove()
-            box_patches.clear()
-            for ox, oy in node.cajas_odom:
-                xd, yd = node._odom_to_display(ox, oy)
-                rect = mpatches.FancyBboxPatch(
-                    (xd - 0.10, yd - 0.10), 0.20, 0.20,
-                    boxstyle='square,pad=0', lw=1.5,
-                    edgecolor=C_BOX, facecolor=C_BOX + '44', zorder=5)
-                ax_lidar.add_patch(rect)
-                box_patches.append(rect)
-
             # ── Rango sensor ──────────────────────────────────────────────
             range_circ.set_radius(min(node.range_max, 1.4))
 
@@ -431,13 +369,6 @@ def main():
             else:
                 alert_txt.set_text('')
                 ax_lidar.set_facecolor(PANEL)
-
-            # ── Indicador de caja al frente en LiDAR ─────────────────────
-            if node.box_frente:
-                box_front_txt.set_text(f'[CAJA] {node.box_frente_dist*100:.0f} cm')
-                box_front_txt.set_color(C_BOX)
-            else:
-                box_front_txt.set_text('')
 
             # ── Gauge pared derecha ───────────────────────────────────────
             dr = node.d_right   # metros
@@ -487,18 +418,6 @@ def main():
                 ga['lbl_izq'].set_text(f'{node.d_left*100:.1f} cm')
             else:
                 ga['lbl_izq'].set_text('---')
-
-            # Indicador caja
-            if node.box_frente:
-                ga['lbl_box'].set_text(f'  CAJA FRENTE: {node.box_frente_dist*100:.0f} cm  ')
-                ga['lbl_box'].set_color(C_BOX)
-                ga['lbl_box'].get_bbox_patch().set_edgecolor(C_BOX)
-                ga['lbl_box'].get_bbox_patch().set_facecolor('#2a1800')
-            else:
-                ga['lbl_box'].set_text('  SIN CAJA  ')
-                ga['lbl_box'].set_color(C_DIM)
-                ga['lbl_box'].get_bbox_patch().set_edgecolor(BORDER)
-                ga['lbl_box'].get_bbox_patch().set_facecolor('#222')
 
             # ── Historial velocidad ───────────────────────────────────────
             if len(node.vel_times) > 1:
