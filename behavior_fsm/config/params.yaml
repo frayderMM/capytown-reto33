@@ -13,42 +13,33 @@ behavior_fsm:
                                 # 0   = montaje estándar ROS
                                 # CAMBIAR si el robot reacciona en dirección equivocada
 
-    # --- Sectores frontales ---
-    sector_frontal_deg: 30.0    # +/- grados vigilados para vel. adaptativa y emergencia
-    sector_giro_deg:    12.0    # +/- grados ESTRECHO que dispara GIRO (a 8cm de pared la
-                                # pared aparece a ~38cm en este sector, por encima del umbral 30cm)
-
-    # --- Sectores laterales (para medir pared izq/der) ---
+    # --- Sectores ---
+    sector_frontal_deg: 30.0    # +/- grados del cono frontal
     sector_lateral_lo:  60.0    # inicio sector lateral [grados]
     sector_lateral_hi: 120.0    # fin sector lateral [grados]
 
-    # --- Distancias de reacción ---
-    dist_alerta:        0.45    # m  empieza a frenar progresivamente
-    dist_obstaculo:      0.30    # m  dispara el giro (caja/pared detectada al frente)
-    dist_cerca_pared:    0.25    # m  "pegado" a pared lateral: si esta cerca usa el cono
-                                 # estrecho (anti falso-positivo); si no, el cono ancho
-                                 # (detecta esquinas antes cuando no esta pegado)
-    dist_pared_lateral:  0.70    # m  umbral para considerar que la pared der. reapareció
-                                 # (subido de 0.55: tras un giro amplio puede quedar mas
-                                 # lejos de la pared y no calificaba, siguiendo girando de mas)
-    dist_emergencia:     0.12    # m  stop total si el frente esta a menos de esto (override)
+    # --- Offsets LiDAR -> borde fisico del robot (medidos en el chasis,
+    # NO son iguales en cada direccion) -- todas las distancias del LiDAR
+    # se corrigen con esto antes de comparar contra cualquier umbral ---
+    offset_frente: 0.15          # m  LiDAR -> borde frontal
+    offset_atras:  0.10          # m  LiDAR -> borde trasero
+    offset_lados:  0.08          # m  LiDAR -> borde lateral
+
+    # --- Distancias de reaccion (en espacio libre real, post-offset) ---
+    dist_alerta:        0.45    # m  empieza a frenar y a anticipar el giro
+    dist_obstaculo:      0.30    # m  giro a maxima intensidad
+    dist_emergencia:    0.05    # m  margen real minimo antes del stop total
 
     # --- Velocidades ---
-    vel_crucero:       0.18     # m/s  velocidad en zona libre
-    vel_min:           0.05     # m/s  velocidad mínima al estar a dist_obstaculo
-    vel_giro_gradual:  0.45     # rad/s  giro fijo a la izquierda en GIRO
-    vel_avance_giro:   0.08     # m/s  avance lento mientras gira (no gira en el sitio)
+    vel_crucero:  0.18     # m/s  velocidad en zona libre
+    vel_min:      0.05     # m/s  velocidad minima al estar a dist_obstaculo
+    w_giro_max:   0.45     # rad/s  maximo aporte de giro por anticipacion
+    w_max:        0.60     # rad/s  saturacion total (giro + repulsion lateral)
 
-    # --- Repulsion de pared izquierda ---
-    dist_izq_min:  0.15         # m  nunca acercarse mas de esto a la pared izquierda
-    dist_izq_alerta: 0.35       # m  por debajo de esto, taper progresivo del giro (gradual)
-    Kizq:          3.0          # ganancia de repulsion (rad/s por metro de exceso, en CRUCERO)
-
-    # --- Temporizacion del giro ---
-    t_giro_min: 0.5              # s  minimo en GIRO antes de poder salir (evita parpadeo)
-    t_giro_max: 6.0               # s  salvavidas: vuelve a CRUCERO igual si tarda demasiado
-    t_post_giro: 1.0              # s  tras volver a CRUCERO, fuerza cono angosto (evita que
-                                   # la caja recien rodeada re-dispare otro GIRO de inmediato)
+    # --- Repulsion lateral simetrica (izq Y der, evita rozar cualquier pared) ---
+    dist_lado_alerta: 0.20      # m  empieza el taper progresivo
+    dist_lado_min:    0.05      # m  margen real minimo a cualquier lado
+    K_lado:           3.0       # ganancia de repulsion (rad/s por metro de exceso)
 
 wall_follower:
   ros__parameters:

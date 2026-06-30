@@ -2,17 +2,20 @@
 """
 behavior_fsm.py  —  PARTE B: "El Guardian"
 
-Logica reactiva simple, dos estados:
-  CRUCERO → avanza pegado a la pared derecha (correccion de wall_follower),
-             con velocidad proporcional a la distancia frontal.
-  GIRO    → al detectar un obstaculo (caja/pared) a dist_obstaculo, gira
-             a la izquierda con velocidad angular fija mientras avanza
-             despacio (giro amplio, no en el sitio), hasta que la pared
-             derecha vuelve a aparecer y el frente esta libre.
+Control reactivo continuo (sin estados discretos ni pared "objetivo"):
+en cada ciclo calcula el espacio libre real hasta el borde del robot
+(la distancia que da el LiDAR menos el offset fisico LiDAR→borde, que
+es distinto al frente/atras/costados) y combina dos señales graduales:
 
-Sin busqueda de hueco ni sub-estados de rescate: el sentido de giro es
-siempre el mismo (izquierda), lo que evita el bucle de re-evaluacion que
-producia vueltas en circulos en las esquinas.
+  - velocidad: progresiva, baja segun se cierra el espacio al frente.
+  - giro: progresivo, se anticipa antes de llegar al limite y elige el
+    lado con MAS espacio libre (no siempre el mismo lado), mas una
+    repulsion lateral simetrica (izq y der) para no rozar ninguna pared
+    mientras avanza o gira.
+
+No persigue ninguna pared como referencia (no hay "pegarse a la
+derecha"): el unico objetivo es evadir lo que tenga cerca, por
+cualquier lado, sin choques y sin frenarse mas de lo necesario.
 
 ESAN - Robotica de Moviles 2026-I  |  Proyecto CapyTown
 """
@@ -28,100 +31,84 @@ from geometry_msgs.msg import Twist
 from std_msgs.msg import Float32, String
 
 
-CRUCERO = 'CRUCERO'
-GIRO    = 'GIRO'
-
-
 class BehaviorFSM(Node):
     def __init__(self):
         super().__init__('behavior_fsm')
 
         # ── Parámetros ────────────────────────────────────────────────────
         self.declare_parameter('lidar_front_deg',    180.0)
-        self.declare_parameter('sector_frontal_deg',  30.0)  # sector ancho: vel adaptativa + emergencia
-        self.declare_parameter('sector_giro_deg',     12.0)  # sector estrecho: UNICO que dispara GIRO
+        self.declare_parameter('sector_frontal_deg',  30.0)  # +/- grados del cono frontal
         self.declare_parameter('sector_lateral_lo',   60.0)
         self.declare_parameter('sector_lateral_hi',  120.0)
 
-        # --- Distancias de reaccion ---
-        self.declare_parameter('dist_alerta',          0.55)  # m  empieza a frenar progresivamente
-        self.declare_parameter('dist_obstaculo',        0.40)  # m  dispara el giro (caja/pared al frente)
-        self.declare_parameter('dist_cerca_pared',      0.25)  # m  "pegado" a pared lateral: elige cono de disparo
-        self.declare_parameter('t_post_giro',           1.0)   # s  tras salir de GIRO, cono angosto fijo
-                                                                 # (da tiempo a alejarse de la caja recien
-                                                                 # rodeada antes de permitir el cono ancho,
-                                                                 # que si no, la vuelve a "ver" y re-dispara GIRO)
-        self.declare_parameter('dist_pared_lateral',     0.55)  # m  umbral para considerar "pared der detectada"
-        self.declare_parameter('dist_emergencia',        0.12)  # m  stop total override
+        # --- Offsets LiDAR -> borde fisico del robot (NO es el mismo en
+        # cada direccion) -- las distancias del LiDAR se corrigen con esto
+        # antes de comparar contra cualquier umbral, para que el margen
+        # real sea hasta el borde del robot, no hasta el sensor.
+        self.declare_parameter('offset_frente', 0.15)  # m  LiDAR -> borde frontal
+        self.declare_parameter('offset_atras',  0.10)  # m  LiDAR -> borde trasero
+        self.declare_parameter('offset_lados',  0.08)  # m  LiDAR -> borde lateral
+
+        # --- Distancias de reaccion (ya en espacio libre real, post-offset) ---
+        self.declare_parameter('dist_alerta',     0.45)  # m  empieza a frenar y a anticipar el giro
+        self.declare_parameter('dist_obstaculo',  0.30)  # m  giro a maxima intensidad
+        self.declare_parameter('dist_emergencia', 0.05)  # m  margen real minimo antes del stop total
 
         # --- Velocidades ---
-        self.declare_parameter('vel_crucero',          0.18)
-        self.declare_parameter('vel_min',              0.05)
-        self.declare_parameter('vel_giro_gradual',      0.45)  # rad/s  giro fijo a la izquierda
-        self.declare_parameter('vel_avance_giro',       0.08)  # m/s  avance lento mientras gira
+        self.declare_parameter('vel_crucero', 0.18)
+        self.declare_parameter('vel_min',     0.05)
+        self.declare_parameter('w_giro_max',  0.45)  # rad/s  maximo aporte de giro por anticipacion
+        self.declare_parameter('w_max',       0.60)  # rad/s  saturacion total (giro + repulsion)
 
-        # --- Temporizacion del giro ---
-        self.declare_parameter('t_giro_min',            0.5)   # s  minimo en GIRO antes de poder salir
-        self.declare_parameter('t_giro_max',            6.0)   # s  salvavidas: vuelve a CRUCERO igual
+        # --- Repulsion lateral simetrica (izq Y der, evita rozar cualquier pared) ---
+        self.declare_parameter('dist_lado_alerta', 0.20)  # m  empieza el taper progresivo
+        self.declare_parameter('dist_lado_min',    0.05)  # m  margen real minimo a cualquier lado
+        self.declare_parameter('K_lado',           3.0)   # ganancia de repulsion (rad/s / m)
 
-        # --- Repulsion pared izquierda ---
-        self.declare_parameter('dist_izq_min',          0.15)  # m  nunca acercarse mas de esto a la izq
-        self.declare_parameter('dist_izq_alerta',       0.35)  # m  por debajo de esto empieza el taper
-                                                                 # progresivo del giro (gradual, no corte brusco)
-        self.declare_parameter('Kizq',                  3.0)   # ganancia de repulsion (rad/s / m)
+        self.front_rad = math.radians(self.get_parameter('lidar_front_deg').value)
+        self.sector    = math.radians(self.get_parameter('sector_frontal_deg').value)
+        self.lat_lo    = math.radians(self.get_parameter('sector_lateral_lo').value)
+        self.lat_hi    = math.radians(self.get_parameter('sector_lateral_hi').value)
 
-        self.front_rad   = math.radians(self.get_parameter('lidar_front_deg').value)
-        self.sector      = math.radians(self.get_parameter('sector_frontal_deg').value)
-        self.sector_giro = math.radians(self.get_parameter('sector_giro_deg').value)
-        self.lat_lo      = math.radians(self.get_parameter('sector_lateral_lo').value)
-        self.lat_hi      = math.radians(self.get_parameter('sector_lateral_hi').value)
+        self.off_frente = self.get_parameter('offset_frente').value
+        self.off_atras  = self.get_parameter('offset_atras').value
+        self.off_lados  = self.get_parameter('offset_lados').value
 
-        self.d_alerta   = self.get_parameter('dist_alerta').value
-        self.d_obst     = self.get_parameter('dist_obstaculo').value
-        self.d_cerca    = self.get_parameter('dist_cerca_pared').value
-        self.t_post_giro = self.get_parameter('t_post_giro').value
-        self.d_pared_lat = self.get_parameter('dist_pared_lateral').value
-        self.d_emerg    = self.get_parameter('dist_emergencia').value
+        self.d_alerta = self.get_parameter('dist_alerta').value
+        self.d_obst   = self.get_parameter('dist_obstaculo').value
+        self.d_emerg  = self.get_parameter('dist_emergencia').value
 
-        self.v_cruise   = self.get_parameter('vel_crucero').value
-        self.v_min      = self.get_parameter('vel_min').value
-        self.w_giro     = self.get_parameter('vel_giro_gradual').value
-        self.v_giro     = self.get_parameter('vel_avance_giro').value
+        self.v_cruise  = self.get_parameter('vel_crucero').value
+        self.v_min     = self.get_parameter('vel_min').value
+        self.w_giro_max = self.get_parameter('w_giro_max').value
+        self.w_max     = self.get_parameter('w_max').value
 
-        self.t_giro_min = self.get_parameter('t_giro_min').value
-        self.t_giro_max = self.get_parameter('t_giro_max').value
-
-        self.d_izq_min  = self.get_parameter('dist_izq_min').value
-        self.d_izq_alerta = self.get_parameter('dist_izq_alerta').value
-        self.Kizq       = self.get_parameter('Kizq').value
-
-        # ── Estado ────────────────────────────────────────────────────────
-        self.estado   = CRUCERO
-        self.t_inicio = self.get_clock().now()
+        self.d_lado_alerta = self.get_parameter('dist_lado_alerta').value
+        self.d_lado_min    = self.get_parameter('dist_lado_min').value
+        self.K_lado        = self.get_parameter('K_lado').value
 
         # ── Sensores ──────────────────────────────────────────────────────
-        self.dist_frente      = float('inf')  # sector ancho (vel + emergencia)
-        self.dist_frente_giro = float('inf')  # sector estrecho (dispara GIRO)
-        self.dist_izq         = float('inf')
-        self.dist_der         = float('inf')
-        self.dist_min         = float('inf')  # minimo global, todos los angulos (emergencia)
-        self._w_lateral       = 0.0
+        self.dist_frente = float('inf')  # cono ancho frontal
+        self.dist_izq    = float('inf')
+        self.dist_der    = float('inf')
+        self.dist_min    = float('inf')  # minimo global, todos los angulos
 
         # ── ROS I/O ───────────────────────────────────────────────────────
         _qos = QoSProfile(depth=10)
         _qos.reliability = ReliabilityPolicy.BEST_EFFORT
-        self.create_subscription(LaserScan, '/scan',               self.cb_scan, _qos)
-        self.create_subscription(Float32,   '/lateral_correction', self._cb_lat,  10)
+        self.create_subscription(LaserScan, '/scan', self.cb_scan, _qos)
         self.pub_cmd    = self.create_publisher(Twist,   '/cmd_vel',     10)
         self.pub_estado = self.create_publisher(String,  '/fsm_state',   10)
         self.pub_parada = self.create_publisher(Float32, '/parada_dist', 10)
         self.create_timer(0.1, self.loop_control)
 
-        self.get_logger().info('BehaviorFSM listo — CRUCERO/GIRO (giro izquierdo fijo)')
+        self._en_evasion = False  # para publicar /parada_dist solo al entrar a la zona de evasion
+
+        self.get_logger().info('BehaviorFSM listo — evasion omnidireccional continua')
 
     # ── Callbacks ─────────────────────────────────────────────────────────
     def cb_scan(self, msg: LaserScan):
-        d_f = d_fg = d_l = d_r = d_min = float('inf')
+        d_f = d_l = d_r = d_min = float('inf')
 
         for i, r in enumerate(msg.ranges):
             raw    = msg.angle_min + i * msg.angle_increment
@@ -133,16 +120,12 @@ class BehaviorFSM(Node):
                 continue
 
             # Minimo global (todos los angulos): cubre tambien la zona
-            # "ciega" entre el cono frontal (sector_frontal_deg) y el
-            # sector lateral (sector_lateral_lo), que de otra forma no se
-            # mide en ningun lado. Usado solo para la parada de emergencia,
-            # asi un obstaculo en cualquier direccion la dispara igual.
+            # "ciega" entre el cono frontal y el sector lateral, que de
+            # otra forma no se mide en ningun lado. Solo para emergencia.
             d_min = min(d_min, r)
 
-            if abs_af <= self.sector:       # sector ancho: vel adaptativa + emergencia
+            if abs_af <= self.sector:
                 d_f = min(d_f, r)
-            if abs_af <= self.sector_giro:  # sector estrecho: dispara GIRO
-                d_fg = min(d_fg, r)
 
             if self.lat_lo <= abs_af <= self.lat_hi:
                 if af > 0:
@@ -150,138 +133,79 @@ class BehaviorFSM(Node):
                 else:
                     d_r = min(d_r, r)
 
-        self.dist_frente      = d_f
-        self.dist_frente_giro = d_fg
-        self.dist_izq         = d_l
-        self.dist_der         = d_r
-        self.dist_min         = d_min
-
-    def _cb_lat(self, msg: Float32):
-        self._w_lateral = msg.data
+        self.dist_frente = d_f
+        self.dist_izq    = d_l
+        self.dist_der    = d_r
+        self.dist_min    = d_min
 
     # ── Helpers ───────────────────────────────────────────────────────────
-    def _pub(self, v: float, w: float):
+    def _pub(self, v: float, w: float, estado: str):
         cmd = Twist()
         cmd.linear.x  = float(v)
         cmd.angular.z = float(w)
         self.pub_cmd.publish(cmd)
-        s = String(); s.data = self.estado
+        s = String(); s.data = estado
         self.pub_estado.publish(s)
 
-    def _t_estado(self) -> float:
-        return (self.get_clock().now() - self.t_inicio).nanoseconds * 1e-9
-
-    def _cambiar(self, nuevo: str):
-        self.get_logger().info(
-            f'{self.estado} → {nuevo}  '
-            f'(frente={self.dist_frente:.2f} m  der={self.dist_der:.2f} m)')
-        self.estado   = nuevo
-        self.t_inicio = self.get_clock().now()
-
-    def _vel_adaptativa(self) -> float:
-        d = self.dist_frente
-        if d >= self.d_alerta:
+    def _vel_adaptativa(self, c_frente: float) -> float:
+        if c_frente >= self.d_alerta:
             return self.v_cruise
-        ratio = (d - self.d_obst) / (self.d_alerta - self.d_obst)
+        ratio = (c_frente - self.d_obst) / (self.d_alerta - self.d_obst)
         return self.v_min + max(0.0, min(1.0, ratio)) * (self.v_cruise - self.v_min)
 
-    # ── FSM principal ─────────────────────────────────────────────────────
+    # ── Control principal ────────────────────────────────────────────────
     def loop_control(self):
+        # Espacio libre real hasta el borde del robot (LiDAR - offset),
+        # no la distancia cruda del sensor. El offset lateral (el mas
+        # chico) se usa para el minimo global por ser el mas conservador,
+        # ya que no se sabe de que direccion vino ese minimo.
+        c_frente = self.dist_frente - self.off_frente
+        c_izq    = (self.dist_izq - self.off_lados) if math.isfinite(self.dist_izq) else float('inf')
+        c_der    = (self.dist_der - self.off_lados) if math.isfinite(self.dist_der) else float('inf')
+        c_min    = self.dist_min - self.off_lados
 
-        # Contingencia de colisión — override de cualquier estado. Usa el
-        # minimo global (todos los angulos), no solo el cono frontal, para
-        # que tambien dispare ante algo muy cerca por un costado o en
-        # diagonal (zona que ningun sector frontal/lateral cubre).
-        if self.dist_min < self.d_emerg:
+        # Contingencia de colision — por cualquier lado, override total.
+        if c_min < self.d_emerg:
             self.get_logger().warn(
-                f'EMERGENCIA min={self.dist_min:.2f}m — stop total', throttle_duration_sec=1.0)
-            self._pub(0.0, 0.0)
+                f'EMERGENCIA margen_min={c_min:.2f}m — stop total', throttle_duration_sec=1.0)
+            self._pub(0.0, 0.0, 'EMERGENCIA')
+            self._en_evasion = False
             return
 
-        if self.estado == CRUCERO:
-            # Cono adaptativo: si hay pared lateral cerca (der o izq), usar
-            # el sector estrecho (±12°) para que esa misma pared no dispare
-            # un falso GIRO. Si no hay ninguna pared lateral cerca (robot
-            # centrado o encarando una esquina en diagonal), usar el sector
-            # ancho (±30°) para detectar la esquina antes.
-            # Ademas, recien salido de GIRO (estado == CRUCERO desde hace poco)
-            # forzamos el cono angosto: la caja recien rodeada puede seguir
-            # dentro del cono ancho y si no, dispara otro GIRO de inmediato.
-            near_wall = ((math.isfinite(self.dist_der) and self.dist_der < self.d_cerca)
-                         or (math.isfinite(self.dist_izq) and self.dist_izq < self.d_cerca)
-                         or self._t_estado() < self.t_post_giro)
-            trigger_dist = self.dist_frente_giro if near_wall else self.dist_frente
+        v = self._vel_adaptativa(c_frente)
 
-            if trigger_dist <= self.d_obst:
-                d_msg = Float32(); d_msg.data = float(trigger_dist)
+        # Giro anticipado: por debajo de dist_alerta empieza a sesgar el
+        # giro gradualmente (no un salto brusco), eligiendo el lado con
+        # MAS espacio libre -- no siempre el mismo lado.
+        w = 0.0
+        if c_frente < self.d_alerta:
+            ratio = max(0.0, min(1.0, (self.d_alerta - c_frente) / (self.d_alerta - self.d_obst)))
+            lado = 1.0 if c_izq >= c_der else -1.0  # +1 = izquierda, -1 = derecha
+            w = lado * ratio * self.w_giro_max
+
+            if not self._en_evasion:
+                self._en_evasion = True
+                d_msg = Float32(); d_msg.data = float(c_frente)
                 self.pub_parada.publish(d_msg)
-                self._cambiar(GIRO)
-                return
-            v = self._vel_adaptativa()
-            # Repulsion pared izquierda tiene prioridad absoluta sobre wall_follower.
-            # si nos acercamos mas de d_izq_min, girar a la derecha (w negativo).
-            if math.isfinite(self.dist_izq) and self.dist_izq < self.d_izq_min:
-                exceso = self.d_izq_min - self.dist_izq
-                w = -self.Kizq * exceso
-            elif self.dist_frente >= self.d_alerta:
-                w = self._w_lateral
-            else:
-                # Zona de prediccion (entre d_obst y d_alerta): en vez de
-                # cortar la correccion en seco a w=0, sesga gradualmente
-                # hacia el giro segun se acerca al umbral de GIRO, para que
-                # la entrada al giro no sea un salto brusco de 0 a w_giro.
-                ratio = max(0.0, min(1.0,
-                    (self.d_alerta - self.dist_frente) / (self.d_alerta - self.d_obst)))
-                w = ratio * self.w_giro
-            self._pub(v, w)
+        else:
+            self._en_evasion = False
 
-        elif self.estado == GIRO:
-            # Salvavidas: si tarda demasiado Y el frente YA esta despejado
-            # (caso real: zona abierta sin pared der., nunca termina de
-            # "salir" porque no hay pared que reaparezca), vuelve a CRUCERO.
-            # Si el frente sigue bloqueado no abandona el giro: si no,
-            # vuelve a CRUCERO con el obstaculo todavia ahi y dispara otro
-            # GIRO casi de inmediato (vaivien que termina chocando).
-            if self._t_estado() > self.t_giro_max and self.dist_frente > self.d_obst:
-                self._cambiar(CRUCERO)
-                return
+        # Repulsion lateral simetrica: gradual desde dist_lado_alerta,
+        # se suma al giro para no rozar ninguna pared mientras avanza o
+        # gira. Nunca prioriza un lado sobre otro -- ambos se evaluan.
+        if c_izq < self.d_lado_alerta:
+            exceso = (self.d_lado_alerta - c_izq) / (self.d_lado_alerta - self.d_lado_min)
+            w -= max(0.0, min(1.0, exceso)) * self.K_lado
+        if c_der < self.d_lado_alerta:
+            exceso = (self.d_lado_alerta - c_der) / (self.d_lado_alerta - self.d_lado_min)
+            w += max(0.0, min(1.0, exceso)) * self.K_lado
 
-            # Salida ideal: frente libre Y la pared derecha reaparecio → pegarse de nuevo.
-            if (self._t_estado() > self.t_giro_min
-                    and self.dist_frente > self.d_obst
-                    and self.dist_der < self.d_pared_lat):
-                self._cambiar(CRUCERO)
-                return
+        w = max(-self.w_max, min(self.w_max, w))
 
-            # Salida alterna: el frente lleva un buen tramo despejado
-            # aunque la pared derecha todavia no reaparecio dentro de
-            # d_pared_lat. Sin esto, el robot sigue girando "buscandola"
-            # de mas tras pasar la caja en vez de volver a CRUCERO, donde
-            # wall_follower la recalibra apenas la vuelva a ver (o usa la
-            # izquierda de respaldo si no).
-            if (self._t_estado() > self.t_giro_min * 2
-                    and self.dist_frente > self.d_alerta):
-                self._cambiar(CRUCERO)
-                return
-
-            # Calibracion progresiva con la pared izquierda durante el giro:
-            # de w_giro completo cuando hay espacio (>= d_izq_alerta) a un
-            # frenado proporcional segun nos acercamos a d_izq_min (no un
-            # corte brusco). Por debajo de d_izq_min, frenar a 0 no basta
-            # para rectificar si el rumbo ya apunta a la pared -- corrige
-            # activamente alejandose (w negativo), igual que en CRUCERO.
-            w = self.w_giro
-            if math.isfinite(self.dist_izq) and self.dist_izq < self.d_izq_min:
-                exceso = self.d_izq_min - self.dist_izq
-                w = -self.Kizq * exceso
-            elif math.isfinite(self.dist_izq) and self.dist_izq < self.d_izq_alerta:
-                ratio = max(0.0, min(1.0,
-                    (self.dist_izq - self.d_izq_min) / (self.d_izq_alerta - self.d_izq_min)))
-                w = self.w_giro * ratio
-            self.get_logger().info(
-                f'GIRO  dist_izq={self.dist_izq:.2f}  w={w:.2f}',
-                throttle_duration_sec=0.5)
-            self._pub(self.v_giro, w)
+        self.get_logger().info(
+            f'c_frente={c_frente:.2f} c_izq={c_izq:.2f} c_der={c_der:.2f}  v={v:.2f} w={w:.2f}',
+            throttle_duration_sec=0.5)
+        self._pub(v, w, 'EVADIR' if self._en_evasion else 'AVANCE')
 
 
 def main(args=None):
@@ -292,7 +216,7 @@ def main(args=None):
     except KeyboardInterrupt:
         pass
     finally:
-        nodo._pub(0.0, 0.0)
+        nodo._pub(0.0, 0.0, 'STOP')
         nodo.destroy_node()
         rclpy.shutdown()
 
