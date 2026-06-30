@@ -28,7 +28,9 @@ behavior_fsm:
     dist_cerca_pared:    0.25    # m  "pegado" a pared lateral: si esta cerca usa el cono
                                  # estrecho (anti falso-positivo); si no, el cono ancho
                                  # (detecta esquinas antes cuando no esta pegado)
-    dist_pared_lateral:  0.55    # m  umbral para considerar que la pared der. reapareció
+    dist_pared_lateral:  0.70    # m  umbral para considerar que la pared der. reapareció
+                                 # (subido de 0.55: tras un giro amplio puede quedar mas
+                                 # lejos de la pared y no calificaba, siguiendo girando de mas)
     dist_emergencia:     0.12    # m  stop total si el frente esta a menos de esto (override)
 
     # --- Velocidades ---

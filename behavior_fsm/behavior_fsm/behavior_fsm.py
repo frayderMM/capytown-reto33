@@ -234,10 +234,21 @@ class BehaviorFSM(Node):
                 self._cambiar(CRUCERO)
                 return
 
-            # Salida: frente libre Y la pared derecha reaparecio → pegarse de nuevo.
+            # Salida ideal: frente libre Y la pared derecha reaparecio → pegarse de nuevo.
             if (self._t_estado() > self.t_giro_min
                     and self.dist_frente > self.d_obst
                     and self.dist_der < self.d_pared_lat):
+                self._cambiar(CRUCERO)
+                return
+
+            # Salida alterna: el frente lleva un buen tramo despejado
+            # aunque la pared derecha todavia no reaparecio dentro de
+            # d_pared_lat. Sin esto, el robot sigue girando "buscandola"
+            # de mas tras pasar la caja en vez de volver a CRUCERO, donde
+            # wall_follower la recalibra apenas la vuelva a ver (o usa la
+            # izquierda de respaldo si no).
+            if (self._t_estado() > self.t_giro_min * 2
+                    and self.dist_frente > self.d_alerta):
                 self._cambiar(CRUCERO)
                 return
 
