@@ -47,6 +47,10 @@ class BehaviorFSM(Node):
         self.declare_parameter('dist_alerta',          0.55)  # m  empieza a frenar progresivamente
         self.declare_parameter('dist_obstaculo',        0.40)  # m  dispara el giro (caja/pared al frente)
         self.declare_parameter('dist_cerca_pared',      0.25)  # m  "pegado" a pared lateral: elige cono de disparo
+        self.declare_parameter('t_post_giro',           1.0)   # s  tras salir de GIRO, cono angosto fijo
+                                                                 # (da tiempo a alejarse de la caja recien
+                                                                 # rodeada antes de permitir el cono ancho,
+                                                                 # que si no, la vuelve a "ver" y re-dispara GIRO)
         self.declare_parameter('dist_pared_lateral',     0.55)  # m  umbral para considerar "pared der detectada"
         self.declare_parameter('dist_emergencia',        0.12)  # m  stop total override
 
@@ -73,6 +77,7 @@ class BehaviorFSM(Node):
         self.d_alerta   = self.get_parameter('dist_alerta').value
         self.d_obst     = self.get_parameter('dist_obstaculo').value
         self.d_cerca    = self.get_parameter('dist_cerca_pared').value
+        self.t_post_giro = self.get_parameter('t_post_giro').value
         self.d_pared_lat = self.get_parameter('dist_pared_lateral').value
         self.d_emerg    = self.get_parameter('dist_emergencia').value
 
@@ -184,8 +189,12 @@ class BehaviorFSM(Node):
             # un falso GIRO. Si no hay ninguna pared lateral cerca (robot
             # centrado o encarando una esquina en diagonal), usar el sector
             # ancho (±30°) para detectar la esquina antes.
+            # Ademas, recien salido de GIRO (estado == CRUCERO desde hace poco)
+            # forzamos el cono angosto: la caja recien rodeada puede seguir
+            # dentro del cono ancho y si no, dispara otro GIRO de inmediato.
             near_wall = ((math.isfinite(self.dist_der) and self.dist_der < self.d_cerca)
-                         or (math.isfinite(self.dist_izq) and self.dist_izq < self.d_cerca))
+                         or (math.isfinite(self.dist_izq) and self.dist_izq < self.d_cerca)
+                         or self._t_estado() < self.t_post_giro)
             trigger_dist = self.dist_frente_giro if near_wall else self.dist_frente
 
             if trigger_dist <= self.d_obst:

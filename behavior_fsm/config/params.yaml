@@ -44,6 +44,8 @@ behavior_fsm:
     # --- Temporizacion del giro ---
     t_giro_min: 0.5              # s  minimo en GIRO antes de poder salir (evita parpadeo)
     t_giro_max: 6.0               # s  salvavidas: vuelve a CRUCERO igual si tarda demasiado
+    t_post_giro: 1.0              # s  tras volver a CRUCERO, fuerza cono angosto (evita que
+                                   # la caja recien rodeada re-dispare otro GIRO de inmediato)
 
 wall_follower:
   ros__parameters:
