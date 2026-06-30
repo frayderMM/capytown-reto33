@@ -50,13 +50,13 @@ class BehaviorFSM(Node):
         self.declare_parameter('offset_lados',  0.08)  # m  LiDAR -> borde lateral
 
         # --- Distancias de reaccion (ya en espacio libre real, post-offset) ---
-        self.declare_parameter('dist_alerta',     0.45)  # m  empieza a frenar y a anticipar el giro
+        self.declare_parameter('dist_alerta',     0.38)  # m  empieza a frenar y a anticipar el giro
         self.declare_parameter('dist_obstaculo',  0.30)  # m  giro a maxima intensidad
         self.declare_parameter('dist_emergencia', 0.05)  # m  margen real minimo antes del stop total
 
         # --- Velocidades ---
-        self.declare_parameter('vel_crucero', 0.18)
-        self.declare_parameter('vel_min',     0.05)
+        self.declare_parameter('vel_crucero', 0.22)
+        self.declare_parameter('vel_min',     0.08)
         self.declare_parameter('w_giro_max',  0.45)  # rad/s  maximo aporte de giro por anticipacion
         self.declare_parameter('w_max',       0.60)  # rad/s  saturacion total (giro + repulsion)
 
