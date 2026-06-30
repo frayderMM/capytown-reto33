@@ -43,7 +43,7 @@ class WallFollower(Node):
         self.declare_parameter('dist_objetivo',  0.50)   # m  – dist. a pared si solo hay una
         self.declare_parameter('Kp',             0.8)    # ganancia proporcional
         self.declare_parameter('Kd',             0.1)    # ganancia derivativa
-        self.declare_parameter('min_long_pared', 0.60)   # m  – longitud minima = pared
+        self.declare_parameter('min_long_pared', 0.35)   # m  – longitud minima = pared
         self.declare_parameter('umbral_split',   0.06)   # m  – tolerancia rectitud S&M
         self.declare_parameter('rango_max',      3.5)    # m  – distancia maxima al procesar
         self.declare_parameter('salto_dist',     0.35)   # m  – salto euclidiano para cortar grupo
@@ -242,6 +242,9 @@ class WallFollower(Node):
             out = Float32(); out.data = 0.0
             self._pub.publish(out)
             self._err_prev = 0.0   # resetear derivada para evitar spike al reaparecer
+            self.get_logger().info(
+                'sin referencia lateral (ninguna pared >= min_long_pared)',
+                throttle_duration_sec=1.0)
             return
 
         # Controlador PD
@@ -260,8 +263,9 @@ class WallFollower(Node):
 
         ref = ("ambas" if (izq and der)
                else ("izq" if izq else "der"))
-        self.get_logger().debug(
-            f'ref={ref}  error={error:.3f}  w={w:.3f} rad/s')
+        self.get_logger().info(
+            f'ref={ref}  error={error:.3f}  w={w:.3f} rad/s',
+            throttle_duration_sec=1.0)
 
 
 def main(args=None):

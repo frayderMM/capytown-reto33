@@ -54,7 +54,10 @@ wall_follower:
     max_correccion: 0.40        # rad/s  saturación de salida
 
     # --- Clasificación de segmentos ---
-    min_long_pared: 0.60        # m  longitud mínima para considerar un segmento pared
+    min_long_pared: 0.35        # m  longitud mínima para considerar un segmento pared
+                                 # (bajado de 0.60: en pista la pared larga se fragmenta
+                                 # por ruido/cajas y no llegaba a 0.60m -> sin correccion.
+                                 # 0.35m sigue muy por encima del ancho de una caja ~0.15-0.25m)
     cos_lateral_min: 0.55       # cos del ángulo máximo con el eje X
 
     # --- Algoritmo Split-and-Merge ---
