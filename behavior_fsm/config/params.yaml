@@ -30,13 +30,13 @@ behavior_fsm:
     dist_emergencia:    0.12  # m  stop total (override de cualquier estado)
 
     # --- Velocidades ---
-    vel_crucero:      0.14   # m/s  velocidad en CRUCERO (reducida para mas control)
+    vel_crucero:      0.14   # m/s  velocidad fija (misma en CRUCERO, GIRO y RODEO)
     vel_giro_gradual: 0.40   # rad/s  giro izquierda en GIRO
-    vel_avance_giro:  0.06   # m/s  avance lineal mientras gira
+    vel_avance_giro:  0.14   # m/s  avance en GIRO (igual que vel_crucero)
 
     # --- RODEO: avance recto para pasar junto a la caja ---
     t_rodeo:  1.5            # s   tiempo maximo en RODEO
-    v_rodeo:  0.13           # m/s velocidad en RODEO
+    v_rodeo:  0.14           # m/s velocidad en RODEO (igual que vel_crucero)
     w_rodeo:  0.0            # rad/s angular en RODEO (0.0 = recto; <0 = curva a la derecha)
 
     # --- Temporizacion del giro ---
