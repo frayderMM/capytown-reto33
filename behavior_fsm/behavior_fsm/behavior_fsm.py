@@ -100,6 +100,7 @@ class BehaviorFSM(Node):
         self.dist_atras  = float('inf')
         self._gap_ang    = 0.0   # ángulo al mayor espacio abierto
         self._w_lateral  = 0.0
+        self._evadir_sentido = None  # signo de giro bloqueado al entrar a EVADIR
 
         # ── Odometría (para RESCATE) ─────────────────────────────────────
         self.pose       = (0.0, 0.0, 0.0)   # (x, y, yaw) en marco odom
@@ -209,6 +210,8 @@ class BehaviorFSM(Node):
             f'gap={math.degrees(self._gap_ang):.0f}°)')
         self.estado   = nuevo
         self.t_inicio = self.get_clock().now()
+        if nuevo != EVADIR:
+            self._evadir_sentido = None  # liberar el bloqueo de sentido
 
     def _cambiar_fase_rescate(self, nueva_fase: str):
         self.get_logger().info(f'RESCATE fase: {self._rescate_fase} → {nueva_fase}')
@@ -275,9 +278,15 @@ class BehaviorFSM(Node):
 
             gap = self._gap_ang
             # En esquinas el gap suavizado puede ser pequeño o ambiguo:
-            # usar las distancias laterales reales para elegir sentido.
+            # usar las distancias laterales reales para elegir sentido, pero
+            # SOLO una vez por entrada a EVADIR — si se reevalua en cada tick
+            # (cada 0.1s), en esquinas cerradas donde izq~der son casi
+            # iguales el signo puede oscilar por ruido y el robot gira sin
+            # avance neto hasta el timeout.
             if abs(gap) < self.gap_fallback or self.dist_frente <= self.d_parada:
-                w = self.w_giro if self.dist_izq >= self.dist_der else -self.w_giro
+                if self._evadir_sentido is None:
+                    self._evadir_sentido = 1.0 if self.dist_izq >= self.dist_der else -1.0
+                w = self._evadir_sentido * self.w_giro
             else:
                 w = max(-self.w_giro, min(self.w_giro, self.Kgap * gap))
 
