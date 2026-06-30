@@ -40,6 +40,16 @@ behavior_fsm:
     gap_sector_deg: 90.0        # ventana de busqueda del hueco [+-grados desde el frente]
     t_evasion_max:  8.0         # s  timeout de seguridad en estado EVADIR
 
+    # --- Recuperacion (RESCATE: barrido + retroceso si EVADIR se atasca) ---
+    topic_odom: '/odom_raw'        # topico de odometria (usar '/odom' si hay EKF)
+    gap_fallback_deg: 15.0         # deg  margen para usar fallback lateral en EVADIR
+    barrido_max_deg: 300.0         # deg  giro acumulado max en fase BARRIDO antes de retroceder
+    barrido_t_max: 10.0            # s    limite de seguridad (reloj) para fase BARRIDO
+    vel_retroceso: 0.08            # m/s  velocidad de reversa en RETROCEDER
+    retroceso_dist: 0.25           # m    distancia objetivo de reversa
+    retroceso_t_max: 3.0           # s    limite de seguridad (reloj) para RETROCEDER
+    dist_seguridad_retroceso: 0.20 # m    distancia trasera minima para permitir retroceso
+
 wall_follower:
   ros__parameters:
     # --- Control lateral ---
