@@ -66,6 +66,8 @@ class BehaviorFSM(Node):
 
         # --- Repulsion pared izquierda ---
         self.declare_parameter('dist_izq_min',          0.15)  # m  nunca acercarse mas de esto a la izq
+        self.declare_parameter('dist_izq_alerta',       0.35)  # m  por debajo de esto empieza el taper
+                                                                 # progresivo del giro (gradual, no corte brusco)
         self.declare_parameter('Kizq',                  3.0)   # ganancia de repulsion (rad/s / m)
 
         self.front_rad   = math.radians(self.get_parameter('lidar_front_deg').value)
@@ -90,6 +92,7 @@ class BehaviorFSM(Node):
         self.t_giro_max = self.get_parameter('t_giro_max').value
 
         self.d_izq_min  = self.get_parameter('dist_izq_min').value
+        self.d_izq_alerta = self.get_parameter('dist_izq_alerta').value
         self.Kizq       = self.get_parameter('Kizq').value
 
         # ── Estado ────────────────────────────────────────────────────────
@@ -208,14 +211,26 @@ class BehaviorFSM(Node):
             if math.isfinite(self.dist_izq) and self.dist_izq < self.d_izq_min:
                 exceso = self.d_izq_min - self.dist_izq
                 w = -self.Kizq * exceso
+            elif self.dist_frente >= self.d_alerta:
+                w = self._w_lateral
             else:
-                w = self._w_lateral if self.dist_frente >= self.d_alerta else 0.0
+                # Zona de prediccion (entre d_obst y d_alerta): en vez de
+                # cortar la correccion en seco a w=0, sesga gradualmente
+                # hacia el giro segun se acerca al umbral de GIRO, para que
+                # la entrada al giro no sea un salto brusco de 0 a w_giro.
+                ratio = max(0.0, min(1.0,
+                    (self.d_alerta - self.dist_frente) / (self.d_alerta - self.d_obst)))
+                w = ratio * self.w_giro
             self._pub(v, w)
 
         elif self.estado == GIRO:
-            # Salvavidas: si tarda demasiado (zona abierta sin pared der),
-            # no se queda girando para siempre.
-            if self._t_estado() > self.t_giro_max:
+            # Salvavidas: si tarda demasiado Y el frente YA esta despejado
+            # (caso real: zona abierta sin pared der., nunca termina de
+            # "salir" porque no hay pared que reaparezca), vuelve a CRUCERO.
+            # Si el frente sigue bloqueado no abandona el giro: si no,
+            # vuelve a CRUCERO con el obstaculo todavia ahi y dispara otro
+            # GIRO casi de inmediato (vaivien que termina chocando).
+            if self._t_estado() > self.t_giro_max and self.dist_frente > self.d_obst:
                 self._cambiar(CRUCERO)
                 return
 
@@ -226,13 +241,16 @@ class BehaviorFSM(Node):
                 self._cambiar(CRUCERO)
                 return
 
+            # Calibracion progresiva con la pared izquierda durante el giro:
+            # de w_giro completo cuando hay espacio (>= d_izq_alerta) a un
+            # frenado proporcional del cierre segun nos acercamos a
+            # d_izq_min (no un corte brusco). Nunca invierte el sentido,
+            # solo evita chocar -- la guia activa sigue siendo la derecha.
             w = self.w_giro
-            # Repulsion pared izquierda tambien activa durante el giro: si
-            # ya estamos a menos de d_izq_min, frenamos el cierre hacia la
-            # izquierda (sin invertir el sentido, solo evita chocar).
-            if math.isfinite(self.dist_izq) and self.dist_izq < self.d_izq_min:
-                exceso = self.d_izq_min - self.dist_izq
-                w = max(0.0, self.w_giro - self.Kizq * exceso)
+            if math.isfinite(self.dist_izq) and self.dist_izq < self.d_izq_alerta:
+                ratio = max(0.0, min(1.0,
+                    (self.dist_izq - self.d_izq_min) / (self.d_izq_alerta - self.d_izq_min)))
+                w = self.w_giro * ratio
             self._pub(self.v_giro, w)
 
 

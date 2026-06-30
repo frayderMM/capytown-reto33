@@ -39,7 +39,8 @@ behavior_fsm:
 
     # --- Repulsion de pared izquierda ---
     dist_izq_min:  0.15         # m  nunca acercarse mas de esto a la pared izquierda
-    Kizq:          3.0          # ganancia de repulsion (rad/s por metro de exceso)
+    dist_izq_alerta: 0.35       # m  por debajo de esto, taper progresivo del giro (gradual)
+    Kizq:          3.0          # ganancia de repulsion (rad/s por metro de exceso, en CRUCERO)
 
     # --- Temporizacion del giro ---
     t_giro_min: 0.5              # s  minimo en GIRO antes de poder salir (evita parpadeo)
