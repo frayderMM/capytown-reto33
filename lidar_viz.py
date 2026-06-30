@@ -40,6 +40,7 @@ matplotlib.use('TkAgg')
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 import matplotlib.gridspec as gridspec
+from matplotlib.collections import LineCollection
 import numpy as np
 
 
@@ -87,13 +88,13 @@ class LidarViz(Node):
         super().__init__('lidar_viz')
         self.front_rad = math.radians(front_deg)
 
-        self.scan_pts   = []
+        self.scan_segs     = []
+        self.scan_seg_cols = []
         self.d_front    = float('inf')
         self.d_left     = float('inf')
         self.d_right    = float('inf')
         self.range_min  = 0.0
         self.range_max  = 8.0
-        self.n_pts      = 0
 
         # Deteccion de caja al frente (recta tipo T)
         self.box_frente      = False   # hay caja perpendicular al frente
@@ -135,32 +136,33 @@ class LidarViz(Node):
 
     # ── Callbacks ─────────────────────────────────────────────────────────────
     def _cb_scan(self, msg: LaserScan):
-        pts      = []
+        segs      = []   # [[(x0,y0),(x1,y1)], ...]  segmentos de linea
+        seg_cols  = []   # color por segmento
         d_f = d_l = d_r = float('inf')
-        front_rf = []   # (xr, yr) puntos en frame robot dentro del sector frontal
+        front_rf  = []   # (xr, yr) en frame robot, cono estrecho, para deteccion caja
+        prev_xd = prev_yd = prev_r = None
 
         for i in range(0, len(msg.ranges), 4):
             r = msg.ranges[i]
             if not math.isfinite(r) or r == 0.0:
+                prev_xd = prev_yd = prev_r = None
                 continue
             if r < msg.range_min or r > msg.range_max:
+                prev_xd = prev_yd = prev_r = None
                 continue
+
             theta  = msg.angle_min + i * msg.angle_increment
             af     = math.atan2(math.sin(theta - self.front_rad),
                                 math.cos(theta - self.front_rad))
             abs_af = abs(af)
 
+            # Solo el cono estrecho ±12° se colorea como FRENTE (blanco).
+            # El sector 12°-30° pasa a gris — evita que la pared lateral
+            # aparezca como "obstáculo frontal" en el visor.
             if abs_af <= FRONT_GIRO_HALF:
-                # Cono estrecho (±12°): el UNICO que puede disparar GIRO en la FSM.
-                # Se muestra blanco para distinguirlo del sector frontal ancho.
                 color = '#ffffff'; d_f = min(d_f, r)
                 if r <= BOX_MAX_R:
-                    xr = r * math.cos(af)
-                    yr = r * math.sin(af)
-                    front_rf.append((xr, yr))
-            elif abs_af <= FRONT_HALF:
-                # Sector ancho (±30°): solo vel. adaptativa y emergencia, NO dispara GIRO.
-                color = C_FRONT; d_f = min(d_f, r)
+                    front_rf.append((r * math.cos(af), r * math.sin(af)))
             elif SIDE_LO <= abs_af <= SIDE_HI:
                 if af > 0:
                     color = C_LEFT;  d_l = min(d_l, r)
@@ -170,13 +172,22 @@ class LidarViz(Node):
                 color = C_OTHER
 
             xd, yd = self._sensor_to_display(theta, r)
-            pts.append((xd, yd, color))
 
-        self.scan_pts = pts
+            # Conectar con el punto anterior solo si estan cerca
+            # (sin salto de rango grande = misma superficie continua).
+            if (prev_xd is not None and prev_r is not None
+                    and abs(r - prev_r) < 0.20
+                    and math.hypot(xd - prev_xd, yd - prev_yd) < 0.30):
+                segs.append([(prev_xd, prev_yd), (xd, yd)])
+                seg_cols.append(color)
+
+            prev_xd, prev_yd, prev_r = xd, yd, r
+
+        self.scan_segs     = segs
+        self.scan_seg_cols = seg_cols
         self.d_front  = d_f
         self.d_left   = d_l
         self.d_right  = d_r
-        self.n_pts    = len(pts)
 
         # ── Deteccion de caja (recta tipo T al frente) ────────────────────
         # Una caja presenta: cluster de puntos casi a la misma profundidad (xr)
@@ -258,7 +269,8 @@ def build_figure():
     ax_lidar.scatter([0], [0], s=80, c='white', zorder=6)
     ax_lidar.annotate('', xy=(0, 0.25), xytext=(0, 0),
                       arrowprops=dict(arrowstyle='->', color=C_ARROW, lw=2.5), zorder=7)
-    scatter    = ax_lidar.scatter([], [], s=18, zorder=4)
+    lc = LineCollection([], linewidths=3.0, zorder=4)
+    ax_lidar.add_collection(lc)
     traj_line, = ax_lidar.plot([], [], color=C_TRAJ, lw=1.2, alpha=0.6, zorder=3)
     box_patches = []
     range_circ = plt.Circle((0, 0), 1.5, color='#223344', fill=False, lw=1, ls='--', zorder=2)
@@ -268,10 +280,10 @@ def build_figure():
     box_front_txt = ax_lidar.text(0, 1.42, '', color=C_BOX, fontsize=10,
                                   ha='center', va='top', fontweight='bold', zorder=9)
     ax_lidar.legend(handles=[
-        mpatches.Patch(color=C_FRONT, label='FRENTE'),
-        mpatches.Patch(color=C_LEFT,  label='IZQ'),
-        mpatches.Patch(color=C_RIGHT, label='DER'),
-        mpatches.Patch(color=C_BOX,   label='Caja'),
+        mpatches.Patch(color='#ffffff', label='FRENTE ±12°'),
+        mpatches.Patch(color=C_LEFT,    label='IZQ'),
+        mpatches.Patch(color=C_RIGHT,   label='DER'),
+        mpatches.Patch(color=C_BOX,     label='Caja'),
     ], loc='upper right', facecolor=BG, labelcolor=C_TEXT, fontsize=8, framealpha=0.9)
 
     # ── Gauge pared derecha ────────────────────────────────────────────────
@@ -355,7 +367,7 @@ def build_figure():
     vel_line, = ax_vel.plot([], [], color=C_FRONT, lw=1.5)
 
     return (fig, ax_lidar, ax_gauge, ax_vel,
-            scatter, traj_line, box_patches, range_circ,
+            lc, traj_line, box_patches, range_circ,
             alert_txt, box_front_txt, gauge_artists, vel_line)
 
 
@@ -370,7 +382,7 @@ def main():
 
     plt.ion()
     (fig, ax_lidar, ax_gauge, ax_vel,
-     scatter, traj_line, box_patches, range_circ,
+     lc, traj_line, box_patches, range_circ,
      alert_txt, box_front_txt, gauge_artists, vel_line) = build_figure()
     plt.show()
 
@@ -378,13 +390,12 @@ def main():
         while rclpy.ok():
             rclpy.spin_once(node, timeout_sec=0.04)
 
-            # ── Nube LiDAR ────────────────────────────────────────────────
-            if node.scan_pts:
-                xs = [p[0] for p in node.scan_pts]
-                ys = [p[1] for p in node.scan_pts]
-                cs = [p[2] for p in node.scan_pts]
-                scatter.set_offsets(np.column_stack([xs, ys]))
-                scatter.set_color(cs)
+            # ── Líneas LiDAR ──────────────────────────────────────────────
+            if node.scan_segs:
+                lc.set_segments(node.scan_segs)
+                lc.set_colors(node.scan_seg_cols)
+            else:
+                lc.set_segments([])
 
             # ── Trayectoria ───────────────────────────────────────────────
             if len(node.traj_odom) > 1:
