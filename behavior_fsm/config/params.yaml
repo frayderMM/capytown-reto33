@@ -53,7 +53,7 @@ behavior_fsm:
 wall_follower:
   ros__parameters:
     # --- Control lateral ---
-    dist_objetivo:  0.50        # m    distancia deseada a la pared (si solo hay una)
+    dist_objetivo:  0.18        # m    distancia deseada a la pared DERECHA (jiron de 60cm de ancho — ajustar en pista real)
     Kp:             0.80        # ganancia proporcional
     Kd:             0.10        # ganancia derivativa
     max_correccion: 0.40        # rad/s  saturación de salida

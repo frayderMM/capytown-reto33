@@ -1,15 +1,18 @@
 #!/usr/bin/env python3
 """
-wall_follower.py  —  Seguimiento lateral del jiron usando Split-and-Merge.
+wall_follower.py  —  Seguimiento de la pared derecha del jiron usando Split-and-Merge.
 
 Suscribe a /scan, detecta los segmentos de las paredes laterales del jiron
 y publica en /lateral_correction (std_msgs/Float32) la correccion angular
-sugerida para que behavior_fsm la aplique en el estado CRUCERO.
+sugerida para que behavior_fsm la aplique en el estado CRUCERO. El robot
+se mantiene pegado a la pared derecha a dist_objetivo (no centrado entre
+ambas paredes); la izquierda solo se usa como respaldo si la derecha no
+es visible en ese instante.
 
 Pipeline:
     /scan → filtrar → pre-segmentar → Split-and-Merge
           → clasificar (pared larga / cara de caja corta)
-          → calcular error de centrado
+          → calcular error respecto a la pared derecha
           → PD → /lateral_correction [rad/s]
 
                          jiron
@@ -209,19 +212,16 @@ class WallFollower(Node):
 
     def _calcular_error(self, izq, der):
         """
-        Error de centrado lateral.
+        Error de seguimiento — pegado a la pared derecha (no centrado).
 
-        Con ambas paredes: error = mean_y_izq + mean_y_der
-            (izq positiva, der negativa; suma nula si centrado)
-        Solo izquierda:    error = mean_y_izq - dist_objetivo
-        Solo derecha:      error = dist_objetivo + mean_y_der
+        Pared derecha visible (con o sin izquierda): error = dist_objetivo + mean_y_der
+        Solo izquierda visible (respaldo, sin referencia derecha):
+                                  error = mean_y_izq - dist_objetivo
         """
-        if izq and der:
-            return izq['mean_y'] + der['mean_y']
-        if izq:
-            return izq['mean_y'] - self._d_obj
         if der:
             return self._d_obj + der['mean_y']
+        if izq:
+            return izq['mean_y'] - self._d_obj
         return None
 
     # ── Callback principal ────────────────────────────────────────────────

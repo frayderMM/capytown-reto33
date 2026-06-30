@@ -276,12 +276,12 @@ class BehaviorFSM(Node):
             else:
                 w = max(-self.w_giro, min(self.w_giro, self.Kgap * gap))
 
-            # Avanzar lento solo si el hueco está casi al frente Y no hay pared cerca
-            puede_avanzar = (
-                abs(gap) < math.radians(25.0)
-                and self.dist_frente > self.d_parada
-            )
-            v = self.v_min if puede_avanzar else 0.0
+            # Avanzar mientras se gira hacia el hueco (bordeo), no girar en
+            # el sitio y avanzar despues. La unica condicion de seguridad
+            # real es que no haya nada pegado justo al frente; EMERGENCIA
+            # ya cubre el caso de colision inminente por separado.
+            puede_avanzar = self.dist_frente > self.d_parada
+            v = self._vel_adaptativa() if puede_avanzar else 0.0
 
             self._pub(v, w)
 
