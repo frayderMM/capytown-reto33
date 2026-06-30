@@ -17,3 +17,7 @@ contexto.md
 
 # CSVs generados por metrics_logger
 metricas_lidar*.csv
+
+# Mapas generados por map_builder
+mapa_capytown*.png
+mapa_capytown*.npy
