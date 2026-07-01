@@ -203,7 +203,7 @@ class Guardian(Node):
                               self.atras_rad, self.rm_min, self.rm_max)
         cls = pc.analizar_scan(pts, self.salto_dist, self.salto_idx,
                                self.umbral_split, self.min_puntos,
-                               self.lado_caja, self.min_pared)
+                               self.lado_caja, self.min_pared, self.cos_lat)
         self.clusters = cls
         self.pared_der = (pc.camino_derecho(pts, self.off_l)
                           or pc.pared_derecha(cls, self.min_pared, self.cos_lat))

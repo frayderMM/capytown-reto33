@@ -44,15 +44,6 @@ COLOR_RECORRIDO_REAL = '#26c6da'
 COLOR_POSE = '#ffffff'
 
 
-def etiqueta_segmento(ax, s, color):
-    mx = 0.5 * (s['x1'] + s['x2'])
-    my = 0.5 * (s['y1'] + s['y2'])
-    ax.annotate(
-        s['clase'], (mx, my), color='white', fontsize=7,
-        ha='center', va='center', zorder=6,
-        bbox=dict(boxstyle='round,pad=0.18', fc=color, ec='none', alpha=0.82))
-
-
 class VizNode(Node):
     def __init__(self):
         super().__init__('lidar_viz')
@@ -167,8 +158,6 @@ def main():
                     ancho = 4.0 if s['clase'] == 'CAJA' else 2.6
                     axL.plot([s['x1'], s['x2']], [s['y1'], s['y2']],
                              color=c, linewidth=ancho, zorder=4, label=lbl)
-                    if s['clase'] == 'CAJA':
-                        etiqueta_segmento(axL, s, c)
                 if vistos:
                     axL.legend(loc='upper right', facecolor=BG,
                                edgecolor='#444', labelcolor='white', fontsize=8)
