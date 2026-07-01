@@ -18,7 +18,7 @@ b   launch/lidar.launch.py
 
 behavior_fsm/        # Parte B: Guardian con FSM
 b   behavior_fsm/
-b   b   behavior_fsm.py    # FSM 3 estados: CRUCERO/PARAR/RODEAR
+b   b   behavior_fsm.py    # FSM 3 estados: CRUCERO/AVISO/GIRO
 b   b   wall_follower.py   # Paredes laterales por RANSAC -> /dist_izq /dist_der
 b   config/params.yaml
 b   launch/capytown.launch.py

@@ -1,8 +1,8 @@
-# Guardian v4 — CRUCERO / GIRO / RODEO
+# Guardian v5 — CRUCERO / AVISO / GIRO
 #
-# Flujo: CRUCERO → GIRO (elige lado por RANSAC izq/der; distingue caja de
-# esquina real por la confianza RANSAC) → CRUCERO directo si fue esquina,
-# o RODEO (recto, sale por sensor) → CRUCERO si fue caja.
+# Flujo: CRUCERO → AVISO (detenido t_aviso segundos, anuncia "CAJA") →
+# GIRO (avanza girando una duracion FIJA t_giro_fijo, sordo a nueva
+# deteccion durante esa ventana) → CRUCERO (recalibra contra la pared).
 # dist_izq / dist_der ya NO se calculan aqui: los publica wall_follower
 # (RANSAC sobre las paredes laterales) en /dist_izq y /dist_der.
 
@@ -38,35 +38,18 @@ behavior_fsm:
 
     # Velocidad
     vel_crucero:      0.10
-    vel_maniobra:     0.07   # lineal en GIRO/RODEO: mas lento que crucero para
-                             # recorrer menos distancia "a ciegas" si el rumbo
-                             # queda torcido tras el giro (problema de la diagonal)
-    vel_giro_gradual: 0.55   # subido de 0.50 (a veces el giro se quedaba corto)
+    vel_maniobra:     0.07   # lineal durante GIRO: mas lento que crucero
+    vel_giro_gradual: 0.55   # angular durante GIRO (fija, no se recalcula)
     max_w:            0.60
 
-    # Temporizacion / geometria de GIRO y RODEO
-    # k_urgencia_giro y la magnitud del giro se calculan UNA vez al entrar a
-    # GIRO (con dist_frente de ese instante) y quedan fijas durante todo el
-    # giro — antes se recalculaban en cada ciclo con dist_frente en vivo,
-    # que cambia rapido mientras el robot rota, y eso lo hacia errático
-    # (a veces corto, a veces se pasaba de largo).
-    t_giro_min:         0.8   # s  giro minimo (~23 deg)
-    t_giro_max:         4.0   # s  salvavidas
-    d_lado_salida_giro: 0.20  # m  sale de GIRO si el lado hacia el que gira < 20cm
-    k_urgencia_giro:    1.7   # amplifica el giro si el obstaculo esta muy cerca de d_giro
-    t_rodeo_min:        0.4   # s  minimo recto tras GIRO antes de evaluar salida
-    t_rodeo_max:        1.2   # s  salvavidas — RODEO es ciego (w=0, no corrige rumbo);
-                              # si GIRO no dejo el robot bien alineado, acotar esto limita
-                              # cuanto se puede ir en diagonal antes de volver a CRUCERO
-    t_cooldown:         2.0   # s  cooldown post-RODEO
-    t_recuperacion:     1.5   # s  suprime w_front tras RODEO
-
-    # Caja vs esquina real (pistas tipo circuito con esquinas de 90°, no
-    # solo el jiron recto con cajas). Una caja no baja la confianza RANSAC
-    # de ninguna pared (se descarta como outlier a proposito); una esquina
-    # de 90° si, porque la pared deja de ser recta justo donde se ajusta.
-    conf_esquina_umbral: 0.25  # confianza minima para considerar "pared recta de nuevo"
-    t_giro_esquina_max:  3.0   # s  salvavidas del giro de esquina (mas largo que una caja)
+    # AVISO + GIRO de duracion fija
+    t_aviso:     1.0   # s  detenido anunciando "CAJA" antes de girar
+    t_giro_fijo: 5.0   # s  giro de duracion fija; sordo a nueva deteccion
+                       # de caja durante toda la ventana (evita que se
+                       # re-dispare AVISO por seguir viendo la caja/pared
+                       # de cerca mientras gira alrededor de ella)
+    t_cooldown:      2.0   # s  cooldown post-GIRO antes de poder disparar otro AVISO
+    t_recuperacion:  1.5   # s  suprime w_front tras GIRO, solo w_der (recalibra)
 
 # wall_follower — paredes laterales por RANSAC (reemplaza Split-and-Merge).
 # Publica /dist_izq y /dist_der; behavior_fsm los consume, no los recalcula.

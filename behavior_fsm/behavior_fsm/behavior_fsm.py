@@ -1,40 +1,37 @@
 #!/usr/bin/env python3
 """
-behavior_fsm.py  —  Guardian v4
+behavior_fsm.py  —  Guardian v5
 
-Estados: CRUCERO → GIRO → RODEO → CRUCERO
+Estados: CRUCERO → AVISO → GIRO → CRUCERO
 
 dist_frente y dist_izq_raw/dist_der_raw (minimo crudo, sin filtrar) se
 miden localmente sobre /scan: son la base del STOP de seguridad y deben
 ver CUALQUIER objeto cercano. dist_izq / dist_der llegan del nodo
 wall_follower (RANSAC sobre las paredes laterales, via /dist_izq y
 /dist_der) y se usan solo para el tracking de crucero y la eleccion de
-lado en GIRO — RANSAC descarta a proposito los objetos que no son pared
-(p.ej. una caja pegada al costado) como outliers, por lo que NO sirven
-para detectar un choque lateral inminente.
+lado en GIRO.
 
 CRUCERO:  sigue pared derecha.
           f >= d_front_ini → solo w_der (tracking pared)
           f <  d_front_ini → solo w_front (evasion frontal, w_der=0)
-          f <= d_giro      → pasa a GIRO, eligiendo lado y guardando el
-                             ancho de jiron disponible en ese instante.
-GIRO:     gira hacia el lado con MAS espacio (compara dist_izq vs dist_der
-          al momento de entrar). Distingue caja de esquina real con la
-          confianza RANSAC de las paredes (conf_izq/conf_der): una caja no
-          la afecta (se descarta como outlier), una esquina de 90° si (la
-          pared deja de ser recta justo donde se ajusta).
-            - Caja:    magnitud proporcional a la urgencia (mas cerca →
-                       giro mas cerrado); sale cuando el frente despeja →
-                       pasa a RODEO (crea separacion, recto).
-            - Esquina: giro fuerte y sostenido (max_w); sale solo cuando el
-                       frente despeja Y se re-adquiere la pared derecha
-                       (conf_der recuperada) → pasa directo a CRUCERO, sin
-                       RODEO (no hay nada de que "separarse").
-          Salvavidas de tiempo/proximidad (t_giro_max/t_giro_esquina_max,
-          d_lado_salida_giro) siempre pasan por RODEO, sea caja o esquina.
-RODEO:    avanza RECTO (w=0) hasta que el frente vuelve a despejarse
-          (sensor, no temporizador), con un minimo y un maximo de seguridad.
-CRUCERO(recovery): durante t_recuperacion, solo w_der sin w_front.
+          f <= d_giro      → pasa a AVISO, eligiendo ya el lado hacia el
+                             que va a girar (el que tenga mas espacio).
+AVISO:    se detiene por completo (v=0, w=0) durante t_aviso segundos y
+          anuncia "CAJA" (log + intento de /beep). Le da tiempo al equipo
+          de ver/oir que detecto algo antes de moverse.
+GIRO:     avanza girando (v_maniobra + w fijo hacia el lado elegido)
+          durante una duracion FIJA t_giro_fijo, sin importar lo que vea
+          el sensor frontal durante esa ventana — asi no se re-dispara
+          AVISO por seguir viendo la caja/pared de cerca mientras gira
+          alrededor de ella. Al terminar, vuelve a CRUCERO (recalibra
+          contra la pared derecha).
+CRUCERO(recovery): durante t_recuperacion tras salir de GIRO, solo w_der
+          sin w_front, para recalibrarse contra la pared sin que la
+          evasion frontal compita.
+
+El STOP de seguridad (d_stop_front/d_stop_lateral) es la UNICA logica que
+nunca se apaga, ni siquiera durante el giro sordo: sigue viendo cualquier
+objeto cercano via dist_frente/dist_izq_raw/dist_der_raw.
 
 Topicos debug: /dist_frente /dbg/dist_izq_fsm /dbg/dist_der_fsm
                /dbg/w_front /dbg/w_der /dbg/w_izq /dbg/w_total
@@ -51,12 +48,12 @@ from rcl_interfaces.msg import SetParametersResult
 
 from sensor_msgs.msg import LaserScan
 from geometry_msgs.msg import Twist
-from std_msgs.msg import Float32, String
+from std_msgs.msg import Float32, String, Bool
 
 
 CRUCERO = 'CRUCERO'
+AVISO   = 'AVISO'
 GIRO    = 'GIRO'
-RODEO   = 'RODEO'
 
 
 class BehaviorFSM(Node):
@@ -74,37 +71,21 @@ class BehaviorFSM(Node):
         self.declare_parameter('d_front_inicio', 0.40)
 
         self.declare_parameter('target_der', 0.17)   # robot consistente a 17-20cm
-        self.declare_parameter('Kder',        2.6)   # ganancia proporcional (subida de 2.0: pegaba poco)
-        self.declare_parameter('Kd_der',      0.3)   # derivativo: amortigua el overshoot de subir Kder
+        self.declare_parameter('Kder',        2.6)   # ganancia proporcional
+        self.declare_parameter('Kd_der',      0.3)   # derivativo: amortigua overshoot
         self.declare_parameter('d_izq_min',  0.15)
         self.declare_parameter('Kizq',        4.0)
         self.declare_parameter('Kfront',      2.0)
 
         self.declare_parameter('vel_crucero',      0.10)
-        self.declare_parameter('vel_maniobra',     0.07)   # lineal en GIRO/RODEO: mas lento
-                                                            # que crucero para recorrer menos
-                                                            # distancia "a ciegas" si el rumbo
-                                                            # queda torcido tras el giro
-        self.declare_parameter('vel_giro_gradual', 0.55)
+        self.declare_parameter('vel_maniobra',     0.07)   # lineal durante GIRO
+        self.declare_parameter('vel_giro_gradual', 0.55)   # angular durante GIRO (fija)
         self.declare_parameter('max_w',            0.60)
 
-        self.declare_parameter('t_giro_min',        0.8)
-        self.declare_parameter('t_giro_max',        4.0)
-        self.declare_parameter('d_lado_salida_giro', 0.20)  # sale de GIRO si el lado hacia el que gira se cierra
-        self.declare_parameter('k_urgencia_giro',   1.7)   # amplifica w_giro si el obstaculo esta muy cerca
-        self.declare_parameter('t_rodeo_min',       0.4)   # minimo recto tras GIRO antes de evaluar salida
-        self.declare_parameter('t_rodeo_max',       1.2)   # salvavidas — RODEO es ciego (w=0)
+        self.declare_parameter('t_aviso',     1.0)   # s  detenido anunciando "CAJA" antes de girar
+        self.declare_parameter('t_giro_fijo', 5.0)   # s  duracion fija del giro, sordo a nueva deteccion
         self.declare_parameter('t_cooldown',        2.0)
         self.declare_parameter('t_recuperacion',    1.5)
-
-        # Distincion caja vs esquina real. Una caja NUNCA baja la confianza
-        # RANSAC de las paredes (se descarta como outlier a proposito); una
-        # esquina de 90° si, porque la pared deja de ser recta justo donde
-        # se ajusta la recta. Si cualquiera de las dos confianzas cae por
-        # debajo del umbral al disparar GIRO, se trata como esquina: giro
-        # mas fuerte y sostenido, sin el RODEO recto (pensado para cajas).
-        self.declare_parameter('conf_esquina_umbral', 0.25)
-        self.declare_parameter('t_giro_esquina_max',  3.0)   # s  salvavidas del giro de esquina
 
         # ── Cargar ────────────────────────────────────────────────────────
         self.front_rad = math.radians(self.get_parameter('lidar_front_deg').value)
@@ -118,8 +99,6 @@ class BehaviorFSM(Node):
         self.t_inicio      = self.get_clock().now()
         self.t_ultimo_giro = -float('inf')
         self.dir_giro      = 1.0   # +1 = izquierda (w>0), -1 = derecha (w<0)
-        self.w_giro_efectivo = 0.0  # magnitud del giro, congelada al entrar a GIRO
-        self.es_esquina    = False  # True = esquina real (girar sostenido), False = caja (giro corto + RODEO)
 
         # ── PD tracking pared derecha ────────────────────────────────────
         self._err_der_prev = 0.0
@@ -137,11 +116,6 @@ class BehaviorFSM(Node):
         self.dist_der    = float('inf')
         self.dist_izq_raw = float('inf')
         self.dist_der_raw = float('inf')
-        # Confianza RANSAC de cada pared (ratio de inliers): 0 = fallback/sin
-        # pared. Se usa para distinguir caja (no la afecta) de esquina real
-        # (la baja, porque la pared deja de ser recta ahi mismo).
-        self.conf_izq = 0.0
-        self.conf_der = 0.0
 
         # ── ROS I/O ───────────────────────────────────────────────────────
         _qos = QoSProfile(depth=10)
@@ -149,10 +123,13 @@ class BehaviorFSM(Node):
         self.create_subscription(LaserScan, '/scan', self.cb_scan, _qos)
         self.create_subscription(Float32, '/dist_izq', self._cb_dist_izq, _qos)
         self.create_subscription(Float32, '/dist_der', self._cb_dist_der, _qos)
-        self.create_subscription(Float32, '/dbg/confianza_izq', self._cb_conf_izq, _qos)
-        self.create_subscription(Float32, '/dbg/confianza_der', self._cb_conf_der, _qos)
         self.pub_cmd    = self.create_publisher(Twist,  '/cmd_vel',   10)
         self.pub_estado = self.create_publisher(String, '/fsm_state', 10)
+        # Intento de aviso sonoro en AVISO. Tipo std_msgs/Bool sin confirmar
+        # contra el driver real del robot: si el buzzer espera otro tipo,
+        # esto simplemente no hace nada (no rompe nada), el log siempre
+        # funciona igual como aviso.
+        self.pub_beep = self.create_publisher(Bool, '/beep', 10)
 
         # /dist_izq y /dist_der los publica wall_follower (RANSAC); este nodo
         # solo los consume. Republicamos lo que efectivamente usa la FSM bajo
@@ -168,9 +145,9 @@ class BehaviorFSM(Node):
         self.create_timer(0.05, self.loop_control)
 
         self.get_logger().info(
-            f'Guardian v4  giro<{self.d_giro}m  front_ini={self.d_front_ini}m'
+            f'Guardian v5  giro<{self.d_giro}m  front_ini={self.d_front_ini}m'
             f'  target_der={self.target_der}m  Kder={self.Kder}'
-            f'  t_rodeo=[{self.t_rodeo_min},{self.t_rodeo_max}]s (salida por sensor)')
+            f'  t_aviso={self.t_aviso}s  t_giro_fijo={self.t_giro_fijo}s')
 
     def _reload_params(self):
         self.d_stop_front      = self.get_parameter('d_stop_front').value
@@ -187,16 +164,10 @@ class BehaviorFSM(Node):
         self.v_maniobra        = self.get_parameter('vel_maniobra').value
         self.w_giro            = self.get_parameter('vel_giro_gradual').value
         self.max_w             = self.get_parameter('max_w').value
-        self.t_giro_min        = self.get_parameter('t_giro_min').value
-        self.t_giro_max        = self.get_parameter('t_giro_max').value
-        self.d_lado_salida_giro = self.get_parameter('d_lado_salida_giro').value
-        self.k_urgencia_giro   = self.get_parameter('k_urgencia_giro').value
-        self.t_rodeo_min       = self.get_parameter('t_rodeo_min').value
-        self.t_rodeo_max       = self.get_parameter('t_rodeo_max').value
+        self.t_aviso           = self.get_parameter('t_aviso').value
+        self.t_giro_fijo       = self.get_parameter('t_giro_fijo').value
         self.t_cooldown        = self.get_parameter('t_cooldown').value
         self.t_recuperacion    = self.get_parameter('t_recuperacion').value
-        self.conf_esquina_umbral = self.get_parameter('conf_esquina_umbral').value
-        self.t_giro_esquina_max  = self.get_parameter('t_giro_esquina_max').value
 
     def _on_params(self, params):
         self._reload_params()
@@ -232,12 +203,6 @@ class BehaviorFSM(Node):
 
     def _cb_dist_der(self, msg: Float32):
         self.dist_der = msg.data
-
-    def _cb_conf_izq(self, msg: Float32):
-        self.conf_izq = msg.data
-
-    def _cb_conf_der(self, msg: Float32):
-        self.conf_der = msg.data
 
     def _pub(self, v: float, w: float):
         cmd = Twist()
@@ -278,11 +243,11 @@ class BehaviorFSM(Node):
         self.get_logger().info(
             f'{self.estado}→{nuevo}  '
             f'f={self.dist_frente:.2f}  l={self.dist_izq:.2f}  r={self.dist_der:.2f}')
-        # Marca cooldown al salir de GIRO o RODEO hacia CRUCERO
-        if self.estado in (GIRO, RODEO) and nuevo == CRUCERO:
+        # Marca cooldown al salir de GIRO hacia CRUCERO, y resetea la
+        # derivada del PD (si no, el primer tick calcula d_err sobre un
+        # salto acumulado durante todo AVISO+GIRO: spike falso).
+        if self.estado == GIRO and nuevo == CRUCERO:
             self.t_ultimo_giro = self.get_clock().now().nanoseconds * 1e-9
-            # Resetea la derivada: si no, el primer tick calcula d_err sobre
-            # un salto acumulado durante todo GIRO+RODEO (spike falso).
             if math.isfinite(self.dist_der):
                 self._err_der_prev = self.dist_der - self.target_der
             self._t_der_prev = self.get_clock().now()
@@ -291,7 +256,8 @@ class BehaviorFSM(Node):
 
     def loop_control(self):
 
-        # ── PRIORIDAD 1: STOP absoluto ────────────────────────────────────
+        # ── PRIORIDAD 1: STOP absoluto (siempre activo, en cualquier estado,
+        # incluido el giro sordo) ────────────────────────────────────────
         if self.dist_frente < self.d_stop_front:
             self._pub(0.0, 0.0)
             self._pub_dbg(0, 0, 0, 0)
@@ -309,9 +275,6 @@ class BehaviorFSM(Node):
                 f'PARA izq={self.dist_izq_raw:.3f}m', throttle_duration_sec=0.4)
             return
         if math.isfinite(self.dist_der_raw) and self.dist_der_raw < self.d_stop_lat:
-            # Ahora el GIRO puede ir hacia cualquier lado (no solo izquierda),
-            # asi que el riesgo de colision lateral tambien puede venir del
-            # lado derecho.
             self._pub(0.0, 0.0)
             self._pub_dbg(0, 0, 0, 0)
             self.get_logger().warn(
@@ -325,43 +288,21 @@ class BehaviorFSM(Node):
             cooldown_ok = t_post >= self.t_cooldown
 
             if cooldown_ok and self.dist_frente <= self.d_giro:
-                # Girar hacia el lado con MAS espacio disponible en este
-                # instante (no siempre izquierda). Sin referencia de ningun
-                # lado, izquierda por defecto.
+                # Elegir ya el lado hacia el que se va a girar (el que tenga
+                # mas espacio disponible en este instante).
                 if math.isfinite(self.dist_izq) and math.isfinite(self.dist_der):
                     self.dir_giro = 1.0 if self.dist_izq >= self.dist_der else -1.0
                 elif math.isfinite(self.dist_der):
                     self.dir_giro = -1.0
                 else:
                     self.dir_giro = 1.0
-
-                # Caja vs esquina real: una caja no baja la confianza RANSAC
-                # de ninguna pared (se descarta como outlier); una esquina
-                # de 90° si, porque la pared deja de ser recta justo donde
-                # se ajusta la recta.
-                self.es_esquina = (self.conf_izq < self.conf_esquina_umbral
-                                   or self.conf_der < self.conf_esquina_umbral)
-
-                if self.es_esquina:
-                    # Esquina: giro fuerte y sostenido (no el calculo suave
-                    # pensado para rodear una caja de 20cm).
-                    self.w_giro_efectivo = self.dir_giro * self.max_w
-                else:
-                    # Caja: magnitud proporcional a la urgencia, calculada
-                    # UNA vez aqui (no en cada ciclo de GIRO, que la hacia
-                    # erratica porque dist_frente cambia rapido y de forma
-                    # poco representativa mientras el robot rota).
-                    urgencia = max(0.0, self.d_giro - self.dist_frente) / max(self.d_giro, 1e-6)
-                    self.w_giro_efectivo = max(-self.max_w, min(self.max_w,
-                        self.dir_giro * self.w_giro * (1.0 + self.k_urgencia_giro * urgencia)))
-
-                self._cambiar(GIRO)
+                self._cambiar(AVISO)
                 self.get_logger().info(
-                    f'GIRO {"ESQUINA" if self.es_esquina else "caja"}'
-                    f'  dir={"izq" if self.dir_giro > 0 else "der"}'
-                    f'  izq={self.dist_izq:.2f} (conf={self.conf_izq:.2f})'
-                    f'  der={self.dist_der:.2f} (conf={self.conf_der:.2f})'
-                    f'  w_giro={self.w_giro_efectivo:.2f}')
+                    f'CAJA detectada  dir={"izq" if self.dir_giro > 0 else "der"}'
+                    f'  frente={self.dist_frente:.2f}')
+                b = Bool(); b.data = True
+                self.pub_beep.publish(b)
+                self._pub(0.0, 0.0)
                 self._pub_dbg(0, 0, 0, 0)
                 return
 
@@ -370,7 +311,7 @@ class BehaviorFSM(Node):
             w_der   = 0.0
 
             if recuperando:
-                # Solo tracking pared derecha — permite alinearse tras RODEO
+                # Solo tracking pared derecha — permite alinearse tras GIRO
                 if math.isfinite(self.dist_der):
                     w_der = self._w_der_pd()
             elif self.dist_frente < self.d_front_ini:
@@ -390,61 +331,22 @@ class BehaviorFSM(Node):
             self._pub_dbg(w_front, w_der, w_izq, w)
             self._pub(self.v_cruise, w)
 
-        # ── GIRO ──────────────────────────────────────────────────────────
-        elif self.estado == GIRO:
-            # d_lado: distancia del lado HACIA EL QUE SE GIRA (criterio de
-            # salida por acercamiento excesivo a esa pared).
-            d_lado = self.dist_izq if self.dir_giro > 0 else self.dist_der
-            t_max_este_giro = self.t_giro_esquina_max if self.es_esquina else self.t_giro_max
-
-            # Salvavidas de tiempo/proximidad: siempre pasan por RODEO
-            # (crean separacion) sea caja o esquina.
-            if self._t_estado() > t_max_este_giro:
-                self._cambiar(RODEO)
-                return
-            if math.isfinite(d_lado) and d_lado < self.d_lado_salida_giro:
-                self.get_logger().warn(
-                    f'GIRO→RODEO lado={"izq" if self.dir_giro > 0 else "der"}={d_lado:.2f}m')
-                self._cambiar(RODEO)
-                return
-
-            if self._t_estado() >= self.t_giro_min and self.dist_frente > self.d_giro:
-                if self.es_esquina:
-                    # Esquina: no basta con que el frente despeje - hay que
-                    # haber re-adquirido la pared derecha (recta otra vez).
-                    # Si no, seguimos girando: pudo ser solo que el LiDAR
-                    # dejo de ver la pared un instante mientras rota, no que
-                    # ya se completo el giro. Al completar, se salta RODEO
-                    # (su avance recto ciego no tiene sentido en una
-                    # esquina: ya estamos alineados, hay que seguir
-                    # cruceando, no separarse de nada).
-                    if self.conf_der >= self.conf_esquina_umbral:
-                        self._cambiar(CRUCERO)
-                        return
-                else:
-                    self._cambiar(RODEO)
-                    return
-
-            # Magnitud congelada al entrar a GIRO (ver comentario en CRUCERO).
-            # v_maniobra (mas lenta que crucero): menos distancia recorrida
-            # "a ciegas" por ciclo si el rumbo queda torcido.
-            self._pub_dbg(self.w_giro_efectivo, 0, 0, self.w_giro_efectivo)
-            self._pub(self.v_maniobra, self.w_giro_efectivo)
-
-        # ── RODEO: avance recto para separarse del obstaculo ──────────────
-        elif self.estado == RODEO:
-            t = self._t_estado()
-            if t >= self.t_rodeo_max:
-                self._cambiar(CRUCERO)
-                return
-            # Salida por sensor: recien evaluamos si el frente ya despejo
-            # despues de un minimo, para no cortar el rodeo por un rebote
-            # transitorio justo al salir de GIRO.
-            if t >= self.t_rodeo_min and self.dist_frente > self.d_front_ini:
-                self._cambiar(CRUCERO)
-                return
+        # ── AVISO: detenido, anunciando la caja durante t_aviso ────────────
+        elif self.estado == AVISO:
+            self._pub(0.0, 0.0)
             self._pub_dbg(0, 0, 0, 0)
-            self._pub(self.v_maniobra, 0.0)   # w=0: absolutamente recto, mas lento que crucero
+            if self._t_estado() >= self.t_aviso:
+                b = Bool(); b.data = False
+                self.pub_beep.publish(b)
+                self._cambiar(GIRO)
+
+        # ── GIRO: duracion FIJA, sordo a nueva deteccion de caja ───────────
+        elif self.estado == GIRO:
+            w = self.dir_giro * self.w_giro
+            self._pub_dbg(w, 0, 0, w)
+            self._pub(self.v_maniobra, w)
+            if self._t_estado() >= self.t_giro_fijo:
+                self._cambiar(CRUCERO)
 
 
 def _esperar_inicio(logger, segundos: float):

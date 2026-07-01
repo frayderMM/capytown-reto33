@@ -26,7 +26,7 @@ Deteccion de caja frontal (heuristica de visualizacion, independiente del
 censo oficial de box_detector): std_x < 4 cm (perpendicular) + 8 cm <= ancho <= 32 cm.
 """
 
-VIZ_VERSION = 'v33'
+VIZ_VERSION = 'v34'
 
 import math
 import argparse
@@ -60,7 +60,7 @@ C_LEFT      = '#4f8ef7'   # azul: sector izquierdo
 C_RIGHT     = '#2ecc71'   # verde: sector derecho
 C_OTHER     = '#3a4a5a'   # gris: resto
 C_BOX       = '#f39c12'   # naranja: cajas censadas en odom
-C_RODEO     = '#b07fff'   # purpura: estado RODEO
+C_RODEO     = '#b07fff'   # purpura: estado AVISO (detenido anunciando caja)
 C_TRAJ      = '#8b949e'
 C_ARROW     = '#f5c518'
 C_TEXT      = '#e6edf3'
@@ -610,9 +610,9 @@ def main():
                 # que es justamente lo que la FSM esta aplicando ahora mismo.
                 dir_txt = ' → IZQ' if node.vel_ang > 0 else (' → DER' if node.vel_ang < 0 else '')
                 badge_txt = st + dir_txt
-            elif st == 'RODEO':
+            elif st == 'AVISO':
                 sc, bg_col = C_RODEO, '#110a1a'
-                badge_txt = st
+                badge_txt = st + ' (CAJA)'
             else:
                 sc, bg_col = C_OK, PANEL
                 badge_txt = st
