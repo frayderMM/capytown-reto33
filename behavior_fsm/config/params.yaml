@@ -1,19 +1,19 @@
-# Guardian v3 — CRUCERO / GIRO / RODEO
+# Guardian v4 — CRUCERO / GIRO / RODEO
 #
-# Flujo: CRUCERO → GIRO (gira izq) → RODEO (recto, w=0) → CRUCERO
-# El RODEO crea separacion del obstaculo antes de retomar tracking.
+# Flujo: CRUCERO → GIRO (elige lado por RANSAC izq/der) → RODEO (recto,
+# sale por sensor cuando el frente despeja) → CRUCERO.
+# dist_izq / dist_der ya NO se calculan aqui: los publica wall_follower
+# (RANSAC sobre las paredes laterales) en /dist_izq y /dist_der.
 
 behavior_fsm:
   ros__parameters:
 
     lidar_front_deg:    180.0
     sector_frontal_deg:  30.0
-    sector_lateral_lo:   60.0
-    sector_lateral_hi:  120.0
 
     # Parada absoluta
     d_stop_front:   0.14   # m  14 cm frente
-    d_stop_lateral: 0.06   # m  6 cm costado
+    d_stop_lateral: 0.06   # m  6 cm costado (aplica a izq y a der por igual)
 
     # Umbrales frontales
     d_giro:         0.30   # m  trigger GIRO
@@ -37,23 +37,34 @@ behavior_fsm:
     vel_giro_gradual: 0.50
     max_w:            0.60
 
-    # Temporizacion
-    t_giro_min:        0.8   # s  giro minimo (~23 deg)
-    t_giro_max:        4.0   # s  salvavidas
-    d_izq_salida_giro: 0.20  # m  sale de GIRO si izq < 20cm
-    t_rodeo:           1.0   # s  avance recto tras GIRO (10 cm separacion)
-    t_cooldown:        2.0   # s  cooldown post-RODEO
-    t_recuperacion:    1.5   # s  suprime w_front tras RODEO
+    # Temporizacion / geometria de GIRO y RODEO
+    t_giro_min:         0.8   # s  giro minimo (~23 deg)
+    t_giro_max:         4.0   # s  salvavidas
+    d_lado_salida_giro: 0.20  # m  sale de GIRO si el lado hacia el que gira < 20cm
+    k_urgencia_giro:    1.5   # amplifica el giro si el obstaculo esta muy cerca de d_giro
+    t_rodeo_min:        0.4   # s  minimo recto tras GIRO antes de evaluar salida
+    t_rodeo_max:        3.0   # s  salvavidas si el frente nunca despeja
+    t_cooldown:         2.0   # s  cooldown post-RODEO
+    t_recuperacion:     1.5   # s  suprime w_front tras RODEO
 
+# wall_follower — paredes laterales por RANSAC (reemplaza Split-and-Merge).
+# Publica /dist_izq y /dist_der; behavior_fsm los consume, no los recalcula.
 wall_follower:
   ros__parameters:
-    dist_objetivo:   0.08
-    Kp:              0.80
-    Kd:              0.10
-    max_correccion:  0.40
-    min_long_pared:  0.60
-    cos_lateral_min: 0.55
-    umbral_split:    0.06
-    rango_max:       3.50
-    salto_dist:      0.35
-    salto_idx:       5
+    lidar_front_deg:    180.0
+    sector_frontal_deg:  30.0   # excluido del ajuste de pared (zona de obstaculos)
+    sector_lateral_lo:   60.0   # ventana estrecha del fallback (cerca de perpendicular)
+    sector_lateral_hi:  120.0
+    sector_trasero_deg: 160.0   # excluido del ajuste (posible otra pared tras un giro)
+    rango_max:            3.50  # m  ignora lecturas mas lejanas
+
+    umbral_inlier_ransac: 0.03  # m  tolerancia de inlier
+    iteraciones_ransac:   80
+    min_inliers_ransac:   12
+    min_puntos_lado:      15    # puntos minimos en el lado para intentar RANSAC
+    semilla_ransac:       -1    # -1 = aleatorio real; >=0 = reproducible (defensa/debug)
+
+    ema_alpha: 0.5              # suavizado temporal de dist_izq/dist_der
+
+    ancho_jiron:     0.60       # m  ancho esperado del jiron (chequeo de consistencia)
+    tol_ancho_jiron: 0.15       # m  tolerancia antes de advertir

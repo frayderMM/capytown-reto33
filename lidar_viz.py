@@ -1,17 +1,32 @@
 #!/usr/bin/env python3
 """
 lidar_viz.py — Monitor visual en tiempo real del robot CapyTown.
-VERSION: v6
+VERSION: v29 — RANSAC
 
 Panel izquierdo : mapa LiDAR con sector frontal coloreado por estado.
-  - cyan   : sector ±12° libre (sin caja)
-  - naranja: caja 25 cm perpendicular detectada → se dibuja rectángulo en el mapa
+  - cyan   : sector +-12 grados libre (sin caja)
+  - naranja: caja 25 cm perpendicular detectada -> se dibuja rectangulo en el mapa
 Panel derecho   : DER (grande) + IZQ (grande) + historial velocidad.
 
-Deteccion de caja: std_x < 4 cm (perpendicular) + 8 cm <= ancho <= 32 cm (25 cm ± margen)
+Cambio de version respecto a v28: DER/IZQ ya NO se recalculan desde el
+/scan crudo en este script (eso duplicaba, y podia desincronizarse de, lo
+que el robot realmente usa para controlar). Ahora se leen directamente de
+los topicos que publica wall_follower (RANSAC sobre las paredes
+laterales): /dist_izq, /dist_der, mas su confianza (ratio de inliers de
+RANSAC) en /dbg/confianza_izq y /dbg/confianza_der, y el chequeo de
+consistencia del ancho del jiron en /dbg/ancho_jiron_medido. Asi el
+monitor muestra exactamente lo que ve behavior_fsm, no una aproximacion
+paralela.
+
+Tambien se agrega la direccion real del GIRO (antes siempre giraba a la
+izquierda; ahora behavior_fsm elige el lado con mas espacio), inferida del
+signo de angular.z en /cmd_vel mientras el estado es GIRO.
+
+Deteccion de caja frontal (heuristica de visualizacion, independiente del
+censo oficial de box_detector): std_x < 4 cm (perpendicular) + 8 cm <= ancho <= 32 cm.
 """
 
-VIZ_VERSION = 'v28'
+VIZ_VERSION = 'v29'
 
 import math
 import argparse
@@ -53,23 +68,32 @@ C_DIM       = '#8b949e'
 C_WARN      = '#f39c12'
 C_ALERT     = '#e94560'
 C_OK        = '#2ecc71'
+C_CONF_LO   = '#e94560'   # confianza RANSAC baja (fallback usado)
 
 # ── Constantes ────────────────────────────────────────────────────────────────
-FRONT_GIRO_HALF = math.radians(12.0)   # ±12° dispara GIRO en la FSM
-SIDE_LO    = math.radians(60.0)
+FRONT_GIRO_HALF = math.radians(12.0)   # +-12 grados dispara GIRO en la FSM
+SIDE_LO    = math.radians(60.0)        # solo para colorear el mapa (contexto visual)
 SIDE_HI    = math.radians(120.0)
 
-TARGET_DER   = 0.08   # m  objetivo pared derecha
+# Deben reflejar los parametros reales de behavior_fsm/config/params.yaml.
+TARGET_DER   = 0.17   # m  objetivo pared derecha (behavior_fsm: target_der)
 TOL_OK       = 0.02   # m  tolerancia OK
 MAX_GAUGE    = 0.70   # m  maximo del gauge
 
-DIST_IZQ_MIN  = 0.15  # m  zona de repulsion (= dist_izq_min en FSM)
+DIST_IZQ_MIN  = 0.15  # m  zona de repulsion (behavior_fsm: d_izq_min)
 DIST_IZQ_WARN = 0.25  # m  inicio de advertencia
+
+# Chequeo de consistencia del ancho del jiron (wall_follower: ancho_jiron / tol_ancho_jiron)
+ANCHO_JIRON     = 0.60
+TOL_ANCHO_JIRON = 0.15
+
+# Confianza RANSAC (ratio de inliers): por debajo de esto se considera "fallback"
+CONF_MIN_OK = 0.30
 
 # Deteccion de caja (~25 cm): perpendicular (std_x) + ancho lateral
 DETECT_HALF   = math.radians(20.0)  # sector de busqueda para caja
 DETECT_MAX_R  = 0.45   # m  rango maximo de busqueda
-PERP_STD_MAX  = 0.04   # m  max std de profundidad (x). perpendicular → std_x≈0
+PERP_STD_MAX  = 0.04   # m  max std de profundidad (x). perpendicular -> std_x=0
 BOX_W_MIN     = 0.08   # m  ancho minimo de caja
 BOX_W_MAX     = 0.23   # m  ancho maximo de caja (20 cm + 3 cm margen de medicion)
 MIN_FRONT_PTS = 5      # minimo de puntos para considerar deteccion valida
@@ -87,8 +111,6 @@ class LidarViz(Node):
         self.scan_segs     = []
         self.scan_seg_cols = []
         self.d_front    = float('inf')
-        self.d_left     = float('inf')
-        self.d_right    = float('inf')
         self.range_min  = 0.0
         self.range_max  = 8.0
 
@@ -102,8 +124,15 @@ class LidarViz(Node):
 
         self.vel_lin    = 0.0
         self.vel_ang    = 0.0
-        self.lat_corr   = 0.0
         self.cajas_odom = []
+
+        # Distancias laterales: llegan de wall_follower (RANSAC), no se
+        # recalculan aqui. Igual para su confianza (ratio de inliers).
+        self.dist_izq   = float('inf')
+        self.dist_der   = float('inf')
+        self.conf_izq   = 0.0
+        self.conf_der   = 0.0
+        self.ancho_medido = float('nan')
 
         self.robot_x    = 0.0
         self.robot_y    = 0.0
@@ -116,12 +145,16 @@ class LidarViz(Node):
 
         qos = QoSProfile(depth=10)
         qos.reliability = ReliabilityPolicy.BEST_EFFORT
-        self.create_subscription(LaserScan, '/scan',               self._cb_scan,   qos)
-        self.create_subscription(Odometry,  '/odom_raw',           self._cb_odom,   qos)
-        self.create_subscription(Twist,     '/cmd_vel',            self._cb_cmd,    10)
-        self.create_subscription(Float32,   '/lateral_correction', self._cb_lat,    10)
-        self.create_subscription(PoseArray, '/cajas_avistadas',    self._cb_cajas,  10)
-        self.create_subscription(String,    '/fsm_state',          self._cb_estado, 10)
+        self.create_subscription(LaserScan, '/scan',                     self._cb_scan,      qos)
+        self.create_subscription(Odometry,  '/odom_raw',                 self._cb_odom,      qos)
+        self.create_subscription(Twist,     '/cmd_vel',                  self._cb_cmd,       10)
+        self.create_subscription(Float32,   '/dist_izq',                 self._cb_dist_izq,  10)
+        self.create_subscription(Float32,   '/dist_der',                 self._cb_dist_der,  10)
+        self.create_subscription(Float32,   '/dbg/confianza_izq',        self._cb_conf_izq,  10)
+        self.create_subscription(Float32,   '/dbg/confianza_der',        self._cb_conf_der,  10)
+        self.create_subscription(Float32,   '/dbg/ancho_jiron_medido',   self._cb_ancho,     10)
+        self.create_subscription(PoseArray, '/cajas_avistadas',          self._cb_cajas,     10)
+        self.create_subscription(String,    '/fsm_state',                self._cb_estado,    10)
 
     def _sensor_to_display(self, theta, r):
         phi = self.front_rad - theta
@@ -137,7 +170,7 @@ class LidarViz(Node):
     def _cb_scan(self, msg: LaserScan):
         segs      = []
         seg_cols  = []
-        d_f = d_l = d_r = float('inf')
+        d_f       = float('inf')
         front_rf  = []
         prev_xd = prev_yd = prev_r = None
 
@@ -155,15 +188,13 @@ class LidarViz(Node):
                                 math.cos(theta - self.front_rad))
             abs_af = abs(af)
 
-            # Coloreado y medicion de distancias por sector
+            # Coloreado del mapa (solo contexto visual; las distancias
+            # oficiales izq/der ya no se calculan aqui, vienen de wall_follower).
             if abs_af <= FRONT_GIRO_HALF:
                 color = '__front__'   # placeholder: naranja o cyan segun deteccion
                 d_f = min(d_f, r)
             elif SIDE_LO <= abs_af <= SIDE_HI:
-                if af > 0:
-                    color = C_LEFT;  d_l = min(d_l, r)
-                else:
-                    color = C_RIGHT; d_r = min(d_r, r)
+                color = C_LEFT if af > 0 else C_RIGHT
             else:
                 color = C_OTHER
 
@@ -181,14 +212,12 @@ class LidarViz(Node):
             prev_xd, prev_yd, prev_r = xd, yd, r
 
         self.d_front = d_f
-        self.d_left  = d_l
-        self.d_right = d_r
 
         # ── Deteccion de caja (~25 cm perpendicular) ─────────────────────
         # Doble chequeo:
-        #   1. std_x < PERP_STD_MAX  → todos los puntos a la misma profundidad
-        #      (superficie perpendicular al robot). Pared diagonal → std_x grande.
-        #   2. BOX_W_MIN <= y_spread <= BOX_W_MAX → ancho compatible con caja 25 cm.
+        #   1. std_x < PERP_STD_MAX  -> todos los puntos a la misma profundidad
+        #      (superficie perpendicular al robot). Pared diagonal -> std_x grande.
+        #   2. BOX_W_MIN <= y_spread <= BOX_W_MAX -> ancho compatible con caja 25 cm.
         #      Filtra paredes largas (> 32 cm en el cono) y puntos sueltos (< 8 cm).
         self.box_frente      = False
         self.box_frente_dist = float('inf')
@@ -223,8 +252,20 @@ class LidarViz(Node):
             self.vel_times.popleft()
             self.vel_vals.popleft()
 
-    def _cb_lat(self, msg: Float32):
-        self.lat_corr = msg.data
+    def _cb_dist_izq(self, msg: Float32):
+        self.dist_izq = msg.data
+
+    def _cb_dist_der(self, msg: Float32):
+        self.dist_der = msg.data
+
+    def _cb_conf_izq(self, msg: Float32):
+        self.conf_izq = msg.data
+
+    def _cb_conf_der(self, msg: Float32):
+        self.conf_der = msg.data
+
+    def _cb_ancho(self, msg: Float32):
+        self.ancho_medido = msg.data
 
     def _cb_estado(self, msg: String):
         self.fsm_state = msg.data
@@ -241,23 +282,6 @@ class LidarViz(Node):
         cosy = 1.0 - 2.0 * (q.y ** 2 + q.z ** 2)
         self.robot_yaw = math.atan2(siny, cosy)
         self.traj_odom.append((p.x, p.y))
-
-
-# ── Helpers para construir un panel de distancia ──────────────────────────────
-def _build_dist_panel(ax, title, title_color):
-    """Panel generico con numero grande, barra y status. Devuelve dict de artistas."""
-    ax.axis('off')
-    ax.set_xlim(0, 1)
-    ax.set_ylim(0, 1)
-    ax.set_title(title, color=title_color, fontsize=12, pad=6)
-
-    # Numero grande en el centro
-    lbl_val = ax.text(0.5, 0.60, '---', ha='center', va='center',
-                      color=C_TEXT, fontsize=36, fontweight='bold')
-    # Status (OK / CERCA / ALERTA etc.)
-    lbl_status = ax.text(0.5, 0.22, '', ha='center', va='center',
-                         color=C_DIM, fontsize=11)
-    return {'lbl_val': lbl_val, 'lbl_status': lbl_status}
 
 
 # ── Figura ────────────────────────────────────────────────────────────────────
@@ -309,12 +333,15 @@ def build_figure():
     # Texto de caja en parte superior del lidar
     box_front_txt = ax_lidar.text(0, 1.42, '', color=C_FRONT_BOX, fontsize=11,
                                   ha='center', va='top', fontweight='bold', zorder=9)
-    # Estado FSM — esquina inferior izquierda del panel lidar
+    # Estado FSM (incluye direccion cuando esta en GIRO) — esquina inf. izq.
     state_badge = ax_lidar.text(-1.45, -1.45, 'CRUCERO', color=C_OK,
                                 fontsize=14, fontweight='bold',
                                 ha='left', va='bottom', zorder=10,
                                 bbox=dict(boxstyle='round,pad=0.3',
                                           fc=BG, ec=C_OK, lw=2.0, alpha=0.92))
+    # Consistencia del ancho de jiron — esquina inf. derecha
+    ancho_txt = ax_lidar.text(1.45, -1.45, '', color=C_DIM,
+                              fontsize=9, ha='right', va='bottom', zorder=10)
     ax_lidar.legend(handles=[
         mpatches.Patch(color=C_FRONT_OK,  label='FRENTE (sin caja)'),
         mpatches.Patch(color=C_FRONT_BOX, label='FRENTE (CAJA!)'),
@@ -326,7 +353,7 @@ def build_figure():
     ax_der.axis('off')
     ax_der.set_xlim(0, 1)
     ax_der.set_ylim(0, 1)
-    ax_der.set_title('PARED DERECHA', color=C_RIGHT, fontsize=12, pad=6)
+    ax_der.set_title('PARED DERECHA (RANSAC)', color=C_RIGHT, fontsize=12, pad=6)
 
     # Barra gauge horizontal
     ax_der.add_patch(mpatches.FancyBboxPatch(
@@ -359,27 +386,31 @@ def build_figure():
                                   color=C_TEXT, fontsize=34, fontweight='bold')
     lbl_der_status = ax_der.text(0.5, 0.20, '', ha='center', va='center',
                                   color=C_DIM, fontsize=10)
+    lbl_der_conf   = ax_der.text(0.5, 0.06, '', ha='center', va='center',
+                                  color=C_DIM, fontsize=8)
 
     der_artists = {
         'bar': bar_der, 'needle': needle_der,
-        'lbl_val': lbl_der_val, 'lbl_status': lbl_der_status,
+        'lbl_val': lbl_der_val, 'lbl_status': lbl_der_status, 'lbl_conf': lbl_der_conf,
     }
 
     # ── Panel IZQ ─────────────────────────────────────────────────────────
     ax_izq.axis('off')
     ax_izq.set_xlim(0, 1)
     ax_izq.set_ylim(0, 1)
-    ax_izq.set_title('PARED IZQUIERDA', color=C_LEFT, fontsize=12, pad=6)
+    ax_izq.set_title('PARED IZQUIERDA (RANSAC)', color=C_LEFT, fontsize=12, pad=6)
 
     lbl_izq_val    = ax_izq.text(0.5, 0.60, '---', ha='center', va='center',
                                   color=C_LEFT, fontsize=34, fontweight='bold')
     lbl_izq_status = ax_izq.text(0.5, 0.22, '', ha='center', va='center',
                                   color=C_DIM, fontsize=11)
+    lbl_izq_conf   = ax_izq.text(0.5, 0.12, '', ha='center', va='center',
+                                  color=C_DIM, fontsize=8)
     # Linea indicadora del limite de repulsion (15cm)
-    ax_izq.text(0.5, 0.07, f'Limite repulsion: {int(DIST_IZQ_MIN*100)} cm',
+    ax_izq.text(0.5, 0.03, f'Limite repulsion: {int(DIST_IZQ_MIN*100)} cm',
                 ha='center', va='bottom', color=C_DIM, fontsize=8)
 
-    izq_artists = {'lbl_val': lbl_izq_val, 'lbl_status': lbl_izq_status}
+    izq_artists = {'lbl_val': lbl_izq_val, 'lbl_status': lbl_izq_status, 'lbl_conf': lbl_izq_conf}
 
     # ── Velocidad ──────────────────────────────────────────────────────────
     ax_vel.set_title('Vel. lineal (m/s)', color=C_TEXT, fontsize=9, pad=4)
@@ -391,8 +422,17 @@ def build_figure():
 
     return (fig, ax_lidar, ax_der, ax_izq, ax_vel,
             lc, traj_line, box_patches, range_circ,
-            alert_txt, box_front_txt, state_badge,
+            alert_txt, box_front_txt, state_badge, ancho_txt,
             der_artists, izq_artists, vel_line)
+
+
+def _color_confianza(conf):
+    """Color segun la confianza RANSAC (ratio de inliers). 0 = fallback usado."""
+    if conf <= 0.0:
+        return C_CONF_LO
+    if conf < CONF_MIN_OK:
+        return C_WARN
+    return C_OK
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
@@ -407,7 +447,7 @@ def main():
     plt.ion()
     (fig, ax_lidar, ax_der, ax_izq, ax_vel,
      lc, traj_line, box_patches, range_circ,
-     alert_txt, box_front_txt, state_badge,
+     alert_txt, box_front_txt, state_badge, ancho_txt,
      der_artists, izq_artists, vel_line) = build_figure()
     plt.show()
     box_scan_patches = []   # rectangulo de caja detectada por scan (se borra cada frame)
@@ -473,7 +513,7 @@ def main():
                 box_front_txt.set_text('')
 
             # ── Panel DER ─────────────────────────────────────────────────
-            dr = node.d_right
+            dr = node.dist_der
             da = der_artists
             if math.isfinite(dr) and dr <= MAX_GAUGE:
                 frac = min(dr / MAX_GAUGE, 1.0)
@@ -505,8 +545,14 @@ def main():
                 da['lbl_status'].set_text('pared no visible')
                 da['lbl_status'].set_color(C_DIM)
 
+            col_conf_der = _color_confianza(node.conf_der)
+            conf_txt_der = ('fallback (min. rango)' if node.conf_der <= 0.0
+                            else f'RANSAC conf: {node.conf_der*100:.0f}%')
+            da['lbl_conf'].set_text(conf_txt_der)
+            da['lbl_conf'].set_color(col_conf_der)
+
             # ── Panel IZQ ─────────────────────────────────────────────────
-            dl = node.d_left
+            dl = node.dist_izq
             ia = izq_artists
             if math.isfinite(dl):
                 if dl < DIST_IZQ_MIN:
@@ -532,6 +578,23 @@ def main():
                 ia['lbl_status'].set_color(C_DIM)
                 ax_izq.set_facecolor(PANEL)
 
+            col_conf_izq = _color_confianza(node.conf_izq)
+            conf_txt_izq = ('fallback (min. rango)' if node.conf_izq <= 0.0
+                            else f'RANSAC conf: {node.conf_izq*100:.0f}%')
+            ia['lbl_conf'].set_text(conf_txt_izq)
+            ia['lbl_conf'].set_color(col_conf_izq)
+
+            # ── Consistencia del ancho del jiron ──────────────────────────
+            if math.isfinite(node.ancho_medido):
+                desvio = abs(node.ancho_medido - ANCHO_JIRON)
+                col_ancho = C_OK if desvio <= TOL_ANCHO_JIRON else C_ALERT
+                ancho_txt.set_text(f'ancho jirón: {node.ancho_medido*100:.0f} cm'
+                                   f' (esp. {ANCHO_JIRON*100:.0f}±{TOL_ANCHO_JIRON*100:.0f})')
+                ancho_txt.set_color(col_ancho)
+            else:
+                ancho_txt.set_text('ancho jirón: --- (falta una pared)')
+                ancho_txt.set_color(C_DIM)
+
             # ── Historial velocidad ───────────────────────────────────────
             if len(node.vel_times) > 1:
                 t_now = time.time() - node._t0
@@ -539,15 +602,21 @@ def main():
                 vel_line.set_data(ts, list(node.vel_vals))
                 ax_vel.set_xlim(0, MAX_VEL_T)
 
-            # ── Estado FSM ────────────────────────────────────────────────
+            # ── Estado FSM (con direccion real del GIRO) ──────────────────
             st = node.fsm_state
             if st == 'GIRO':
-                sc, bg_col = C_WARN,  '#1a1000'
+                sc, bg_col = C_WARN, '#1a1000'
+                # dir_giro no se publica: se infiere del signo de angular.z,
+                # que es justamente lo que la FSM esta aplicando ahora mismo.
+                dir_txt = ' → IZQ' if node.vel_ang > 0 else (' → DER' if node.vel_ang < 0 else '')
+                badge_txt = st + dir_txt
             elif st == 'RODEO':
                 sc, bg_col = C_RODEO, '#110a1a'
+                badge_txt = st
             else:
-                sc, bg_col = C_OK,    PANEL
-            state_badge.set_text(st)
+                sc, bg_col = C_OK, PANEL
+                badge_txt = st
+            state_badge.set_text(badge_txt)
             state_badge.set_color(sc)
             state_badge.get_bbox_patch().set_edgecolor(sc)
             ax_lidar.set_facecolor(bg_col if not node.box_frente else '#1a1000')
