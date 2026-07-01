@@ -1,32 +1,32 @@
 #!/usr/bin/env python3
 """
 lidar_viz.py — Monitor visual en tiempo real del robot CapyTown.
-VERSION: v29 — RANSAC
+VERSION: v35 — sigue IZQUIERDA + sector FRENTE real
 
-Panel izquierdo : mapa LiDAR con sector frontal coloreado por estado.
-  - cyan   : sector +-12 grados libre (sin caja)
+Panel izquierdo : mapa LiDAR. FRENTE = mismo sector +-30° que usa
+  behavior_fsm de verdad (marcado con lineas punteadas), todo lo demas se
+  colorea IZQUIERDA o DERECHA (todo el LiDAR, sin banda angosta).
+  - cyan   : sector frontal libre (sin caja)
   - naranja: caja 25 cm perpendicular detectada -> se dibuja rectangulo en el mapa
-Panel derecho   : DER (grande) + IZQ (grande) + historial velocidad.
+Panel derecho   : gauge IZQUIERDA (con target, arriba) + panel DERECHA
+  (repulsion de respaldo, abajo) + historial velocidad.
 
-Cambio de version respecto a v28: DER/IZQ ya NO se recalculan desde el
-/scan crudo en este script (eso duplicaba, y podia desincronizarse de, lo
-que el robot realmente usa para controlar). Ahora se leen directamente de
-los topicos que publica wall_follower (RANSAC sobre las paredes
-laterales): /dist_izq, /dist_der, mas su confianza (ratio de inliers de
-RANSAC) en /dbg/confianza_izq y /dbg/confianza_der, y el chequeo de
-consistencia del ancho del jiron en /dbg/ancho_jiron_medido. Asi el
-monitor muestra exactamente lo que ve behavior_fsm, no una aproximacion
-paralela.
+v35: la FSM (Guardian v6) sigue la pared IZQUIERDA, no la derecha —
+paneles y sector frontal actualizados a juego. DER/IZQ se leen de los
+topicos que publica wall_follower (RANSAC): /dist_izq, /dist_der, mas su
+confianza (ratio de inliers) en /dbg/confianza_izq y /dbg/confianza_der,
+y el chequeo de consistencia del ancho del jiron en
+/dbg/ancho_jiron_medido. Asi el monitor muestra exactamente lo que ve
+behavior_fsm, no una aproximacion paralela.
 
-Tambien se agrega la direccion real del GIRO (antes siempre giraba a la
-izquierda; ahora behavior_fsm elige el lado con mas espacio), inferida del
-signo de angular.z en /cmd_vel mientras el estado es GIRO.
+Direccion real del GIRO inferida del signo de angular.z en /cmd_vel
+mientras el estado es GIRO (dir_giro no se publica directo).
 
 Deteccion de caja frontal (heuristica de visualizacion, independiente del
 censo oficial de box_detector): std_x < 4 cm (perpendicular) + 8 cm <= ancho <= 32 cm.
 """
 
-VIZ_VERSION = 'v34'
+VIZ_VERSION = 'v35'
 
 import math
 import argparse
@@ -71,17 +71,21 @@ C_OK        = '#2ecc71'
 C_CONF_LO   = '#e94560'   # confianza RANSAC baja (fallback usado)
 
 # ── Constantes ────────────────────────────────────────────────────────────────
-FRONT_GIRO_HALF = math.radians(12.0)   # +-12 grados dispara GIRO en la FSM
-SIDE_LO    = math.radians(60.0)        # solo para colorear el mapa (contexto visual)
-SIDE_HI    = math.radians(120.0)
+# Sector FRENTE: debe ser el mismo que sector_frontal_deg en
+# behavior_fsm/wall_follower (params.yaml). Todo lo que no es frente se
+# colorea IZQUIERDA (af>0) o DERECHA (af<0) — todo el LiDAR, sin banda
+# lateral angosta, igual que el calculo real en behavior_fsm.cb_scan().
+SECTOR_FRENTE = math.radians(30.0)
 
 # Deben reflejar los parametros reales de behavior_fsm/config/params.yaml.
-TARGET_DER   = 0.17   # m  objetivo pared derecha (behavior_fsm: target_der)
+# v6: la FSM sigue la pared IZQUIERDA (target) y usa la derecha solo como
+# repulsion de respaldo — al reves que el diseño viejo.
+TARGET_IZQ   = 0.17   # m  objetivo pared izquierda (behavior_fsm: target_izq)
 TOL_OK       = 0.02   # m  tolerancia OK
 MAX_GAUGE    = 0.70   # m  maximo del gauge
 
-DIST_IZQ_MIN  = 0.15  # m  zona de repulsion (behavior_fsm: d_izq_min)
-DIST_IZQ_WARN = 0.25  # m  inicio de advertencia
+DIST_DER_MIN  = 0.15  # m  zona de repulsion derecha (behavior_fsm: d_der_min)
+DIST_DER_WARN = 0.25  # m  inicio de advertencia
 
 # Chequeo de consistencia del ancho del jiron (wall_follower: ancho_jiron / tol_ancho_jiron)
 ANCHO_JIRON     = 0.60
@@ -188,15 +192,17 @@ class LidarViz(Node):
                                 math.cos(theta - self.front_rad))
             abs_af = abs(af)
 
-            # Coloreado del mapa (solo contexto visual; las distancias
-            # oficiales izq/der ya no se calculan aqui, vienen de wall_follower).
-            if abs_af <= FRONT_GIRO_HALF:
+            # Coloreado del mapa: mismo sector que usa behavior_fsm.cb_scan()
+            # de verdad — FRENTE = +-30°, todo lo demas es IZQUIERDA o
+            # DERECHA (sin banda angosta ni zona "otro"). Las distancias
+            # oficiales izq/der no se calculan aqui, vienen de wall_follower.
+            if abs_af <= SECTOR_FRENTE:
                 color = '__front__'   # placeholder: naranja o cyan segun deteccion
                 d_f = min(d_f, r)
-            elif SIDE_LO <= abs_af <= SIDE_HI:
-                color = C_LEFT if af > 0 else C_RIGHT
+            elif af > 0:
+                color = C_LEFT
             else:
-                color = C_OTHER
+                color = C_RIGHT
 
             # Colectar puntos cercanos en sector de deteccion (independiente del color)
             if abs_af <= DETECT_HALF and r <= DETECT_MAX_R:
@@ -317,6 +323,19 @@ def build_figure():
     for d, label in [(0.3, '30cm'), (0.5, '50cm'), (1.0, '1m'), (1.5, '1.5m')]:
         ax_lidar.add_patch(plt.Circle((0, 0), d, color=BORDER, fill=False, lw=0.7, ls=':'))
         ax_lidar.text(0.01, d + 0.02, label, color=BORDER, fontsize=7)
+
+    # Limites del sector FRENTE (+-SECTOR_FRENTE): mismo sector que usa
+    # behavior_fsm de verdad para disparar AVISO. Todo lo que quede fuera
+    # de estas dos lineas es IZQUIERDA (izq de la pantalla) o DERECHA.
+    _r_sec = 1.45
+    _xd_izq_b = -_r_sec * math.sin(SECTOR_FRENTE)
+    _xd_der_b =  _r_sec * math.sin(SECTOR_FRENTE)
+    _yd_b     =  _r_sec * math.cos(SECTOR_FRENTE)
+    ax_lidar.plot([0, _xd_izq_b], [0, _yd_b], color=C_WARN, lw=1.2, ls='--', alpha=0.7, zorder=2)
+    ax_lidar.plot([0, _xd_der_b], [0, _yd_b], color=C_WARN, lw=1.2, ls='--', alpha=0.7, zorder=2)
+    ax_lidar.text(0, _yd_b + 0.03, f'FRENTE ±{math.degrees(SECTOR_FRENTE):.0f}°',
+                  color=C_WARN, fontsize=7, ha='center', va='bottom', alpha=0.85)
+
     ax_lidar.scatter([0], [0], s=80, c='white', zorder=6)
     ax_lidar.annotate('', xy=(0, 0.25), xytext=(0, 0),
                       arrowprops=dict(arrowstyle='->', color=C_ARROW, lw=2.5), zorder=7)
@@ -345,28 +364,28 @@ def build_figure():
     ax_lidar.legend(handles=[
         mpatches.Patch(color=C_FRONT_OK,  label='FRENTE (sin caja)'),
         mpatches.Patch(color=C_FRONT_BOX, label='FRENTE (CAJA!)'),
-        mpatches.Patch(color=C_LEFT,      label='IZQ'),
-        mpatches.Patch(color=C_RIGHT,     label='DER'),
+        mpatches.Patch(color=C_LEFT,      label='IZQUIERDA'),
+        mpatches.Patch(color=C_RIGHT,     label='DERECHA'),
     ], loc='upper right', facecolor=BG, labelcolor=C_TEXT, fontsize=8, framealpha=0.9)
 
-    # ── Panel DER ─────────────────────────────────────────────────────────
+    # ── Panel gauge: pared IZQUIERDA (la que sigue behavior_fsm con target) ─
     ax_der.axis('off')
     ax_der.set_xlim(0, 1)
     ax_der.set_ylim(0, 1)
-    ax_der.set_title('PARED DERECHA (RANSAC)', color=C_RIGHT, fontsize=12, pad=6)
+    ax_der.set_title('PARED IZQUIERDA (RANSAC) — tracking', color=C_LEFT, fontsize=12, pad=6)
 
     # Barra gauge horizontal
     ax_der.add_patch(mpatches.FancyBboxPatch(
         (0.06, 0.76), 0.88, 0.10, boxstyle='round,pad=0.01',
         fc='#1e2a1e', ec=BORDER, lw=1.5, zorder=1))
-    ok_lo = (TARGET_DER - TOL_OK) / MAX_GAUGE
-    ok_hi = (TARGET_DER + TOL_OK) / MAX_GAUGE
+    ok_lo = (TARGET_IZQ - TOL_OK) / MAX_GAUGE
+    ok_hi = (TARGET_IZQ + TOL_OK) / MAX_GAUGE
     ax_der.add_patch(mpatches.Rectangle(
         (0.06 + 0.88 * ok_lo, 0.76), 0.88 * (ok_hi - ok_lo), 0.10,
         fc='#1a4a1a', ec='none', zorder=2))
-    tgt_x = 0.06 + 0.88 * (TARGET_DER / MAX_GAUGE)
+    tgt_x = 0.06 + 0.88 * (TARGET_IZQ / MAX_GAUGE)
     ax_der.plot([tgt_x, tgt_x], [0.74, 0.88], color=C_OK, lw=2.0, zorder=4)
-    ax_der.text(tgt_x, 0.70, f'{int(TARGET_DER*100)} cm',
+    ax_der.text(tgt_x, 0.70, f'{int(TARGET_IZQ*100)} cm',
                 ha='center', va='top', color=C_OK, fontsize=7)
     for cm in [0, 10, 20, 30, 40, 50, 60, 70]:
         xp = 0.06 + 0.88 * (cm / 100 / MAX_GAUGE)
@@ -394,20 +413,20 @@ def build_figure():
         'lbl_val': lbl_der_val, 'lbl_status': lbl_der_status, 'lbl_conf': lbl_der_conf,
     }
 
-    # ── Panel IZQ ─────────────────────────────────────────────────────────
+    # ── Panel simple: pared DERECHA (repulsion de respaldo, sin target) ────
     ax_izq.axis('off')
     ax_izq.set_xlim(0, 1)
     ax_izq.set_ylim(0, 1)
-    ax_izq.set_title('PARED IZQUIERDA (RANSAC)', color=C_LEFT, fontsize=12, pad=6)
+    ax_izq.set_title('PARED DERECHA (RANSAC) — repulsión', color=C_RIGHT, fontsize=12, pad=6)
 
     lbl_izq_val    = ax_izq.text(0.5, 0.60, '---', ha='center', va='center',
-                                  color=C_LEFT, fontsize=34, fontweight='bold')
+                                  color=C_RIGHT, fontsize=34, fontweight='bold')
     lbl_izq_status = ax_izq.text(0.5, 0.22, '', ha='center', va='center',
                                   color=C_DIM, fontsize=11)
     lbl_izq_conf   = ax_izq.text(0.5, 0.12, '', ha='center', va='center',
                                   color=C_DIM, fontsize=8)
     # Linea indicadora del limite de repulsion (15cm)
-    ax_izq.text(0.5, 0.03, f'Limite repulsion: {int(DIST_IZQ_MIN*100)} cm',
+    ax_izq.text(0.5, 0.03, f'Limite repulsion: {int(DIST_DER_MIN*100)} cm',
                 ha='center', va='bottom', color=C_DIM, fontsize=8)
 
     izq_artists = {'lbl_val': lbl_izq_val, 'lbl_status': lbl_izq_status, 'lbl_conf': lbl_izq_conf}
@@ -512,12 +531,12 @@ def main():
                 alert_txt.set_text('')
                 box_front_txt.set_text('')
 
-            # ── Panel DER ─────────────────────────────────────────────────
-            dr = node.dist_der
+            # ── Panel gauge: IZQUIERDA (target de behavior_fsm) ─────────────
+            dr = node.dist_izq
             da = der_artists
             if math.isfinite(dr) and dr <= MAX_GAUGE:
                 frac = min(dr / MAX_GAUGE, 1.0)
-                err  = dr - TARGET_DER
+                err  = dr - TARGET_IZQ
                 if abs(err) <= TOL_OK:
                     col_der = C_OK
                     der_status = f'EN OBJETIVO  ({err*100:+.0f} cm)'
@@ -545,26 +564,26 @@ def main():
                 da['lbl_status'].set_text('pared no visible')
                 da['lbl_status'].set_color(C_DIM)
 
-            col_conf_der = _color_confianza(node.conf_der)
-            conf_txt_der = ('fallback (min. rango)' if node.conf_der <= 0.0
-                            else f'RANSAC conf: {node.conf_der*100:.0f}%')
+            col_conf_der = _color_confianza(node.conf_izq)
+            conf_txt_der = ('fallback (min. rango)' if node.conf_izq <= 0.0
+                            else f'RANSAC conf: {node.conf_izq*100:.0f}%')
             da['lbl_conf'].set_text(conf_txt_der)
             da['lbl_conf'].set_color(col_conf_der)
 
-            # ── Panel IZQ ─────────────────────────────────────────────────
-            dl = node.dist_izq
+            # ── Panel simple: DERECHA (repulsion de respaldo) ───────────────
+            dl = node.dist_der
             ia = izq_artists
             if math.isfinite(dl):
-                if dl < DIST_IZQ_MIN:
+                if dl < DIST_DER_MIN:
                     col_izq    = C_ALERT
                     izq_status = f'! REPULSION ({dl*100:.1f} cm)'
                     ax_izq.set_facecolor('#1a0a0a')
-                elif dl < DIST_IZQ_WARN:
+                elif dl < DIST_DER_WARN:
                     col_izq    = C_WARN
                     izq_status = f'CERCA  ({dl*100:.1f} cm del limite)'
                     ax_izq.set_facecolor('#1a1208')
                 else:
-                    col_izq    = C_LEFT
+                    col_izq    = C_RIGHT
                     izq_status = 'OK'
                     ax_izq.set_facecolor(PANEL)
                 ia['lbl_val'].set_text(f'{dl*100:.1f} cm')
@@ -578,9 +597,9 @@ def main():
                 ia['lbl_status'].set_color(C_DIM)
                 ax_izq.set_facecolor(PANEL)
 
-            col_conf_izq = _color_confianza(node.conf_izq)
-            conf_txt_izq = ('fallback (min. rango)' if node.conf_izq <= 0.0
-                            else f'RANSAC conf: {node.conf_izq*100:.0f}%')
+            col_conf_izq = _color_confianza(node.conf_der)
+            conf_txt_izq = ('fallback (min. rango)' if node.conf_der <= 0.0
+                            else f'RANSAC conf: {node.conf_der*100:.0f}%')
             ia['lbl_conf'].set_text(conf_txt_izq)
             ia['lbl_conf'].set_color(col_conf_izq)
 
