@@ -1,4 +1,4 @@
-# CapyTown RC3 - ESAN Robotica de Moviles 2026-I
+# CapyTown RC3 (version corregida) - ESAN Robotica de Moviles 2026-I
 
 Robot Yahboom Pi5 - LiDAR MS200 - ROS2 Humble
 

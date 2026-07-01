@@ -1,132 +1,150 @@
+#!/usr/bin/env python3
 """
-lidar_utils.py
---------------
-Funciones auxiliares para el procesamiento de un LiDAR 2D (sensor_msgs/LaserScan).
+lidar_utils.py — Funciones PURAS de percepción para el censo (Parte A).
 
-Reto CapyTown - "El Censo y el Guardian de las Cajas"
-ESAN - Robotica de Moviles 2026-I
+CORRECCIONES respecto a la versión anterior:
 
-Estas funciones son PURAS (sin estado, sin ROS) para poder probarlas
-de forma independiente y reutilizarlas tanto en el detector como en la FSM.
+1. MARCO DEL ROBOT. El MS200 va montado con el frente en raw=180°: la
+   versión anterior convertía a cartesiano SIN rotar (lidar_front_deg),
+   así que los centroides quedaban en un marco girado 180° y, al
+   componerlos con /odom_raw, el censo caía en posiciones espejadas.
+   Ahora todo punto se rota primero a base_link (x adelante, y izquierda).
+
+2. VALIDACIÓN POR LADOS (Split-and-Merge corregido, sin el bug del [1:]),
+   no solo por "ancho extremo a extremo": una caja de 20×20 vista en L
+   tiene dos lados de ≤20 cm; su ancho extremo-a-extremo puede llegar a
+   28 cm (diagonal) y una pared fragmentada podía colarse con la regla
+   antigua. Se acepta como caja el cluster cuyos lados visibles son TODOS
+   cortos; cualquier lado largo (pared/esquina) lo descarta.
 """
 
 import math
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
-# Un "punto" del barrido se representa como (angulo, rango) en coordenadas polares.
-PuntoPolar = Tuple[float, float]
+Point = Tuple[float, float]
 
 
-def filtrar_scan(ranges: List[float],
-                 angle_min: float,
-                 angle_increment: float,
-                 range_min: float,
-                 range_max: float) -> List[PuntoPolar]:
-    """Convierte el arreglo crudo de rangos en una lista de puntos validos.
+def normalizar(a: float) -> float:
+    return math.atan2(math.sin(a), math.cos(a))
 
-    Descarta lecturas inf/nan y las que caen fuera del rango fisico del sensor.
 
-    Devuelve una lista de tuplas (angulo, rango) en orden de barrido.
-    """
-    puntos: List[PuntoPolar] = []
-    for i, r in enumerate(ranges):
-        # math.isfinite() descarta inf y nan de una sola vez.
+def filtrar_scan(ranges, angle_min, angle_increment, range_min, range_max,
+                 front_rad: float, rango_max: float,
+                 excluir_atras_rad: float = 0.0):
+    """/scan crudo → lista de (idx, x, y) en base_link, orden de barrido
+    CONTINUO alrededor del robot (ver nota de rotacion abajo)."""
+    n = len(ranges)
+    lim = math.pi - excluir_atras_rad
+    # Igual que en behavior_fsm/percepcion.py: el array crudo "da la vuelta"
+    # en raw=angle_min, y con front_rad=180° (cable atras del MS200) eso
+    # cae en af=0 -- el FRENTE -- partiendo en dos clusters cualquier caja
+    # que el robot tenga justo enfrente (pre_segmentar depende del indice
+    # para detectar contigueidad). Rotar el barrido para arrancar "detras"
+    # del robot mueve ese corte al cono trasero, ya excluido.
+    i0 = int(round((front_rad + math.pi - angle_min) / angle_increment)) % n
+    pts = []
+    for k in range(n):
+        i = (i0 + k) % n
+        r = ranges[i]
         if not math.isfinite(r):
             continue
-        if r < range_min or r > range_max:
+        if r < range_min or r > min(range_max, rango_max):
             continue
-        angulo = angle_min + i * angle_increment
-        puntos.append((angulo, r))
-    return puntos
+        af = normalizar(angle_min + i * angle_increment - front_rad)
+        if abs(af) > lim:
+            continue
+        pts.append((k, r * math.cos(af), r * math.sin(af)))
+    return pts
 
 
-def polar_a_cartesiano(angulo: float, rango: float) -> Tuple[float, float]:
-    """Pasa de (angulo, rango) en el marco del robot a (x, y) en el marco del robot.
-
-    Convencion ROS: x hacia adelante, y hacia la izquierda, angulo CCW.
-    """
-    x = rango * math.cos(angulo)
-    y = rango * math.sin(angulo)
-    return x, y
-
-
-def componer_odom(x_robot: float, y_robot: float,
-                  pose_x: float, pose_y: float, pose_yaw: float
-                  ) -> Tuple[float, float]:
-    """Transforma un punto del marco del robot (base) al marco 'odom'.
-
-    Aplica la composicion T_odom_base: rotacion por el yaw del robot mas
-    traslacion por la posicion del robot en odom.
-
-        [x_odom]   [cos(yaw)  -sin(yaw)] [x_robot]   [pose_x]
-        [y_odom] = [sin(yaw)   cos(yaw)] [y_robot] + [pose_y]
-    """
-    c = math.cos(pose_yaw)
-    s = math.sin(pose_yaw)
-    x_odom = c * x_robot - s * y_robot + pose_x
-    y_odom = s * x_robot + c * y_robot + pose_y
-    return x_odom, y_odom
-
-
-def yaw_desde_quaternion(x: float, y: float, z: float, w: float) -> float:
-    """Extrae el yaw (rotacion en Z) de un quaternion. Util para leer /odom."""
-    siny_cosp = 2.0 * (w * z + x * y)
-    cosy_cosp = 1.0 - 2.0 * (y * y + z * z)
-    return math.atan2(siny_cosp, cosy_cosp)
-
-
-def clustering_1d(puntos: List[PuntoPolar],
-                  umbral_salto: float) -> List[List[PuntoPolar]]:
-    """Agrupa puntos consecutivos del barrido por discontinuidad de rango.
-
-    Recorre los puntos en orden angular. Si el salto de rango entre un punto
-    y el siguiente supera 'umbral_salto', se cierra el cluster actual y se
-    inicia uno nuevo. Es el clustering 1D clasico para LiDAR de un solo plano.
-    """
-    if not puntos:
+def pre_segmentar(pts_idx, salto_dist: float, salto_idx: int):
+    """Clustering: corta por salto euclidiano o hueco de índices."""
+    if not pts_idx:
         return []
-
-    clusters: List[List[PuntoPolar]] = []
-    cluster_actual: List[PuntoPolar] = [puntos[0]]
-
-    for i in range(1, len(puntos)):
-        r_prev = puntos[i - 1][1]
-        r_act = puntos[i][1]
-        if abs(r_act - r_prev) > umbral_salto:
-            clusters.append(cluster_actual)
-            cluster_actual = [puntos[i]]
+    grupos, actual = [], [pts_idx[0]]
+    for k in range(1, len(pts_idx)):
+        ip, xp, yp = pts_idx[k - 1]
+        ic, xc, yc = pts_idx[k]
+        if (ic - ip) > salto_idx or math.hypot(xc - xp, yc - yp) > salto_dist:
+            if len(actual) >= 2:
+                grupos.append([(x, y) for _, x, y in actual])
+            actual = [pts_idx[k]]
         else:
-            cluster_actual.append(puntos[i])
-
-    clusters.append(cluster_actual)
-    return clusters
-
-
-def centroide_cluster(cluster: List[PuntoPolar]) -> Tuple[float, float]:
-    """Centroide del cluster en coordenadas cartesianas del marco del robot.
-
-    Promedia los puntos ya convertidos a (x, y) -- mas estable que promediar
-    angulo y rango por separado.
-    """
-    sx = 0.0
-    sy = 0.0
-    for ang, r in cluster:
-        x, y = polar_a_cartesiano(ang, r)
-        sx += x
-        sy += y
-    n = len(cluster)
-    return sx / n, sy / n
+            actual.append(pts_idx[k])
+    if len(actual) >= 2:
+        grupos.append([(x, y) for _, x, y in actual])
+    return grupos
 
 
-def ancho_cluster(cluster: List[PuntoPolar]) -> float:
-    """Ancho aparente del cluster: distancia entre su primer y ultimo punto."""
-    if len(cluster) < 2:
-        return 0.0
-    x0, y0 = polar_a_cartesiano(*cluster[0])
-    x1, y1 = polar_a_cartesiano(*cluster[-1])
-    return math.hypot(x1 - x0, y1 - y0)
+def _dist_perp(px, py, ax, ay, bx, by) -> float:
+    dx, dy = bx - ax, by - ay
+    L = math.hypot(dx, dy)
+    if L < 1e-9:
+        return math.hypot(px - ax, py - ay)
+    return abs(dy * px - dx * py + bx * ay - by * ax) / L
 
 
-def distancia(p1: Tuple[float, float], p2: Tuple[float, float]) -> float:
-    """Distancia euclidiana entre dos puntos (x, y)."""
+def split(pts: List[Point], umbral: float):
+    if len(pts) < 2:
+        return [pts]
+    ax, ay = pts[0]
+    bx, by = pts[-1]
+    dists = [_dist_perp(p[0], p[1], ax, ay, bx, by) for p in pts]
+    im = max(range(len(dists)), key=lambda i: dists[i])
+    if dists[im] > umbral and len(pts) > 2:
+        # sin [1:] — el bug anterior descartaba un sub-grupo por división
+        return split(pts[:im + 1], umbral) + split(pts[im:], umbral)
+    return [pts]
+
+
+def merge(grupos, umbral: float):
+    if len(grupos) <= 1:
+        return grupos
+    out = [grupos[0]]
+    for g in grupos[1:]:
+        cand = out[-1] + g
+        if len(split(cand, umbral)) == 1:
+            out[-1] = cand
+        else:
+            out.append(g)
+    return out
+
+
+def lados_cluster(grupo: List[Point], umbral_split: float, min_pts: int):
+    """Longitudes de los lados rectos del cluster (Split-and-Merge)."""
+    lados = []
+    for s in merge(split(grupo, umbral_split), umbral_split):
+        if len(s) < min_pts:
+            continue
+        lon = math.hypot(s[-1][0] - s[0][0], s[-1][1] - s[0][1])
+        if lon >= 0.05:
+            lados.append(lon)
+    return lados
+
+
+def es_caja(grupo: List[Point], umbral_split: float, min_pts: int,
+            lado_min: float, lado_max: float) -> bool:
+    """Caja ⇔ tiene lados visibles y TODOS están en [lado_min, lado_max]."""
+    lados = lados_cluster(grupo, umbral_split, min_pts)
+    if not lados:
+        return False
+    return all(lado_min <= l <= lado_max for l in lados)
+
+
+def centroide(grupo: List[Point]) -> Point:
+    n = len(grupo)
+    return (sum(p[0] for p in grupo) / n, sum(p[1] for p in grupo) / n)
+
+
+def componer_odom(x_r, y_r, px, py, pyaw) -> Point:
+    """base_link → odom:  R(yaw)·p + t."""
+    c, s = math.cos(pyaw), math.sin(pyaw)
+    return (c * x_r - s * y_r + px, s * x_r + c * y_r + py)
+
+
+def yaw_desde_quaternion(x, y, z, w) -> float:
+    return math.atan2(2.0 * (w * z + x * y), 1.0 - 2.0 * (y * y + z * z))
+
+
+def distancia(p1: Point, p2: Point) -> float:
     return math.hypot(p1[0] - p2[0], p1[1] - p2[1])

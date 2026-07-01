@@ -1,32 +1,34 @@
-# Parametros del censo de cajas (Parte A).
-# Uso:  ros2 run box_detector box_detector --ros-args --params-file params.yaml
+# Parámetros del censo de cajas (Parte A) — versión corregida.
 
 box_detector:
   ros__parameters:
-    # --- Clustering 1D (separacion de objetos por salto de rango) ---
-    umbral_salto: 0.12          # m  salto de rango que separa dos clusters
-                                #    reducido de 0.15 → separa mejor caja/pared a distancias similares
+    # --- Orientación del LiDAR ---
+    lidar_front_deg: 180.0      # frente del MS200 Yahboom (cable atrás)
+    excluir_atras_deg: 60.0     # cono trasero ignorado (cable/soporte)
 
-    # --- Filtros de cluster ---
-    min_puntos: 4               # puntos minimos por cluster (subido de 3 → menos ruido)
-    ancho_caja: 0.20            # m  ancho nominal de la caja CapyTown
-    tolerancia_ancho: 0.10      # m  margen +/- → acepta clusters en [0.10, 0.30] m
+    # --- Clustering ---
+    umbral_salto: 0.12          # m salto euclidiano que separa clusters
+    salto_idx: 5
 
-    # --- Alcance ---
-    rango_max_deteccion: 3.0    # m  ignora candidatos mas lejanos
+    # --- Split-and-Merge / validación de caja por LADOS ---
+    umbral_split: 0.04          # m tolerancia de rectitud
+    min_puntos: 4
+    lado_caja_min: 0.08         # m lado visible mínimo
+    lado_caja_max: 0.32         # m lado máx (caja 20 cm + tol; diagonal 28 cm)
+                                # cualquier lado > esto = pared -> se descarta
 
-    # --- Deduplicacion ---
-    dist_duplicado: 0.30        # m  dos detecciones son la misma caja si estan a < esto
+    # --- Alcance / deduplicación ---
+    rango_max_deteccion: 2.5    # m ignora candidatos más lejanos
+    dist_duplicado: 0.30        # m dos detecciones < esto = la misma caja
 
-    # --- Odometria ---
-    topic_odom: '/odom_raw'     # topico de odometria del yahboom_driver (confirmado con ros2 topic hz)
+    # --- Odometría ---
+    topic_odom: '/odom_raw'     # confirmado con ros2 topic hz
 
 metrics_logger:
   ros__parameters:
     # Ground-truth en marco odom como lista plana [x1,y1, x2,y2, ...]
     # ACTUALIZAR antes de cada corrida con las posiciones reales de las 5 cajas
     ground_truth: [1.0, 0.5, 2.0, -0.5, 3.0, 0.4]
-    tolerancia_match: 0.30      # m  maxima distancia para contar VP
-    corrida: 0                  # 0 = autonumerar por filas en CSV existente
-                                # N = forzar numero de corrida
-    archivo_csv: '~/metricas_lidar.csv'  # guardado en /root/ siempre
+    tolerancia_match: 0.30
+    corrida: 0                  # 0 = autonumerar
+    archivo_csv: '~/metricas_lidar.csv'

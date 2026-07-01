@@ -1,10 +1,13 @@
 """
-capytown.launch.py
-------------------
-Lanzamiento COMPLETO del reto: driver LiDAR + detector (Parte A) + guardian (Parte B)
-+ logger de metricas.
+capytown.launch.py — Lanzamiento COMPLETO del reto.
 
     ros2 launch behavior_fsm capytown.launch.py
+
+Lanza: box_detector (Parte A) + metrics_logger + guardián (Parte B).
+El guardián ya integra el seguimiento de pared derecha; wall_follower
+es solo un nodo de depuración opcional y NO se lanza aquí.
+El bringup del robot (driver LiDAR + base) va aparte:
+    ros2 launch capytown_esan bringup.launch.py
 """
 
 import os
@@ -18,14 +21,6 @@ def generate_launch_description():
         get_package_share_directory('box_detector'), 'config', 'params.yaml')
     params_fsm = os.path.join(
         get_package_share_directory('behavior_fsm'), 'config', 'params.yaml')
-
-    # Driver del LiDAR (Yahboom MS200). Ajusta package/executable a tu driver real.
-    driver_lidar = Node(
-        package='ms200_driver',          # <-- cambia segun tu driver
-        executable='ms200_driver_node',  # <-- cambia segun tu driver
-        name='lidar_driver',
-        output='screen',
-    )
 
     detector = Node(
         package='box_detector',
@@ -43,14 +38,6 @@ def generate_launch_description():
         parameters=[params_det],
     )
 
-    wall = Node(
-        package='behavior_fsm',
-        executable='wall_follower',
-        name='wall_follower',
-        output='screen',
-        parameters=[params_fsm],
-    )
-
     guardian = Node(
         package='behavior_fsm',
         executable='behavior_fsm',
@@ -60,9 +47,7 @@ def generate_launch_description():
     )
 
     return LaunchDescription([
-        # driver_lidar,   # <-- descomenta cuando tengas el driver correcto
         detector,
         metrics,
-        wall,
         guardian,
     ])

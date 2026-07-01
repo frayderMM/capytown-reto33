@@ -1,83 +1,73 @@
-# Parametros del guardian (Parte B) — version mejorada.
-#
-# Ejecutar:
-#   ros2 run behavior_fsm behavior_fsm  --ros-args --params-file params.yaml
-#   ros2 run behavior_fsm wall_follower --ros-args --params-file params.yaml
+# Parámetros del Guardián (Parte B) — versión corregida.
+# El guardián integra percepción + seguimiento de pared + FSM en UN nodo.
+# wall_follower es solo depuración opcional (usa el mismo bloque de abajo).
 
 behavior_fsm:
   ros__parameters:
-
     # --- Orientación del LiDAR ---
-    lidar_front_deg: 180.0      # ángulo donde está el FRENTE en el LiDAR
-                                # 180 = Yahboom MS200 montado con cable atrás (por defecto)
-                                # 0   = montaje estándar ROS
-                                # CAMBIAR si el robot reacciona en dirección equivocada
+    lidar_front_deg: 180.0      # frente del MS200 Yahboom (cable atrás)
+    excluir_atras_deg: 60.0     # cono trasero ignorado (cable/soporte ~12 cm)
+    # remove_min_deg: 135.0     # zona angular extra a ignorar (marco robot)
+    # remove_max_deg: 225.0
+    rango_max: 3.5              # m distancia máxima a procesar
 
-    # --- Sectores ---
-    sector_frontal_deg: 30.0    # +/- grados del cono frontal
-    sector_lateral_lo:  60.0    # inicio sector lateral [grados]
-    sector_lateral_hi: 120.0    # fin sector lateral [grados]
-    excluir_atras_deg:  60.0    # +/- grados detras del robot excluidos del minimo
-                                 # global -- el cable/soporte del LiDAR esta justo
-                                 # ahi y se leia como obstaculo fijo a ~12cm,
-                                 # disparando EMERGENCIA en casi todos los ciclos
+    # --- Offsets LiDAR -> borde físico del robot (medidos en el chasis) ---
+    offset_frente: 0.15
+    offset_atras:  0.10
+    offset_lados:  0.08
 
-    # --- Offsets LiDAR -> borde fisico del robot (medidos en el chasis,
-    # NO son iguales en cada direccion) -- todas las distancias del LiDAR
-    # se corrigen con esto antes de comparar contra cualquier umbral ---
-    offset_frente: 0.15          # m  LiDAR -> borde frontal
-    offset_atras:  0.10          # m  LiDAR -> borde trasero
-    offset_lados:  0.08          # m  LiDAR -> borde lateral
+    # --- Clustering / Split-and-Merge / clasificación ---
+    salto_dist: 0.12            # m salto euclidiano que separa clusters
+    salto_idx: 5                # huecos de índice para cortar cluster
+    umbral_split: 0.04          # m tolerancia de rectitud (S&M)
+    min_puntos: 4
+    lado_caja_max: 0.32         # m lado máx de caja (20 cm + tol; diag 28 cm)
+    min_long_pared: 0.45        # m lado mínimo de pared
+    cos_lateral_min: 0.55
+    votos_clase: 5              # barridos del voto por mayoría (anti-ruido)
 
-    # --- Distancias de reaccion (en espacio libre real, post-offset) ---
-    dist_alerta:        0.33    # m  empieza a frenar y a anticipar el giro
-                                 # (cerca de dist_obstaculo: sigue pegado a la
-                                 # derecha mientras el obstaculo esta lejos, solo
-                                 # reacciona cuando esta cerca)
-    dist_obstaculo:      0.30    # m  giro a maxima intensidad
-    dist_emergencia:    0.04    # m  margen real minimo antes del stop total
+    # --- Seguimiento de pared DERECHA ---
+    dist_pared: 0.15            # m holgura LADO del robot -> pared
+                                # (LiDAR queda a 0.15+0.08=0.23 m; jirón 60 cm)
+    Kp: 1.4
+    Kd: 0.20
+    Ka: 1.0                     # ganancia de alineación angular con la pared
+    max_w: 0.8                  # rad/s saturación
+    max_delta_w: 0.15           # rad/s por ciclo (anti-zigzag)
 
-    # --- Velocidades ---
-    vel_crucero:  0.22     # m/s  velocidad en zona libre (subida de 0.18)
-    vel_min:      0.08     # m/s  velocidad minima al estar a dist_obstaculo
-                            # (subida de 0.05: nunca se detiene del todo si no
-                            # hay emergencia real, siempre sigue avanzando)
-    w_giro_max:   0.45     # rad/s  maximo giro al evadir un frente bloqueado
-
-    # --- Evasion (caja u esquina real, no se distinguen -- medir el ancho
-    # de lo que bloquea el frente con el LiDAR resulto poco confiable en
-    # pista y confundia una caja con una esquina) ---
-    t_evasion_min:           0.3   # s  compromiso minimo en evasion antes de volver a
-                                    # AVANCE (evita pegarse a la derecha con el obstaculo
-                                    # aun al costado, recien despejado del frente)
-    margen_salida_evasion:   0.05  # m  extra sobre dist_alerta para SALIR de evasion
-                                    # (histeresis, evita zigzag AVANCE/EVADIR justo en
-                                    # el umbral de entrada)
+    # --- FSM / velocidades (distancias frontales POST-OFFSET: borde real) ---
+    vel_crucero: 0.15
+    vel_min: 0.07
+    w_giro: 0.7                 # rad/s en giros de esquina y rodeo
+    dist_alerta: 0.35           # m entra a CAJA_DETECTADA
+    dist_parada: 0.17           # m se detiene frente a la caja (reto: >= 0.15)
+    dist_esquina: 0.20          # m borde -> pared frontal para girar 90° izq
+                                # (tras el giro la pared queda a ~0.20+0.15=0.35
+                                #  del LiDAR y el PD converge a 0.23)
+    dist_emergencia: 0.04
+    espera_seg: 3.0
+    ang_rodeo_deg: 45.0
+    avance_diag: 0.38           # m diagonal: 0.25 m laterales / sen(45°)
+    avance_paralelo: 0.55       # m recto para pasar la caja (20 cm + robot + margen)
+    cooldown_esquina: 2.0       # s sin re-disparar giro de esquina
+    topic_odom: '/odom_raw'     # odometría del yahboom_driver
 
 wall_follower:
   ros__parameters:
-    # --- Control lateral ---
-    dist_objetivo:  0.08        # m    distancia deseada a la pared DERECHA en crucero normal
-    dist_objetivo_evasion: 0.06 # m    mas cerca mientras behavior_fsm esta evadiendo un obstaculo
-    Kp:             0.80        # ganancia proporcional
-    Kd:             0.10        # ganancia derivativa
-    max_correccion: 0.40        # rad/s  saturación de salida
-    max_delta_w:    0.12        # rad/s por ciclo  limita el cambio de w entre ciclos
-                                 # (evita el salto de -max a +max de golpe)
-
-    # --- Clasificación de segmentos ---
-    min_long_pared: 0.35        # m  longitud mínima para considerar un segmento pared
-                                 # (bajado de 0.60: en pista la pared larga se fragmenta
-                                 # por ruido/cajas y no llegaba a 0.60m -> sin correccion.
-                                 # 0.35m sigue muy por encima del ancho de una caja ~0.15-0.25m)
-    cos_lateral_min: 0.55       # cos del ángulo máximo con el eje X
-
-    # --- Algoritmo Split-and-Merge ---
-    umbral_split:   0.06        # m  tolerancia de rectitud
-    rango_max:      3.50        # m  distancia máxima a procesar
-    salto_dist:     0.35        # m  salto euclidiano para cortar grupo
-    salto_idx:      5           # N  huecos de índice para cortar grupo
-
-    # --- Zona angular ignorada (descomentar si el cable tapa el LiDAR) ---
-    # remove_min_deg: 135.0
-    # remove_max_deg: 225.0
+    lidar_front_deg: 180.0
+    excluir_atras_deg: 60.0
+    rango_max: 3.5
+    salto_dist: 0.12
+    salto_idx: 5
+    umbral_split: 0.04
+    min_puntos: 4
+    lado_caja_max: 0.32
+    min_long_pared: 0.45
+    cos_lateral_min: 0.55
+    dist_pared: 0.15
+    offset_lados: 0.08
+    Kp: 1.4
+    Kd: 0.20
+    Ka: 1.0
+    max_w: 0.8
+    max_delta_w: 0.15
