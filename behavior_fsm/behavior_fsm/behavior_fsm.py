@@ -80,10 +80,6 @@ class BehaviorFSM(Node):
                                                                   # una pared/esquina real (gira
                                                                   # fijo a la izquierda, mismo
                                                                   # sentido que sigue el circuito)
-        self.declare_parameter('t_esquina_min', 0.4)  # s  compromiso minimo girando a la
-                                                        # izquierda en una esquina real antes
-                                                        # de reevaluar -- evita oscilar/dar
-                                                        # vueltas de mas en la esquina
         self.declare_parameter('t_evasion_min', 0.3)  # s  compromiso minimo en evasion
                                                         # (caja o esquina) antes de poder volver
                                                         # a AVANCE -- evita pegarse de nuevo a
@@ -111,7 +107,6 @@ class BehaviorFSM(Node):
         self.cono_clas     = math.radians(self.get_parameter('cono_clasificacion_deg').value)
         self.salto_cluster = self.get_parameter('salto_cluster').value
         self.ancho_max_caja = self.get_parameter('ancho_max_caja').value
-        self.t_esquina_min = self.get_parameter('t_esquina_min').value
         self.t_evasion_min = self.get_parameter('t_evasion_min').value
 
         # ── Sensores ──────────────────────────────────────────────────────
@@ -133,8 +128,8 @@ class BehaviorFSM(Node):
         self.create_timer(0.1, self.loop_control)
 
         self._en_evasion = False  # para publicar /parada_dist solo al entrar a la zona de evasion
-        self._en_esquina = False  # compromiso minimo en una esquina real (evita oscilar)
-        self._t_esquina_inicio = self.get_clock().now()
+        self._es_esquina_evasion = False  # tipo de evasion, fijado UNA vez al entrar
+        self._lado_evasion = 1.0          # lado de evasion, fijado UNA vez al entrar
         self._t_evasion_inicio = self.get_clock().now()
 
         self.get_logger().info('BehaviorFSM listo — evasion omnidireccional continua')
@@ -261,17 +256,19 @@ class BehaviorFSM(Node):
 
         # Giro: solo reacciona a lo que tiene perpendicular al frente
         # (no a paredes laterales paralelas al avance). Progresivo desde
-        # dist_alerta hasta el maximo en dist_obstaculo. Distingue dos
-        # casos segun el ANCHO de lo que bloquea (ver cb_scan):
-        #   - caja (angosto, < ancho_max_caja): evade eligiendo el lado
-        #     con MAS espacio libre -- no siempre el mismo lado.
-        #   - esquina real del circuito (ancho, >= ancho_max_caja, o sin
-        #     cluster valido): gira SIEMPRE a la izquierda, el mismo
-        #     sentido en que se sigue la pared derecha del jiron -- no
-        #     reevalua lado por lado, evita "girar de mas" en la esquina.
-        # En ambos casos la fuerza del giro se limita segun cuanto
-        # espacio REAL hay en el lado elegido (no solo que el frente
-        # este bloqueado): casi sin margen ahi, se modula hasta casi 0.
+        # dist_alerta hasta el maximo en dist_obstaculo. El TIPO (esquina
+        # real vs. caja) y el LADO se deciden UNA sola vez al entrar a la
+        # evasion y quedan fijos todo el episodio -- reevaluarlos cada
+        # ciclo (10Hz) es lo que producia giros erraticos ("360") cuando
+        # c_izq/c_der estaban parecidos y el lado alternaba tick a tick.
+        #   - esquina real (ancho >= ancho_max_caja, o sin cluster valido):
+        #     izquierda fija, el mismo sentido en que se sigue el circuito.
+        #   - caja (angosta): tambien prioriza izquierda (se aleja
+        #     momentaneamente de la pared derecha que sigue normalmente);
+        #     solo cae a la derecha si ahi no hay espacio real de entrada.
+        # La fuerza del giro se limita segun cuanto espacio REAL hay en el
+        # lado elegido (no solo que el frente este bloqueado): casi sin
+        # margen ahi, se modula hasta casi 0.
         w = 0.0
         estado = 'AVANCE'
         t_desde_evasion = (self.get_clock().now() - self._t_evasion_inicio).nanoseconds * 1e-9
@@ -284,43 +281,28 @@ class BehaviorFSM(Node):
         if c_frente < self.d_alerta or forzar_evasion:
             ratio = max(0.0, min(1.0, (self.d_alerta - c_frente) / (self.d_alerta - self.d_obst)))
 
-            es_esquina_ahora = (self.ancho_obstruccion is None
-                                 or self.ancho_obstruccion >= self.ancho_max_caja)
-            t_en_esquina = (self.get_clock().now() - self._t_esquina_inicio).nanoseconds * 1e-9
-
-            if self._en_esquina and t_en_esquina < self.t_esquina_min:
-                # Compromiso minimo: ya se empezo a girar la esquina real,
-                # no reevaluar lado a lado hasta completar el giro -- evita
-                # que un vistazo momentaneo a espacio libre a mitad de giro
-                # lo saque y lo vuelva a meter, dando vueltas de mas.
-                es_esquina = True
-            else:
-                es_esquina = es_esquina_ahora
-                if es_esquina and not self._en_esquina:
-                    self._t_esquina_inicio = self.get_clock().now()
-                self._en_esquina = es_esquina
-
-            if es_esquina:
-                lado = 1.0  # izquierda fija, sigue el sentido del circuito
-                estado = 'ESQUINA'
-            else:
-                lado = 1.0 if c_izq >= c_der else -1.0  # +1 = izquierda, -1 = derecha
-                estado = 'EVADIR'
-
-            c_lado = c_izq if lado > 0 else c_der
-            factor_espacio = max(0.0, min(1.0, (c_lado - self.d_emerg) / (self.d_alerta - self.d_emerg)))
-            w = lado * ratio * factor_espacio * self.w_giro_max
-
             if not self._en_evasion:
+                self._es_esquina_evasion = (self.ancho_obstruccion is None
+                                             or self.ancho_obstruccion >= self.ancho_max_caja)
+                if self._es_esquina_evasion:
+                    self._lado_evasion = 1.0  # esquina real: siempre izquierda
+                else:
+                    self._lado_evasion = 1.0 if c_izq >= (self.d_emerg + 0.05) else -1.0
                 self._en_evasion = True
                 self._t_evasion_inicio = self.get_clock().now()
                 d_msg = Float32(); d_msg.data = float(c_frente)
                 self.pub_parada.publish(d_msg)
+
+            lado = self._lado_evasion
+            estado = 'ESQUINA' if self._es_esquina_evasion else 'EVADIR'
+
+            c_lado = c_izq if lado > 0 else c_der
+            factor_espacio = max(0.0, min(1.0, (c_lado - self.d_emerg) / (self.d_alerta - self.d_emerg)))
+            w = lado * ratio * factor_espacio * self.w_giro_max
         else:
             # Frente libre, sin obstaculo que evadir: seguir la pared
             # derecha para recorrer el circuito.
             self._en_evasion = False
-            self._en_esquina = False
             w = self._w_lateral
 
         self.get_logger().info(

@@ -48,8 +48,6 @@ behavior_fsm:
     salto_cluster:           0.15  # m  salto de rango que separa un cluster de otro
     ancho_max_caja:          0.35  # m  bajo esto es caja (evade); sobre esto es esquina
                                     # real del circuito (gira fijo a la izquierda)
-    t_esquina_min:           0.4   # s  compromiso minimo girando la esquina real antes
-                                    # de reevaluar (evita oscilar/dar vueltas de mas)
     t_evasion_min:           0.3   # s  compromiso minimo en evasion antes de volver a
                                     # AVANCE (evita pegarse a la derecha con el obstaculo
                                     # aun al costado, recien despejado del frente)
