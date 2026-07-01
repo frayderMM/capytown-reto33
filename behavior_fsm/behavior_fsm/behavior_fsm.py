@@ -63,9 +63,7 @@ class BehaviorFSM(Node):
         # --- Distancias de reaccion (ya en espacio libre real, post-offset) ---
         self.declare_parameter('dist_alerta',     0.38)  # m  empieza a frenar y a anticipar el giro
         self.declare_parameter('dist_obstaculo',  0.30)  # m  giro a maxima intensidad
-        self.declare_parameter('dist_emergencia', 0.09)  # m  margen real minimo antes del stop total
-                                                           # (mas margen: los umbrales anteriores
-                                                           # dejaban rozar el obstaculo)
+        self.declare_parameter('dist_emergencia', 0.04)  # m  margen real minimo antes del stop total
 
         # --- Velocidades ---
         self.declare_parameter('vel_crucero', 0.22)
