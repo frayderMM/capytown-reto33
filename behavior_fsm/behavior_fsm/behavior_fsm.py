@@ -54,10 +54,11 @@ class BehaviorFSM(Node):
         self.declare_parameter('vel_giro_gradual', 0.50)
         self.declare_parameter('max_w',            0.60)
 
-        self.declare_parameter('t_giro_min', 1.2)
+        self.declare_parameter('t_giro_min', 0.8)
         self.declare_parameter('t_giro_max', 4.0)
         self.declare_parameter('t_cooldown', 2.0)
-        self.declare_parameter('t_recuperacion', 1.5)  # s  suprime w_front post-GIRO
+        self.declare_parameter('t_recuperacion', 1.5)
+        self.declare_parameter('d_izq_salida_giro', 0.20)  # m  sale de GIRO si izq < esto
 
         # ── Cargar ────────────────────────────────────────────────────────
         self.front_rad    = math.radians(self.get_parameter('lidar_front_deg').value)
@@ -115,10 +116,11 @@ class BehaviorFSM(Node):
         self.v_cruise     = self.get_parameter('vel_crucero').value
         self.w_giro       = self.get_parameter('vel_giro_gradual').value
         self.max_w        = self.get_parameter('max_w').value
-        self.t_giro_min    = self.get_parameter('t_giro_min').value
-        self.t_giro_max    = self.get_parameter('t_giro_max').value
-        self.t_cooldown    = self.get_parameter('t_cooldown').value
-        self.t_recuperacion = self.get_parameter('t_recuperacion').value
+        self.t_giro_min        = self.get_parameter('t_giro_min').value
+        self.t_giro_max        = self.get_parameter('t_giro_max').value
+        self.t_cooldown        = self.get_parameter('t_cooldown').value
+        self.t_recuperacion    = self.get_parameter('t_recuperacion').value
+        self.d_izq_salida_giro = self.get_parameter('d_izq_salida_giro').value
 
     def _on_params(self, params):
         self._reload_params()
@@ -238,9 +240,18 @@ class BehaviorFSM(Node):
 
         # GIRO
         elif self.estado == GIRO:
+            # Salida 1: salvavidas tiempo
             if self._t_estado() > self.t_giro_max:
                 self._cambiar(CRUCERO)
                 return
+            # Salida 2: pared izq demasiado cerca → para de girar antes de chocar
+            if math.isfinite(self.dist_izq) and self.dist_izq < self.d_izq_salida_giro:
+                self.get_logger().warn(
+                    f'GIRO→CRUCERO por pared izq={self.dist_izq:.2f}m',
+                    throttle_duration_sec=0.3)
+                self._cambiar(CRUCERO)
+                return
+            # Salida 3: frente despejado tras t_giro_min
             if self._t_estado() >= self.t_giro_min and self.dist_frente > self.d_giro:
                 self._cambiar(CRUCERO)
                 return

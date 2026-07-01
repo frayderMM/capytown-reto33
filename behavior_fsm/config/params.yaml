@@ -49,10 +49,13 @@ behavior_fsm:
     max_w:            0.60  # rad/s  cap angular
 
     # Temporizacion
-    t_giro_min:      1.2    # s
+    t_giro_min:      0.8    # s  reducido (antes 1.2s = 34deg, ahora 0.8s = 23deg)
     t_giro_max:      4.0    # s
     t_cooldown:      2.0    # s
-    t_recuperacion:  1.5    # s  suprime w_front tras GIRO para recuperar alineacion
+    t_recuperacion:  1.5    # s  suprime w_front tras GIRO
+
+    # Salida anticipada de GIRO por pared izquierda
+    d_izq_salida_giro: 0.20  # m  sale de GIRO si pared izq < 20 cm
 
 wall_follower:
   ros__parameters:
