@@ -177,10 +177,11 @@ def main():
                 frente_txt = '--' if df is None else f'{df:.2f} m'
                 clase_txt = dbg.get('clase_frente') or '--'
                 pared_txt = '--' if pd_ is None else f"{pd_['d']:.2f} m"
+                ref_txt = '' if pd_ is None else f" [{pd_.get('tipo', 'PARED')}]"
                 axL.text(0.02, 0.02,
                          f"FSM: {dbg['estado']}[{dbg['fase']}]   "
                          f"frente: {frente_txt} ({clase_txt})   "
-                         f"pared der: {pared_txt}",
+                         f"pared der: {pared_txt}{ref_txt}",
                          transform=axL.transAxes, color='#ffd54f', fontsize=9)
 
                 trail = dbg.get('trail', [])
@@ -195,7 +196,6 @@ def main():
                              markersize=13, color=COLOR_POSE, zorder=5,
                              label='carrito')
                 cajas_vivas = dbg.get('cajas_vivas', [])
-                cajas_fijas = dbg.get('cajas_fijas', [])
                 for i, (bx, by) in enumerate(cajas_vivas):
                     axR.add_patch(mpatches.Rectangle(
                         (bx - 0.10, by - 0.10), 0.20, 0.20,
@@ -204,29 +204,18 @@ def main():
                     axR.annotate(f'VIVA {i + 1}', (bx, by), color='#ffa726',
                                  ha='center', va='center', fontsize=7,
                                  fontweight='bold', zorder=5)
-                for i, (bx, by) in enumerate(cajas_fijas):
-                    axR.add_patch(mpatches.Rectangle(
-                        (bx - 0.10, by - 0.10), 0.20, 0.20,
-                        facecolor='#ffa726', alpha=0.85, zorder=4))
-                    axR.annotate(f'FIJA {i + 1}', (bx, by), color='black',
-                                 ha='center', va='center', fontsize=7,
-                                 fontweight='bold', zorder=5)
-                if trail or pose or cajas_vivas or cajas_fijas:
+                if trail or pose or cajas_vivas:
                     handles, labels = axR.get_legend_handles_labels()
                     if cajas_vivas:
                         handles.append(mpatches.Patch(
                             facecolor='none', edgecolor='#ffa726',
                             linestyle='--', label='caja visible'))
-                    if cajas_fijas:
-                        handles.append(mpatches.Patch(color='#ffa726',
-                                                      label='caja fija'))
                     axR.legend(handles=handles, loc='upper right', facecolor=BG,
                                edgecolor='#444', labelcolor='white', fontsize=8)
                 axR.set_title(
-                    f"Recorrido + cajas — {len(cajas_vivas)} visibles / "
-                    f"{len(cajas_fijas)} fijas",
+                    f"Recorrido + cajas vivas — {len(cajas_vivas)} visibles",
                               color='white', fontsize=10)
-                todos = trail + cajas_vivas + cajas_fijas + ([pose[:2]] if pose else [])
+                todos = trail + cajas_vivas + ([pose[:2]] if pose else [])
                 if todos:
                     xs, ys = [q[0] for q in todos], [q[1] for q in todos]
                     cx, cy = (max(xs) + min(xs)) / 2, (max(ys) + min(ys)) / 2

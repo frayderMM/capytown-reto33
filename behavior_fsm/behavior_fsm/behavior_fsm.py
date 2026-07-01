@@ -156,7 +156,6 @@ class Guardian(Node):
         self.pose = None
         self.trail = []
         self.cajas_vivas = []
-        self.cajas_fijas = []
 
         # ── FSM ─────────────────────────────────────────────────────────────
         self.estado = CRUCERO
@@ -204,7 +203,8 @@ class Guardian(Node):
                                self.umbral_split, self.min_puntos,
                                self.lado_caja, self.min_pared)
         self.clusters = cls
-        self.pared_der = pc.pared_derecha(cls, self.min_pared, self.cos_lat)
+        self.pared_der = (pc.camino_derecho(pts, self.off_l)
+                          or pc.pared_derecha(cls, self.min_pared, self.cos_lat))
         (self.d_frente, clase_f, self.d_izq, self.d_der,
          self.punto_fp) = pc.frente_y_lados(pts, cls, self.off_f, self.off_l)
         self._actualizar_cajas_desde_scan(cls)
@@ -288,18 +288,14 @@ class Guardian(Node):
             if odom is None:
                 continue
             ox, oy = odom
-            if cx > -0.20:
-                vivas.append((ox, oy))
-            elif all(math.hypot(ox - fx, oy - fy) > 0.45
-                     for fx, fy in self.cajas_fijas):
-                self.cajas_fijas.append((ox, oy))
+            vivas.append((ox, oy))
         self.cajas_vivas = vivas[-6:]
-        self.cajas_fijas = self.cajas_fijas[-8:]
 
     def loop(self):
         d = self.d_frente
 
-        if self.punto_fp is not None and self.estado != EMERGENCIA:
+        if (self.punto_fp is not None and d < self.d_parada
+                and self.estado != EMERGENCIA):
             self._cambiar(EMERGENCIA)
 
         if self.estado == CRUCERO:
@@ -353,14 +349,12 @@ class Guardian(Node):
                 self._pub(0.0, self.w_giro)     # 90° IZQUIERDA (lazo CCW)
 
         elif self.estado == EMERGENCIA:
-            if self.punto_fp is None:
+            if self.punto_fp is None or self.d_frente >= self.d_parada:
                 self._cambiar(CRUCERO)
             elif self._t() > 4.0:
                 self._cambiar(PARAR)            # persistente → tratar como caja
             else:
-                px, py = self.punto_fp
-                w = self.w_giro if py <= 0 else -self.w_giro
-                self._pub(0.0, 0.5 * w)         # rota alejándose, sin avanzar
+                self._pub(0.0, 0.0)
 
     # ── Seguimiento de pared derecha (PD + alineación + rate limiter) ───────
     def _w_pared(self):
@@ -374,6 +368,10 @@ class Guardian(Node):
             dt = max((now - self._t_pd).nanoseconds * 1e-9, 0.01)
             derr = (err - self._err_prev) / dt
             self._err_prev, self._t_pd = err, now
+            if abs(err) < 0.08 and abs(ref['alpha']) < 0.35:
+                w = 0.0
+                self._w_prev = 0.0
+                return w
             # lejos → girar derecha (w<0); alpha≠0 → realinear paralelo
             w = -self.Kp * err - self.Kd * derr + self.Ka * ref['alpha']
             w = max(-self.max_w, min(self.max_w, w))
@@ -427,15 +425,17 @@ class Guardian(Node):
             'pared_der': (None if self.pared_der is None else
                           {'d': round(self.pared_der['d'], 3),
                            'alpha_deg': round(math.degrees(
-                               self.pared_der['alpha']), 1)}),
+                               self.pared_der['alpha']), 1),
+                           'tipo': self.pared_der.get('tipo', 'PARED'),
+                           'd_front': self.pared_der.get('d_front'),
+                           'd_rear': self.pared_der.get('d_rear')}),
             'd_izq': None if not math.isfinite(self.d_izq) else round(self.d_izq, 3),
             'd_der': None if not math.isfinite(self.d_der) else round(self.d_der, 3),
             'pose': None if self.pose is None else [round(v, 3) for v in self.pose],
             'trail': [[round(x, 3), round(y, 3)] for x, y in self.trail[-400:]],
             'cajas_vivas': [[round(x, 3), round(y, 3)]
                             for x, y in self.cajas_vivas],
-            'cajas_fijas': [[round(x, 3), round(y, 3)]
-                            for x, y in self.cajas_fijas],
+            'cajas_fijas': [],
             'segs': segs,
         }
         m = String()

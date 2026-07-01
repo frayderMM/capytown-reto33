@@ -274,6 +274,53 @@ def pared_derecha(clusters, min_long_pared: float, cos_lateral_min: float):
     return mejor
 
 
+def _mediana_cercanos(vals, n=6):
+    if not vals:
+        return None
+    vals = sorted(vals)[:n]
+    m = len(vals) // 2
+    return vals[m] if len(vals) % 2 else 0.5 * (vals[m - 1] + vals[m])
+
+
+def camino_derecho(pts_idx, off_lado: float):
+    """
+    Borde derecho por puntos crudos del LiDAR: compara una ventana delantera
+    y una ventana trasera/lateral. Prioriza avanzar recto si ambas ven el
+    borde a distancia parecida.
+    """
+    front = []
+    rear = []
+    center = []
+    for p in pts_idx:
+        x, y = p[1], p[2]
+        if y >= -(off_lado + 0.015) or y < -1.20:
+            continue
+        d = -y
+        if 0.08 <= x <= 0.48:
+            front.append(d)
+        elif -0.28 <= x <= 0.04:
+            rear.append(d)
+        elif -0.05 <= x <= 0.28:
+            center.append(d)
+
+    df = _mediana_cercanos(front)
+    dr = _mediana_cercanos(rear)
+    dc = _mediana_cercanos(center)
+
+    if df is not None and dr is not None:
+        d = 0.5 * (df + dr)
+        alpha = math.atan2(dr - df, 0.38)
+        return {'d': d, 'alpha': alpha, 'lon': 0.38, 'tipo': 'CAMINO_DER',
+                'd_front': df, 'd_rear': dr}
+    if dc is not None:
+        return {'d': dc, 'alpha': 0.0, 'lon': 0.20, 'tipo': 'CAMINO_DER'}
+    if df is not None:
+        return {'d': df, 'alpha': 0.0, 'lon': 0.20, 'tipo': 'CAMINO_DER'}
+    if dr is not None:
+        return {'d': dr, 'alpha': 0.0, 'lon': 0.20, 'tipo': 'CAMINO_DER'}
+    return None
+
+
 def caja_derecha(clusters, cos_lateral_min: float):
     """Referencia temporal para seguir la cara de una caja por la derecha."""
     mejor = None
@@ -333,8 +380,10 @@ def frente_y_lados(pts_idx, clusters, off_frente, off_lado,
                 d_izq = min(d_izq, y - off_lado)
             else:
                 d_der = min(d_der, -y - off_lado)
-        # footprint inflado (emergencia)
-        if punto_fp is None and (-0.10 - 0.02 <= x <= off_frente + 0.03
-                                 and abs(y) <= off_lado + 0.03):
+        # Emergencia solo por invasión frontal real. La pared derecha puede
+        # pasar cerca del costado sin ser choque; si se toma como footprint,
+        # el robot entra en EMERGENCIA y gira a la izquierda sin avanzar.
+        if punto_fp is None and (0.02 <= x <= off_frente + 0.04
+                                 and abs(y) <= off_lado * 0.80):
             punto_fp = (x, y)
     return d_frente, clase_f, d_izq, d_der, punto_fp

@@ -27,13 +27,13 @@ behavior_fsm:
     votos_clase: 5              # barridos del voto por mayoría (anti-ruido)
 
     # --- Seguimiento de pared DERECHA ---
-    dist_pared: 0.15            # m holgura LADO del robot -> pared
+    dist_pared: 0.06            # m holgura LADO del robot -> pared
                                 # (LiDAR queda a 0.15+0.08=0.23 m; jirón 60 cm)
-    Kp: 1.4
-    Kd: 0.20
-    Ka: 1.0                     # ganancia de alineación angular con la pared
-    max_w: 0.8                  # rad/s saturación
-    max_delta_w: 0.15           # rad/s por ciclo (anti-zigzag)
+    Kp: 0.8
+    Kd: 0.05
+    Ka: 0.5                     # ganancia de alineación angular con la pared
+    max_w: 0.45                 # rad/s saturación
+    max_delta_w: 0.08           # rad/s por ciclo (anti-zigzag)
 
     # --- FSM / velocidades (distancias frontales POST-OFFSET: borde real) ---
     vel_crucero: 0.15
@@ -65,10 +65,10 @@ wall_follower:
     lado_caja_max: 0.32
     min_long_pared: 0.45
     cos_lateral_min: 0.55
-    dist_pared: 0.15
+    dist_pared: 0.06
     offset_lados: 0.08
-    Kp: 1.4
-    Kd: 0.20
-    Ka: 1.0
-    max_w: 0.8
-    max_delta_w: 0.15
+    Kp: 0.8
+    Kd: 0.05
+    Ka: 0.5
+    max_w: 0.45
+    max_delta_w: 0.08
