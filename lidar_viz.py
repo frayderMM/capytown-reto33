@@ -146,7 +146,7 @@ def main():
             axL.cla()
             estilo(axL, 'Marco robot — scan + clasificación')
             axR.cla()
-            estilo(axR, 'Marco odom — recorrido + censo')
+            estilo(axR, 'Marco odom — recorrido + cajas')
 
             if scan is not None:
                 pts = puntos_scan(scan, front_rad, args.rango_max, atras_rad)
@@ -194,24 +194,39 @@ def main():
                     axR.plot(x, y, marker=(3, 0, math.degrees(yaw) - 90),
                              markersize=13, color=COLOR_POSE, zorder=5,
                              label='carrito')
-                censo = dbg.get('censo', [])
-                for i, (bx, by) in enumerate(censo):
+                cajas_vivas = dbg.get('cajas_vivas', [])
+                cajas_fijas = dbg.get('cajas_fijas', [])
+                for i, (bx, by) in enumerate(cajas_vivas):
+                    axR.add_patch(mpatches.Rectangle(
+                        (bx - 0.10, by - 0.10), 0.20, 0.20,
+                        facecolor='none', edgecolor='#ffa726',
+                        linewidth=2.0, linestyle='--', zorder=4))
+                    axR.annotate(f'VIVA {i + 1}', (bx, by), color='#ffa726',
+                                 ha='center', va='center', fontsize=7,
+                                 fontweight='bold', zorder=5)
+                for i, (bx, by) in enumerate(cajas_fijas):
                     axR.add_patch(mpatches.Rectangle(
                         (bx - 0.10, by - 0.10), 0.20, 0.20,
                         facecolor='#ffa726', alpha=0.85, zorder=4))
-                    axR.annotate(f'CAJA {i + 1}', (bx, by), color='black',
+                    axR.annotate(f'FIJA {i + 1}', (bx, by), color='black',
                                  ha='center', va='center', fontsize=7,
                                  fontweight='bold', zorder=5)
-                if trail or pose or censo:
+                if trail or pose or cajas_vivas or cajas_fijas:
                     handles, labels = axR.get_legend_handles_labels()
-                    if censo:
+                    if cajas_vivas:
+                        handles.append(mpatches.Patch(
+                            facecolor='none', edgecolor='#ffa726',
+                            linestyle='--', label='caja visible'))
+                    if cajas_fijas:
                         handles.append(mpatches.Patch(color='#ffa726',
-                                                      label='caja censada'))
+                                                      label='caja fija'))
                     axR.legend(handles=handles, loc='upper right', facecolor=BG,
                                edgecolor='#444', labelcolor='white', fontsize=8)
-                axR.set_title(f'Recorrido + censo — {len(censo)} cajas',
+                axR.set_title(
+                    f"Recorrido + cajas — {len(cajas_vivas)} visibles / "
+                    f"{len(cajas_fijas)} fijas",
                               color='white', fontsize=10)
-                todos = trail + censo + ([pose[:2]] if pose else [])
+                todos = trail + cajas_vivas + cajas_fijas + ([pose[:2]] if pose else [])
                 if todos:
                     xs, ys = [q[0] for q in todos], [q[1] for q in todos]
                     cx, cy = (max(xs) + min(xs)) / 2, (max(ys) + min(ys)) / 2

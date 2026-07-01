@@ -47,7 +47,7 @@ from rclpy.qos import QoSProfile, ReliabilityPolicy
 
 from sensor_msgs.msg import LaserScan
 from nav_msgs.msg import Odometry
-from geometry_msgs.msg import Twist, PoseArray
+from geometry_msgs.msg import Twist
 from std_msgs.msg import String, Float32
 
 from behavior_fsm import percepcion as pc
@@ -148,7 +148,6 @@ class Guardian(Node):
         self.clase_frente = None
         self.votos = deque(maxlen=self.n_votos)   # voto por mayoría de clase
         self.pared_der = None
-        self.caja_der = None
         self.punto_fp = None
         self.d_izq = self.d_der = float('inf')
         self.clusters = []
@@ -156,7 +155,8 @@ class Guardian(Node):
         # ── Odometría / censo (de box_detector) ────────────────────────────
         self.pose = None
         self.trail = []
-        self.censo = []
+        self.cajas_vivas = []
+        self.cajas_fijas = []
 
         # ── FSM ─────────────────────────────────────────────────────────────
         self.estado = CRUCERO
@@ -173,7 +173,6 @@ class Guardian(Node):
         qos.reliability = ReliabilityPolicy.BEST_EFFORT
         self.create_subscription(LaserScan, '/scan', self.cb_scan, qos)
         self.create_subscription(Odometry, g('topic_odom'), self.cb_odom, qos)
-        self.create_subscription(PoseArray, '/cajas_avistadas', self.cb_censo, 10)
         self.pub_cmd    = self.create_publisher(Twist, '/cmd_vel', 10)
         self.pub_estado = self.create_publisher(String, '/fsm_state', 10)
         self.pub_parada = self.create_publisher(Float32, '/parada_dist', 10)
@@ -196,9 +195,6 @@ class Guardian(Node):
             self.trail.append((p.x, p.y))
             self.trail = self.trail[-600:]
 
-    def cb_censo(self, msg: PoseArray):
-        self.censo = [(p.position.x, p.position.y) for p in msg.poses]
-
     def cb_scan(self, msg: LaserScan):
         pts = pc.filtrar_scan(msg.ranges, msg.angle_min, msg.angle_increment,
                               msg.range_min, msg.range_max,
@@ -209,9 +205,9 @@ class Guardian(Node):
                                self.lado_caja, self.min_pared)
         self.clusters = cls
         self.pared_der = pc.pared_derecha(cls, self.min_pared, self.cos_lat)
-        self.caja_der = pc.caja_derecha(cls, self.cos_lat)
         (self.d_frente, clase_f, self.d_izq, self.d_der,
          self.punto_fp) = pc.frente_y_lados(pts, cls, self.off_f, self.off_l)
+        self._actualizar_cajas_desde_scan(cls)
 
         # Voto por mayoría: la clase del frente solo cambia si la mayoría de
         # los últimos N barridos coincide — un scan ruidoso ya no decide.
@@ -272,6 +268,34 @@ class Guardian(Node):
         return self.v_min + ratio * (self.v_cru - self.v_min)
 
     # ── Lazo de control 10 Hz ────────────────────────────────────────────────
+    def _a_odom(self, x, y):
+        if self.pose is None:
+            return None
+        px, py, yaw = self.pose
+        ox = math.cos(yaw) * x - math.sin(yaw) * y + px
+        oy = math.sin(yaw) * x + math.cos(yaw) * y + py
+        return ox, oy
+
+    def _actualizar_cajas_desde_scan(self, clusters):
+        vivas = []
+        for cl in clusters:
+            if cl['clase'] != pc.CAJA:
+                continue
+            cx, cy = cl['c']
+            if math.hypot(cx, cy) > 2.0:
+                continue
+            odom = self._a_odom(cx, cy)
+            if odom is None:
+                continue
+            ox, oy = odom
+            if cx > -0.20:
+                vivas.append((ox, oy))
+            elif all(math.hypot(ox - fx, oy - fy) > 0.45
+                     for fx, fy in self.cajas_fijas):
+                self.cajas_fijas.append((ox, oy))
+        self.cajas_vivas = vivas[-6:]
+        self.cajas_fijas = self.cajas_fijas[-8:]
+
     def loop(self):
         d = self.d_frente
 
@@ -339,8 +363,8 @@ class Guardian(Node):
                 self._pub(0.0, 0.5 * w)         # rota alejándose, sin avanzar
 
     # ── Seguimiento de pared derecha (PD + alineación + rate limiter) ───────
-    def _w_pared(self, usar_caja=False):
-        ref = self.caja_der if usar_caja and self.caja_der is not None else self.pared_der
+    def _w_pared(self):
+        ref = self.pared_der
         if ref is None:
             w = 0.0                              # sin referencia: recto
             self._err_prev = 0.0
@@ -385,7 +409,7 @@ class Guardian(Node):
                 self._w_prev = 0.0
                 self._cambiar(CRUCERO)           # el PD lo re-pega a la derecha
             else:
-                self._pub(self.v_cru, self._w_pared(usar_caja=True))
+                self._pub(self.v_cru, self._w_pared())
 
     # ── Debug JSON para lidar_viz.py ─────────────────────────────────────────
     def _publicar_debug(self):
@@ -404,15 +428,14 @@ class Guardian(Node):
                           {'d': round(self.pared_der['d'], 3),
                            'alpha_deg': round(math.degrees(
                                self.pared_der['alpha']), 1)}),
-            'caja_der': (None if self.caja_der is None else
-                         {'d': round(self.caja_der['d'], 3),
-                          'alpha_deg': round(math.degrees(
-                              self.caja_der['alpha']), 1)}),
             'd_izq': None if not math.isfinite(self.d_izq) else round(self.d_izq, 3),
             'd_der': None if not math.isfinite(self.d_der) else round(self.d_der, 3),
             'pose': None if self.pose is None else [round(v, 3) for v in self.pose],
             'trail': [[round(x, 3), round(y, 3)] for x, y in self.trail[-400:]],
-            'censo': [[round(x, 3), round(y, 3)] for x, y in self.censo],
+            'cajas_vivas': [[round(x, 3), round(y, 3)]
+                            for x, y in self.cajas_vivas],
+            'cajas_fijas': [[round(x, 3), round(y, 3)]
+                            for x, y in self.cajas_fijas],
             'segs': segs,
         }
         m = String()
