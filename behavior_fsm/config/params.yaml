@@ -5,8 +5,9 @@
 # deteccion durante esa ventana) → CRUCERO (recalibra contra la pared
 # izquierda).
 # dist_izq / dist_der ya NO se calculan aqui: los publica wall_follower
-# (minimos cuadrados sobre las paredes laterales, con casi todo el
-# barrido del LiDAR, simetrico para ambos lados) en /dist_izq y /dist_der.
+# (Split-and-Merge + minimos cuadrados sobre las paredes laterales, con
+# casi todo el barrido del LiDAR, simetrico para ambos lados) en
+# /dist_izq y /dist_der.
 
 behavior_fsm:
   ros__parameters:
@@ -52,9 +53,11 @@ behavior_fsm:
     t_cooldown:      2.0   # s  cooldown post-GIRO antes de poder disparar otro AVISO
     t_recuperacion:  1.5   # s  suprime w_front tras GIRO, solo w_izq (recalibra)
 
-# wall_follower — paredes laterales por minimos cuadrados (antes RANSAC:
-# en la practica daba peor resultado por el muestreo aleatorio, que
-# variaba de cuadro a cuadro con la pared quieta).
+# wall_follower — paredes laterales por Split-and-Merge + minimos
+# cuadrados (antes RANSAC: en la practica daba peor resultado por el
+# muestreo aleatorio, que variaba de cuadro a cuadro con la pared
+# quieta). Split-and-Merge separa la pared de una caja que la interrumpe
+# de forma deterministica, sin aleatoriedad.
 # Publica /dist_izq y /dist_der; behavior_fsm los consume, no los recalcula.
 wall_follower:
   ros__parameters:
@@ -65,7 +68,12 @@ wall_follower:
     sector_trasero_deg: 160.0   # excluido del ajuste (posible otra pared tras un giro)
     rango_max:            3.50  # m  ignora lecturas mas lejanas
 
-    min_puntos_lado: 15         # puntos minimos en el lado para ajustar la recta
+    # Split-and-Merge
+    umbral_split:        0.05   # m  tolerancia de rectitud (split si se pasa)
+    salto_dist:           0.20  # m  salto euclidiano = discontinuidad de objeto (pre-segmentacion)
+    salto_idx:                5 # huecos de indice = discontinuidad (pre-segmentacion)
+    min_puntos_segmento:      4 # puntos minimos para que un segmento sobreviva
+    min_long_pared:        0.35 # m  longitud minima para ser "pared" (caja mide ~0.20-0.23m)
 
     ema_alpha: 0.5              # suavizado temporal de dist_izq/dist_der
 

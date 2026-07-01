@@ -13,13 +13,14 @@ Panel derecho   : gauge IZQUIERDA (con target, arriba) + panel DERECHA
 
 v35: la FSM (Guardian v6) sigue la pared IZQUIERDA, no la derecha —
 paneles y sector frontal actualizados a juego. DER/IZQ se leen de los
-topicos que publica wall_follower (minimos cuadrados, no RANSAC): mas
-simple y deterministico, sin variacion de cuadro a cuadro con la pared
-quieta. /dist_izq, /dist_der, mas si se pudo ajustar recta o se uso el
-fallback en /dbg/confianza_izq y /dbg/confianza_der, y el chequeo de
-consistencia del ancho del jiron en /dbg/ancho_jiron_medido. Asi el
-monitor muestra exactamente lo que ve behavior_fsm, no una aproximacion
-paralela.
+topicos que publica wall_follower (Split-and-Merge + minimos cuadrados,
+no RANSAC): deterministico, sin variacion de cuadro a cuadro con la
+pared quieta, y separa la pared de una caja que la interrumpe sin
+muestreo aleatorio. /dist_izq, /dist_der, mas si se encontro un
+segmento de pared o se uso el fallback en /dbg/confianza_izq y
+/dbg/confianza_der, y el chequeo de consistencia del ancho del jiron en
+/dbg/ancho_jiron_medido. Asi el monitor muestra exactamente lo que ve
+behavior_fsm, no una aproximacion paralela.
 
 Direccion real del GIRO inferida del signo de angular.z en /cmd_vel
 mientras el estado es GIRO (dir_giro no se publica directo).
@@ -28,7 +29,7 @@ Deteccion de caja frontal (heuristica de visualizacion, independiente del
 censo oficial de box_detector): std_x < 4 cm (perpendicular) + 8 cm <= ancho <= 32 cm.
 """
 
-VIZ_VERSION = 'v36'
+VIZ_VERSION = 'v37'
 
 import math
 import argparse
@@ -129,7 +130,7 @@ class LidarViz(Node):
         self.vel_ang    = 0.0
         self.cajas_odom = []
 
-        # Distancias laterales: llegan de wall_follower (minimos cuadrados), no se
+        # Distancias laterales: llegan de wall_follower (Split-and-Merge), no se
         # recalculan aqui. Igual para su confianza (ratio de inliers).
         self.dist_izq   = float('inf')
         self.dist_der   = float('inf')
@@ -371,7 +372,7 @@ def build_figure():
     ax_der.axis('off')
     ax_der.set_xlim(0, 1)
     ax_der.set_ylim(0, 1)
-    ax_der.set_title('PARED IZQUIERDA (mín. cuadrados) — tracking', color=C_LEFT, fontsize=12, pad=6)
+    ax_der.set_title('PARED IZQUIERDA (S&M) — tracking', color=C_LEFT, fontsize=12, pad=6)
 
     # Barra gauge horizontal
     ax_der.add_patch(mpatches.FancyBboxPatch(
@@ -416,7 +417,7 @@ def build_figure():
     ax_izq.axis('off')
     ax_izq.set_xlim(0, 1)
     ax_izq.set_ylim(0, 1)
-    ax_izq.set_title('PARED DERECHA (mín. cuadrados) — repulsión', color=C_RIGHT, fontsize=12, pad=6)
+    ax_izq.set_title('PARED DERECHA (S&M) — repulsión', color=C_RIGHT, fontsize=12, pad=6)
 
     lbl_izq_val    = ax_izq.text(0.5, 0.60, '---', ha='center', va='center',
                                   color=C_RIGHT, fontsize=34, fontweight='bold')
@@ -562,7 +563,7 @@ def main():
 
             col_conf_der = _color_confianza(node.conf_izq)
             conf_txt_der = ('fallback (min. rango)' if node.conf_izq <= 0.0
-                            else 'recta ajustada (mín. cuadrados)')
+                            else 'pared encontrada (S&M)')
             da['lbl_conf'].set_text(conf_txt_der)
             da['lbl_conf'].set_color(col_conf_der)
 
@@ -595,7 +596,7 @@ def main():
 
             col_conf_izq = _color_confianza(node.conf_der)
             conf_txt_izq = ('fallback (min. rango)' if node.conf_der <= 0.0
-                            else 'recta ajustada (mín. cuadrados)')
+                            else 'pared encontrada (S&M)')
             ia['lbl_conf'].set_text(conf_txt_izq)
             ia['lbl_conf'].set_color(col_conf_izq)
 

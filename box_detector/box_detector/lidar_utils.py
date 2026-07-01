@@ -182,3 +182,107 @@ def distancia_recta_origen(recta: Recta) -> float:
     """Distancia perpendicular del origen (el robot, marco base_link) a la recta."""
     _, _, c = recta
     return abs(c)
+
+
+# ── Split-and-Merge ──────────────────────────────────────────────────────
+# Segmenta una nube de puntos en tramos localmente rectos. A diferencia de
+# ajustar una sola recta a todos los puntos del lado (sesgable por una caja
+# pegada a la pared), Split-and-Merge separa la pared de la caja en
+# segmentos distintos de forma deterministica (sin muestreo aleatorio como
+# RANSAC), y luego se puede elegir el segmento mas largo (la pared) para
+# el ajuste final por minimos cuadrados.
+
+def pre_segmentar(puntos_idx_xy: List[Tuple[int, float, float]],
+                  salto_dist: float, salto_idx: int) -> List[List[PuntoXY]]:
+    """Rompe una nube de puntos (idx_barrido, x, y) ordenada en grupos
+    contiguos, cortando donde hay un hueco de indice (puntos no
+    consecutivos en el barrido, p.ej. por lecturas invalidas filtradas) o
+    un salto euclidiano grande (discontinuidad de objeto: el borde de una
+    caja frente a la pared). Devuelve una lista de grupos, cada uno una
+    lista de (x, y). Descarta grupos de un solo punto (no definen recta).
+    """
+    if not puntos_idx_xy:
+        return []
+    grupos: List[List[PuntoXY]] = []
+    actual = [puntos_idx_xy[0]]
+    for k in range(1, len(puntos_idx_xy)):
+        ip, xp, yp = puntos_idx_xy[k - 1]
+        ic, xc, yc = puntos_idx_xy[k]
+        if (ic - ip) > salto_idx or math.hypot(xc - xp, yc - yp) > salto_dist:
+            if len(actual) >= 2:
+                grupos.append([(x, y) for _, x, y in actual])
+            actual = [puntos_idx_xy[k]]
+        else:
+            actual.append(puntos_idx_xy[k])
+    if len(actual) >= 2:
+        grupos.append([(x, y) for _, x, y in actual])
+    return grupos
+
+
+def _distancia_perpendicular_segmento(px, py, ax, ay, bx, by) -> float:
+    """Distancia de (px,py) a la recta que pasa por (ax,ay)-(bx,by)."""
+    dx, dy = bx - ax, by - ay
+    L = math.hypot(dx, dy)
+    if L < 1e-9:
+        return math.hypot(px - ax, py - ay)
+    return abs(dy * px - dx * py + bx * ay - by * ax) / L
+
+
+def dividir_split(puntos_xy: List[PuntoXY], umbral: float) -> List[List[PuntoXY]]:
+    """Paso 'split': si el punto de mayor desviacion perpendicular a la
+    cuerda (primer punto - ultimo punto) supera el umbral, corta ahi y
+    repite recursivamente en cada mitad. Cuando ya no hay que cortar mas,
+    devuelve el tramo tal cual (localmente recto dentro del umbral)."""
+    if len(puntos_xy) < 3:
+        return [puntos_xy]
+    ax, ay = puntos_xy[0]
+    bx, by = puntos_xy[-1]
+    dists = [_distancia_perpendicular_segmento(p[0], p[1], ax, ay, bx, by)
+             for p in puntos_xy]
+    im = max(range(len(dists)), key=lambda i: dists[i])
+    if dists[im] > umbral:
+        return dividir_split(puntos_xy[:im + 1], umbral) + dividir_split(puntos_xy[im:], umbral)[1:]
+    return [puntos_xy]
+
+
+def fusionar_merge(segmentos: List[List[PuntoXY]], umbral: float) -> List[List[PuntoXY]]:
+    """Paso 'merge': fusiona segmentos adyacentes si, juntos, siguen
+    siendo una sola recta dentro del umbral — evita sobre-segmentar un
+    tramo recto que el split partio de mas por ruido puntual."""
+    if len(segmentos) <= 1:
+        return segmentos
+    fusionados = [segmentos[0]]
+    for seg in segmentos[1:]:
+        candidato = fusionados[-1] + seg
+        if len(dividir_split(candidato, umbral)) == 1:
+            fusionados[-1] = candidato
+        else:
+            fusionados.append(seg)
+    return fusionados
+
+
+def segmentar_split_and_merge(puntos_idx_xy: List[Tuple[int, float, float]],
+                              umbral_split: float,
+                              salto_dist: float,
+                              salto_idx: int,
+                              min_puntos_segmento: int = 4) -> List[List[PuntoXY]]:
+    """Pipeline completo: pre-segmenta por discontinuidad de objeto, luego
+    aplica split+merge a cada grupo contiguo. Descarta segmentos con menos
+    de min_puntos_segmento puntos (ruido, no una pared).
+
+    Devuelve la lista final de segmentos, cada uno una lista de (x, y).
+    """
+    segmentos_finales: List[List[PuntoXY]] = []
+    for grupo in pre_segmentar(puntos_idx_xy, salto_dist, salto_idx):
+        for seg in fusionar_merge(dividir_split(grupo, umbral_split), umbral_split):
+            if len(seg) >= min_puntos_segmento:
+                segmentos_finales.append(seg)
+    return segmentos_finales
+
+
+def largo_segmento(segmento: List[PuntoXY]) -> float:
+    """Longitud de un segmento: distancia entre su primer y ultimo punto."""
+    if len(segmento) < 2:
+        return 0.0
+    (x0, y0), (x1, y1) = segmento[0], segmento[-1]
+    return math.hypot(x1 - x0, y1 - y0)
