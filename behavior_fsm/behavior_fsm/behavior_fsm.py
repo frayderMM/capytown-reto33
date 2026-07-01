@@ -2,16 +2,18 @@
 """
 behavior_fsm.py  —  PARTE B: "El Guardian"
 
-Control reactivo continuo (sin estados discretos, sin seguir ninguna
-pared ni mantener distancia a ningun lado): en cada ciclo calcula el
-espacio libre real hasta el borde del robot (la distancia que da el
-LiDAR menos el offset fisico LiDAR→borde, distinto al frente/atras/
-costados) y combina dos señales graduales:
+Control reactivo continuo. La pista es un circuito cerrado (jiron de
+60cm) con paredes a ambos lados, asi que con el frente libre se sigue
+la pared derecha (correccion de wall_follower.py via /lateral_correction,
+objetivo 8cm) para recorrer el circuito -- no es "avanzar sin rumbo".
+Cuando aparece un obstaculo (caja) al frente, esa guia se reemplaza
+por evasion:
 
   - velocidad: progresiva, baja segun se cierra el espacio al frente.
-  - giro: progresivo, solo reacciona cuando hay algo perpendicular al
-    frente (no a paredes laterales paralelas al avance), eligiendo el
-    lado con MAS espacio libre para girar.
+  - giro: con el frente libre, sigue la pared derecha. Si hay algo
+    perpendicular al frente, evade progresivamente eligiendo el lado
+    con MAS espacio libre, limitando la fuerza del giro segun cuanto
+    espacio real hay ahi (no gira fuerte hacia un lado casi sin margen).
 
 La parada de emergencia (omnidireccional) es la unica que vigila los
 costados, usando los offsets reales LiDAR->borde para no chocar por
@@ -89,11 +91,13 @@ class BehaviorFSM(Node):
         self.dist_izq    = float('inf')
         self.dist_der    = float('inf')
         self.dist_min    = float('inf')  # minimo global, todos los angulos
+        self._w_lateral  = 0.0           # correccion de wall_follower (seguir pared derecha)
 
         # ── ROS I/O ───────────────────────────────────────────────────────
         _qos = QoSProfile(depth=10)
         _qos.reliability = ReliabilityPolicy.BEST_EFFORT
-        self.create_subscription(LaserScan, '/scan', self.cb_scan, _qos)
+        self.create_subscription(LaserScan, '/scan',               self.cb_scan, _qos)
+        self.create_subscription(Float32,   '/lateral_correction', self._cb_lat, 10)
         self.pub_cmd    = self.create_publisher(Twist,   '/cmd_vel',     10)
         self.pub_estado = self.create_publisher(String,  '/fsm_state',   10)
         self.pub_parada = self.create_publisher(Float32, '/parada_dist', 10)
@@ -136,6 +140,9 @@ class BehaviorFSM(Node):
         self.dist_izq    = d_l
         self.dist_der    = d_r
         self.dist_min    = d_min
+
+    def _cb_lat(self, msg: Float32):
+        self._w_lateral = msg.data
 
     # ── Helpers ───────────────────────────────────────────────────────────
     def _pub(self, v: float, w: float, estado: str):
@@ -212,7 +219,10 @@ class BehaviorFSM(Node):
                 d_msg = Float32(); d_msg.data = float(c_frente)
                 self.pub_parada.publish(d_msg)
         else:
+            # Frente libre, sin obstaculo que evadir: seguir la pared
+            # derecha para recorrer el circuito.
             self._en_evasion = False
+            w = self._w_lateral
 
         self.get_logger().info(
             f'c_frente={c_frente:.2f} c_izq={c_izq:.2f} c_der={c_der:.2f}  v={v:.2f} w={w:.2f}',
