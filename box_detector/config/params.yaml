@@ -7,7 +7,7 @@ box_detector:
     excluir_atras_deg: 60.0     # cono trasero ignorado (cable/soporte)
 
     # --- Clustering ---
-    umbral_salto: 0.12          # m salto euclidiano que separa clusters
+    umbral_salto: 0.09          # m salto euclidiano que separa clusters
     salto_idx: 5
 
     # --- Split-and-Merge / validación de caja por LADOS ---
@@ -19,7 +19,9 @@ box_detector:
 
     # --- Alcance / deduplicación ---
     rango_max_deteccion: 2.5    # m ignora candidatos más lejanos
-    dist_duplicado: 0.30        # m dos detecciones < esto = la misma caja
+    dist_duplicado: 0.45        # m dos detecciones < esto = la misma caja
+    confirmaciones_caja: 3      # lecturas repetidas antes de censar
+    max_cajas: 8                # tope anti-falsos positivos acumulados
 
     # --- Odometría ---
     topic_odom: '/odom_raw'     # confirmado con ros2 topic hz

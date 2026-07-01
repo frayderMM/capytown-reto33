@@ -122,11 +122,27 @@ def lados_cluster(grupo: List[Point], umbral_split: float, min_pts: int):
     return lados
 
 
+def _bbox(grupo: List[Point]):
+    xs = [p[0] for p in grupo]
+    ys = [p[1] for p in grupo]
+    return min(xs), max(xs), min(ys), max(ys)
+
+
 def es_caja(grupo: List[Point], umbral_split: float, min_pts: int,
             lado_min: float, lado_max: float) -> bool:
     """Caja ⇔ tiene lados visibles y TODOS están en [lado_min, lado_max]."""
+    if len(grupo) < max(6, min_pts):
+        return False
     lados = lados_cluster(grupo, umbral_split, min_pts)
     if not lados:
+        return False
+    min_x, max_x, min_y, max_y = _bbox(grupo)
+    span_x = max_x - min_x
+    span_y = max_y - min_y
+    diag = math.hypot(span_x, span_y)
+    if span_x > lado_max * 1.25 or span_y > lado_max * 1.25:
+        return False
+    if diag > lado_max * 1.55:
         return False
     return all(lado_min <= l <= lado_max for l in lados)
 

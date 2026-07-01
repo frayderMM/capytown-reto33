@@ -17,7 +17,7 @@ behavior_fsm:
     offset_lados:  0.08
 
     # --- Clustering / Split-and-Merge / clasificación ---
-    salto_dist: 0.12            # m salto euclidiano que separa clusters
+    salto_dist: 0.09            # m salto euclidiano que separa clusters
     salto_idx: 5                # huecos de índice para cortar cluster
     umbral_split: 0.04          # m tolerancia de rectitud (S&M)
     min_puntos: 4
@@ -38,7 +38,8 @@ behavior_fsm:
     # --- FSM / velocidades (distancias frontales POST-OFFSET: borde real) ---
     vel_crucero: 0.15
     vel_min: 0.07
-    w_giro: 0.7                 # rad/s en giros de esquina y rodeo
+    w_giro: 0.5                 # rad/s en giros de esquina y rodeo
+    vel_giro_arco: 0.04         # m/s para que el rodeo no pivote tan cerrado
     dist_alerta: 0.35           # m entra a CAJA_DETECTADA
     dist_parada: 0.17           # m se detiene frente a la caja (reto: >= 0.15)
     dist_esquina: 0.20          # m borde -> pared frontal para girar 90° izq
@@ -46,9 +47,9 @@ behavior_fsm:
                                 #  del LiDAR y el PD converge a 0.23)
     dist_emergencia: 0.04
     espera_seg: 3.0
-    ang_rodeo_deg: 45.0
-    avance_diag: 0.38           # m diagonal: 0.25 m laterales / sen(45°)
-    avance_paralelo: 0.55       # m recto para pasar la caja (20 cm + robot + margen)
+    ang_rodeo_deg: 50.0
+    avance_diag: 0.42           # m diagonal: abre el rodeo antes de pasar
+    avance_paralelo: 0.65       # m recto para pasar la caja (20 cm + robot + margen)
     cooldown_esquina: 2.0       # s sin re-disparar giro de esquina
     topic_odom: '/odom_raw'     # odometría del yahboom_driver
 
@@ -57,7 +58,7 @@ wall_follower:
     lidar_front_deg: 180.0
     excluir_atras_deg: 60.0
     rango_max: 3.5
-    salto_dist: 0.12
+    salto_dist: 0.09
     salto_idx: 5
     umbral_split: 0.04
     min_puntos: 4

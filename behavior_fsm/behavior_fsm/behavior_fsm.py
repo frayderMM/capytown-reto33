@@ -97,6 +97,7 @@ class Guardian(Node):
         self.declare_parameter('vel_crucero', 0.15)
         self.declare_parameter('vel_min', 0.07)
         self.declare_parameter('w_giro', 0.7)
+        self.declare_parameter('vel_giro_arco', 0.04)
         self.declare_parameter('dist_alerta', 0.35)    # entra a CAJA_DETECTADA
         self.declare_parameter('dist_parada', 0.17)    # se detiene (reto exige ≥0.15)
         self.declare_parameter('dist_esquina', 0.20)   # borde→pared frontal p/ girar
@@ -131,6 +132,7 @@ class Guardian(Node):
         self.max_w, self.max_dw   = g('max_w'), g('max_delta_w')
         self.v_cru, self.v_min, self.w_giro = (g('vel_crucero'), g('vel_min'),
                                                g('w_giro'))
+        self.v_arco = g('vel_giro_arco')
         self.d_alerta   = g('dist_alerta')
         self.d_parada   = g('dist_parada')
         self.d_esquina  = g('dist_esquina')
@@ -146,6 +148,7 @@ class Guardian(Node):
         self.clase_frente = None
         self.votos = deque(maxlen=self.n_votos)   # voto por mayoría de clase
         self.pared_der = None
+        self.caja_der = None
         self.punto_fp = None
         self.d_izq = self.d_der = float('inf')
         self.clusters = []
@@ -206,6 +209,7 @@ class Guardian(Node):
                                self.lado_caja, self.min_pared)
         self.clusters = cls
         self.pared_der = pc.pared_derecha(cls, self.min_pared, self.cos_lat)
+        self.caja_der = pc.caja_derecha(cls, self.cos_lat)
         (self.d_frente, clase_f, self.d_izq, self.d_der,
          self.punto_fp) = pc.frente_y_lados(pts, cls, self.off_f, self.off_l)
 
@@ -335,18 +339,19 @@ class Guardian(Node):
                 self._pub(0.0, 0.5 * w)         # rota alejándose, sin avanzar
 
     # ── Seguimiento de pared derecha (PD + alineación + rate limiter) ───────
-    def _w_pared(self):
-        if self.pared_der is None:
+    def _w_pared(self, usar_caja=False):
+        ref = self.caja_der if usar_caja and self.caja_der is not None else self.pared_der
+        if ref is None:
             w = 0.0                              # sin referencia: recto
             self._err_prev = 0.0
         else:
-            err = self.pared_der['d'] - self.d_obj_lidar   # >0: lejos
+            err = ref['d'] - self.d_obj_lidar   # >0: lejos
             now = self.get_clock().now()
             dt = max((now - self._t_pd).nanoseconds * 1e-9, 0.01)
             derr = (err - self._err_prev) / dt
             self._err_prev, self._t_pd = err, now
             # lejos → girar derecha (w<0); alpha≠0 → realinear paralelo
-            w = -self.Kp * err - self.Kd * derr + self.Ka * self.pared_der['alpha']
+            w = -self.Kp * err - self.Kd * derr + self.Ka * ref['alpha']
             w = max(-self.max_w, min(self.max_w, w))
         # limitador de tasa de cambio (anti-zigzag, lección aprendida)
         w = max(self._w_prev - self.max_dw, min(self._w_prev + self.max_dw, w))
@@ -364,7 +369,7 @@ class Guardian(Node):
             if self._giro_ok(self.ang_rodeo):
                 self._cambiar(RODEAR, 1)
             else:
-                self._pub(0.0, self.w_giro)
+                self._pub(self.v_arco, self.w_giro)
         elif self.fase == 1:                     # diagonal: libra la caja
             if self._avance_ok(self.av_diag):
                 self._cambiar(RODEAR, 2)
@@ -374,13 +379,13 @@ class Guardian(Node):
             if self._giro_ok(self.ang_rodeo):
                 self._cambiar(RODEAR, 3)
             else:
-                self._pub(0.0, -self.w_giro)
+                self._pub(self.v_arco, -self.w_giro)
         elif self.fase == 3:                     # recto: pasa la caja
             if self._avance_ok(self.av_par):
                 self._w_prev = 0.0
                 self._cambiar(CRUCERO)           # el PD lo re-pega a la derecha
             else:
-                self._pub(self.v_cru, 0.0)
+                self._pub(self.v_cru, self._w_pared(usar_caja=True))
 
     # ── Debug JSON para lidar_viz.py ─────────────────────────────────────────
     def _publicar_debug(self):
@@ -399,6 +404,10 @@ class Guardian(Node):
                           {'d': round(self.pared_der['d'], 3),
                            'alpha_deg': round(math.degrees(
                                self.pared_der['alpha']), 1)}),
+            'caja_der': (None if self.caja_der is None else
+                         {'d': round(self.caja_der['d'], 3),
+                          'alpha_deg': round(math.degrees(
+                              self.caja_der['alpha']), 1)}),
             'd_izq': None if not math.isfinite(self.d_izq) else round(self.d_izq, 3),
             'd_der': None if not math.isfinite(self.d_der) else round(self.d_der, 3),
             'pose': None if self.pose is None else [round(v, 3) for v in self.pose],

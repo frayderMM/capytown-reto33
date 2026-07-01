@@ -180,7 +180,29 @@ def segmentos_de(grupo: List[Point], umbral_split: float, min_pts: int):
 
 
 # ── Clasificación ────────────────────────────────────────────────────────────
-def clasificar_cluster(segs, lado_caja_max: float, min_long_pared: float) -> str:
+def _bbox(grupo: List[Point]):
+    xs = [p[0] for p in grupo]
+    ys = [p[1] for p in grupo]
+    return min(xs), max(xs), min(ys), max(ys)
+
+
+def es_caja_compacta(grupo: List[Point], segs, lado_caja_max: float) -> bool:
+    if not segs or len(grupo) < 6:
+        return False
+    min_x, max_x, min_y, max_y = _bbox(grupo)
+    span_x = max_x - min_x
+    span_y = max_y - min_y
+    diag = math.hypot(span_x, span_y)
+    lados = [s['lon'] for s in segs]
+    if span_x > lado_caja_max * 1.25 or span_y > lado_caja_max * 1.25:
+        return False
+    if diag > lado_caja_max * 1.55:
+        return False
+    return all(0.06 <= l <= lado_caja_max for l in lados)
+
+
+def clasificar_cluster(grupo, segs, lado_caja_max: float,
+                       min_long_pared: float) -> str:
     if not segs:
         return RUIDO
     largos = [s for s in segs if s['lon'] >= min_long_pared]
@@ -194,7 +216,7 @@ def clasificar_cluster(segs, lado_caja_max: float, min_long_pared: float) -> str
         return PARED
     if len(largos) == 1:
         return PARED
-    if all(s['lon'] <= lado_caja_max for s in segs):
+    if es_caja_compacta(grupo, segs, lado_caja_max):
         return CAJA
     return RUIDO
 
@@ -210,7 +232,7 @@ def analizar_scan(pts_idx, salto_dist, salto_idx, umbral_split,
         if len(grupo) < min_puntos:
             continue
         segs = segmentos_de(grupo, umbral_split, min_puntos)
-        clase = clasificar_cluster(segs, lado_caja_max, min_long_pared)
+        clase = clasificar_cluster(grupo, segs, lado_caja_max, min_long_pared)
         cx = sum(p[0] for p in grupo) / len(grupo)
         cy = sum(p[1] for p in grupo) / len(grupo)
         clusters.append({'pts': grupo, 'segs': segs, 'clase': clase,
@@ -249,6 +271,36 @@ def pared_derecha(clusters, min_long_pared: float, cos_lateral_min: float):
                 elif alpha <= -math.pi / 2:
                     alpha += math.pi
                 mejor = {'d': d, 'alpha': alpha, 'lon': s['lon']}
+    return mejor
+
+
+def caja_derecha(clusters, cos_lateral_min: float):
+    """Referencia temporal para seguir la cara de una caja por la derecha."""
+    mejor = None
+    for cl in clusters:
+        if cl['clase'] != CAJA:
+            continue
+        cx, cy = cl['c']
+        if cy >= -0.05 or cx < -0.15 or cx > 0.90:
+            continue
+        for s in cl['segs']:
+            my = 0.5 * (s['p1'][1] + s['p2'][1])
+            mx = 0.5 * (s['p1'][0] + s['p2'][0])
+            if my >= -0.05 or mx < -0.15 or mx > 0.90:
+                continue
+            d = dist_perp(0.0, 0.0, s['p1'][0], s['p1'][1],
+                          s['p2'][0], s['p2'][1])
+            alpha = s['ang']
+            if alpha > math.pi / 2:
+                alpha -= math.pi
+            elif alpha <= -math.pi / 2:
+                alpha += math.pi
+            dx = abs(s['p2'][0] - s['p1'][0])
+            if s['lon'] > 1e-6 and dx / s['lon'] < cos_lateral_min:
+                alpha = 0.0
+            if mejor is None or d < mejor['d']:
+                mejor = {'d': d, 'alpha': alpha, 'lon': s['lon'],
+                         'tipo': CAJA}
     return mejor
 
 

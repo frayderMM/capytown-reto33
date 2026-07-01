@@ -53,6 +53,8 @@ class BoxDetector(Node):
         self.declare_parameter('lado_caja_max', 0.32)    # m lado máx (20 + tol)
         self.declare_parameter('rango_max_deteccion', 2.5)
         self.declare_parameter('dist_duplicado', 0.30)
+        self.declare_parameter('confirmaciones_caja', 3)
+        self.declare_parameter('max_cajas', 8)
         self.declare_parameter('topic_odom', '/odom_raw')
 
         g = lambda n: self.get_parameter(n).value
@@ -66,10 +68,13 @@ class BoxDetector(Node):
         self.lado_max = g('lado_caja_max')
         self.rango_max = g('rango_max_deteccion')
         self.dist_dup = g('dist_duplicado')
+        self.confirmaciones = int(g('confirmaciones_caja'))
+        self.max_cajas = int(g('max_cajas'))
 
         # ── Estado ──────────────────────────────────────────────────────
         self.pose = None            # (x, y, yaw) en odom
         self.censo = []             # centroides únicos en marco odom
+        self.pendientes = []
 
         # ── ROS I/O ─────────────────────────────────────────────────────
         qos = QoSProfile(depth=10)
@@ -102,7 +107,7 @@ class BoxDetector(Node):
                               self.front_rad, self.rango_max, self.atras_rad)
         px, py, pyaw = self.pose
 
-        nuevas = 0
+        observadas = []
         for grupo in lu.pre_segmentar(pts, self.salto, self.salto_idx):
             if len(grupo) < self.min_puntos:
                 continue
@@ -113,15 +118,48 @@ class BoxDetector(Node):
             if math.hypot(cx, cy) > self.rango_max:
                 continue
             ox, oy = lu.componer_odom(cx, cy, px, py, pyaw)
-            if all(lu.distancia((ox, oy), c) >= self.dist_dup
-                   for c in self.censo):
-                self.censo.append((ox, oy))
-                nuevas += 1
+            observadas.append((ox, oy))
+
+        nuevas = self._confirmar_observaciones(observadas)
 
         if nuevas:
             self.get_logger().info(
                 f'Nuevas cajas: {nuevas} | Censo total: {len(self.censo)}')
         self._publicar(msg.header)
+
+    # ------------------------------------------------------------------
+    def _confirmar_observaciones(self, observadas):
+        nuevas = 0
+        for p in self.pendientes:
+            p['miss'] += 1
+
+        for ox, oy in observadas:
+            if any(lu.distancia((ox, oy), c) < self.dist_dup
+                   for c in self.censo):
+                continue
+            mejor = None
+            for p in self.pendientes:
+                d = lu.distancia((ox, oy), (p['x'], p['y']))
+                if d < self.dist_dup and (mejor is None or d < mejor[0]):
+                    mejor = (d, p)
+            if mejor is None:
+                self.pendientes.append({'x': ox, 'y': oy, 'hits': 1, 'miss': 0})
+                continue
+            p = mejor[1]
+            h = p['hits']
+            p['x'] = (p['x'] * h + ox) / (h + 1)
+            p['y'] = (p['y'] * h + oy) / (h + 1)
+            p['hits'] = h + 1
+            p['miss'] = 0
+            if p['hits'] >= self.confirmaciones and len(self.censo) < self.max_cajas:
+                self.censo.append((p['x'], p['y']))
+                nuevas += 1
+
+        self.pendientes = [
+            p for p in self.pendientes
+            if p['miss'] <= 8 and p['hits'] < self.confirmaciones
+        ]
+        return nuevas
 
     # ------------------------------------------------------------------
     def _publicar(self, header):
