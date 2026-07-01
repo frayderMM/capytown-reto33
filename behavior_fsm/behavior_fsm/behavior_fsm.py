@@ -32,6 +32,7 @@ Suscritos:     /dist_izq /dist_der (de wall_follower, RANSAC)
 """
 
 import math
+import time
 
 import rclpy
 from rclpy.node import Node
@@ -55,6 +56,7 @@ class BehaviorFSM(Node):
         # ── Parámetros ────────────────────────────────────────────────────
         self.declare_parameter('lidar_front_deg',    180.0)
         self.declare_parameter('sector_frontal_deg',  30.0)
+        self.declare_parameter('t_espera_inicio',     10.0)  # s  cuenta regresiva tras ENTER
 
         self.declare_parameter('d_stop_front',   0.14)
         self.declare_parameter('d_stop_lateral', 0.06)
@@ -83,6 +85,7 @@ class BehaviorFSM(Node):
         # ── Cargar ────────────────────────────────────────────────────────
         self.front_rad = math.radians(self.get_parameter('lidar_front_deg').value)
         self.sector    = math.radians(self.get_parameter('sector_frontal_deg').value)
+        self.t_espera_inicio = self.get_parameter('t_espera_inicio').value
         self._reload_params()
         self.add_on_set_parameters_callback(self._on_params)
 
@@ -342,9 +345,23 @@ class BehaviorFSM(Node):
             self._pub(self.v_cruise, 0.0)   # w=0: absolutamente recto
 
 
+def _esperar_inicio(logger, segundos: float):
+    """Cuenta regresiva antes de arrancar (tiempo para acomodar el robot en
+    la pista). El nodo ya esta creado (topicos advertidos) pero no se
+    procesa ningun callback hasta rclpy.spin(), asi que nada se mueve
+    mientras tanto. Sin ENTER: funciona igual con ros2 run o ros2 launch."""
+    restante = segundos
+    while restante > 0:
+        logger.info(f'Arrancando en {restante:.0f}s...')
+        time.sleep(1.0)
+        restante -= 1.0
+    logger.info('Arrancando!')
+
+
 def main(args=None):
     rclpy.init(args=args)
     nodo = BehaviorFSM()
+    _esperar_inicio(nodo.get_logger(), nodo.t_espera_inicio)
     try:
         rclpy.spin(nodo)
     except KeyboardInterrupt:

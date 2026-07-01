@@ -10,6 +10,7 @@ behavior_fsm:
 
     lidar_front_deg:    180.0
     sector_frontal_deg:  30.0
+    t_espera_inicio:     10.0  # s  cuenta regresiva tras ENTER antes de arrancar
 
     # Parada absoluta
     d_stop_front:   0.14   # m  14 cm frente

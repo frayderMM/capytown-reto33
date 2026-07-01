@@ -20,6 +20,9 @@ cd /root/yahboomcar_ws && colcon build --packages-select box_detector behavior_f
 source /root/yahboomcar_ws/install/setup.bash
 ros2 launch behavior_fsm capytown.launch.py
 ```
+`behavior_fsm` espera 10s (cuenta regresiva, sin ENTER) antes de mover el
+robot — tiempo para acomodarlo en la pista. Ajustable con el parametro
+`t_espera_inicio` en `behavior_fsm/config/params.yaml`.
 
 ## 4 — Bringup (terminal A, antes que la FSM)
 ```bash
