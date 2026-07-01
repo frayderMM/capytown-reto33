@@ -237,38 +237,61 @@ class BehaviorFSM(Node):
         # Avanzar depende SOLO del frente -- los costados nunca lo frenan.
         v = self._vel_adaptativa(c_frente)
 
+        # Peligro (frente en zona de alerta O costado a menos de
+        # d_emerg): si NO se estaba ya evadiendo, decide tipo (esquina
+        # real vs. caja) y lado UNA sola vez aqui, y quedan fijos para
+        # las tres ramas siguientes (EMERGENCIA, RECALIBRAR, evasion
+        # normal). Antes, EMERGENCIA/RECALIBRAR reseteaban el episodio
+        # de evasion en cada disparo -- y durante un giro real en un
+        # pasillo angosto disparan seguido -- asi que la esquina nunca
+        # llegaba a completar un giro limpio, se reiniciaba una y otra
+        # vez (la causa real de las trayectorias en espiral / "360").
+        peligro = c_frente < self.d_alerta or c_min < self.d_emerg
+        if peligro and not self._en_evasion:
+            self._es_esquina_evasion = (self.ancho_obstruccion is None
+                                         or self.ancho_obstruccion >= self.ancho_max_caja)
+            if self._es_esquina_evasion:
+                self._lado_evasion = 1.0  # esquina real: siempre izquierda
+            else:
+                self._lado_evasion = 1.0 if c_izq >= (self.d_emerg + 0.05) else -1.0
+            self._en_evasion = True
+            self._angulo_girado = 0.0
+            self._t_evasion_inicio = self.get_clock().now()
+            d_msg = Float32(); d_msg.data = float(c_frente)
+            self.pub_parada.publish(d_msg)
+
         # Emergencia de frente: no se puede seguir avanzando (chocaria de
         # lleno), pero girar EN EL SITIO (v=0, sin avanzar hacia el
-        # obstaculo) hacia el lado con mas espacio no lo empeora y le da
+        # obstaculo) hacia el lado ya comprometido no lo empeora y le da
         # una salida -- quedarse en (0,0) para siempre lo dejaba pegado
         # en el mismo lugar indefinidamente.
         if c_frente < self.d_emerg:
-            lado = 1.0 if c_izq >= c_der else -1.0
+            w = self._lado_evasion * self.w_giro_max
+            self._angulo_girado += w * 0.1
             self.get_logger().warn(
                 f'EMERGENCIA frente={c_frente:.2f}m — girando en el sitio para salir',
                 throttle_duration_sec=1.0)
-            self._pub(0.0, lado * self.w_giro_max, 'EMERGENCIA')
-            self._en_evasion = False
+            self._pub(0.0, w, 'EMERGENCIA')
             return
 
         # Algo muy cerca por un costado/diagonal (frente libre): en vez de
-        # parar, gira al maximo hacia el lado con MAS espacio mientras
-        # sigue avanzando -- se recalibra sin detenerse.
+        # parar, gira hacia el lado ya comprometido mientras sigue
+        # avanzando -- se recalibra sin detenerse.
         if c_min < self.d_emerg:
-            lado = 1.0 if c_izq >= c_der else -1.0
+            w = self._lado_evasion * self.w_giro_max
+            self._angulo_girado += w * 0.1
             self.get_logger().warn(
                 f'cerca por un costado (margen={c_min:.2f}m) — girando hacia el lado mas libre',
                 throttle_duration_sec=1.0)
-            self._pub(v, lado * self.w_giro_max, 'RECALIBRAR')
+            self._pub(v, w, 'RECALIBRAR')
             return
 
         # Giro: solo reacciona a lo que tiene perpendicular al frente
         # (no a paredes laterales paralelas al avance). Progresivo desde
         # dist_alerta hasta el maximo en dist_obstaculo. El TIPO (esquina
-        # real vs. caja) y el LADO se deciden UNA sola vez al entrar a la
-        # evasion y quedan fijos todo el episodio -- reevaluarlos cada
-        # ciclo (10Hz) es lo que producia giros erraticos ("360") cuando
-        # c_izq/c_der estaban parecidos y el lado alternaba tick a tick.
+        # real vs. caja) y el LADO ya se decidieron arriba y quedan fijos
+        # todo el episodio -- reevaluarlos cada ciclo (10Hz) es lo que
+        # producia giros erraticos cuando c_izq/c_der estaban parecidos.
         #   - esquina real (ancho >= ancho_max_caja, o sin cluster valido):
         #     izquierda fija, el mismo sentido en que se sigue el circuito.
         #   - caja (angosta): tambien prioriza izquierda (se aleja
@@ -300,19 +323,6 @@ class BehaviorFSM(Node):
                 ratio = 1.0  # frente ya libre, pero falta terminar el giro de 90°
             else:
                 ratio = 0.0  # solo en gracia de evasion (t_evasion_min): avanza recto
-
-            if not self._en_evasion:
-                self._es_esquina_evasion = (self.ancho_obstruccion is None
-                                             or self.ancho_obstruccion >= self.ancho_max_caja)
-                if self._es_esquina_evasion:
-                    self._lado_evasion = 1.0  # esquina real: siempre izquierda
-                else:
-                    self._lado_evasion = 1.0 if c_izq >= (self.d_emerg + 0.05) else -1.0
-                self._en_evasion = True
-                self._angulo_girado = 0.0
-                self._t_evasion_inicio = self.get_clock().now()
-                d_msg = Float32(); d_msg.data = float(c_frente)
-                self.pub_parada.publish(d_msg)
 
             lado = self._lado_evasion
             estado = 'ESQUINA' if self._es_esquina_evasion else 'EVADIR'
