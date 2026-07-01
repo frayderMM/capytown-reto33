@@ -28,11 +28,6 @@ behavior_fsm:
     vel_crucero:      0.14   # m/s
     vel_giro_gradual: 0.40   # rad/s  giro izquierda
 
-    # --- Seguimiento pared derecha: w = -Kder*(dist_der - 0.08) ---
-    d_objetivo_der: 0.08     # m  objetivo 8 cm
-    Kder:           2.0      # ganancia proporcional
-    max_w_der:      0.40     # rad/s  tope de correccion
-
     # --- Repulsion pared izquierda ---
     dist_izq_min: 0.15
     Kizq:         3.0

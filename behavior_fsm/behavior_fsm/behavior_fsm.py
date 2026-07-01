@@ -49,11 +49,6 @@ class BehaviorFSM(Node):
         self.declare_parameter('vel_crucero',           0.14)
         self.declare_parameter('vel_giro_gradual',      0.40)  # rad/s giro izquierda
 
-        # --- Seguimiento pared derecha ---
-        self.declare_parameter('d_objetivo_der',        0.08)
-        self.declare_parameter('Kder',                  2.0)
-        self.declare_parameter('max_w_der',             0.40)
-
         # --- Repulsion pared izquierda ---
         self.declare_parameter('dist_izq_min',          0.15)
         self.declare_parameter('Kizq',                  3.0)
@@ -79,9 +74,6 @@ class BehaviorFSM(Node):
         self.d_emerg      = self.get_parameter('dist_emergencia').value
         self.v_cruise     = self.get_parameter('vel_crucero').value
         self.w_giro       = self.get_parameter('vel_giro_gradual').value
-        self.d_obj_der    = self.get_parameter('d_objetivo_der').value
-        self.Kder         = self.get_parameter('Kder').value
-        self.max_w_der    = self.get_parameter('max_w_der').value
         self.d_izq_min    = self.get_parameter('dist_izq_min').value
         self.Kizq         = self.get_parameter('Kizq').value
         self.t_giro_min   = self.get_parameter('t_giro_min').value
@@ -97,13 +89,15 @@ class BehaviorFSM(Node):
         self.dist_frente  = float('inf')
         self.dist_izq     = float('inf')
         self.dist_der     = float('inf')
+        self._w_lateral   = 0.0
         self.box_detected = False
         self.box_dist     = float('inf')
 
         # ── ROS I/O ───────────────────────────────────────────────────────
         _qos = QoSProfile(depth=10)
         _qos.reliability = ReliabilityPolicy.BEST_EFFORT
-        self.create_subscription(LaserScan, '/scan', self.cb_scan, _qos)
+        self.create_subscription(LaserScan, '/scan',               self.cb_scan, _qos)
+        self.create_subscription(Float32,   '/lateral_correction', self._cb_lat, 10)
         self.pub_cmd    = self.create_publisher(Twist,   '/cmd_vel',     10)
         self.pub_estado = self.create_publisher(String,  '/fsm_state',   10)
         self.pub_parada = self.create_publisher(Float32, '/parada_dist', 10)
@@ -154,6 +148,9 @@ class BehaviorFSM(Node):
                 self.box_detected = True
                 self.box_dist     = mx
 
+    def _cb_lat(self, msg: Float32):
+        self._w_lateral = msg.data
+
     # ── Helpers ───────────────────────────────────────────────────────────
     def _pub(self, v: float, w: float):
         cmd = Twist()
@@ -175,13 +172,6 @@ class BehaviorFSM(Node):
         self.estado   = nuevo
         self.t_inicio = self.get_clock().now()
 
-    def _w_der(self) -> float:
-        """Corrección proporcional hacia la pared derecha (objetivo d_obj_der)."""
-        if math.isfinite(self.dist_der):
-            err = self.dist_der - self.d_obj_der
-            return max(-self.max_w_der, min(self.max_w_der, -self.Kder * err))
-        return 0.0
-
     # ── FSM principal ─────────────────────────────────────────────────────
     def loop_control(self):
 
@@ -202,12 +192,12 @@ class BehaviorFSM(Node):
                 self._cambiar(GIRO)
                 return
 
-            # Velocidad fija. Angular: repulsion izq > seguimiento der
+            # Velocidad fija. Angular: repulsion izq > wall_follower der
             v = self.v_cruise
             if math.isfinite(self.dist_izq) and self.dist_izq < self.d_izq_min:
                 w = -self.Kizq * (self.d_izq_min - self.dist_izq)
             else:
-                w = self._w_der()
+                w = self._w_lateral  # wall_follower siempre activo, sin condicion
             self._pub(v, w)
 
         # ── GIRO ──────────────────────────────────────────────────────────
