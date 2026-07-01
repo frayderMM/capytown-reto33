@@ -2,19 +2,18 @@
 """
 behavior_fsm.py  —  PARTE B: "El Guardian"
 
-Wall-following por metodo de DOS RAYOS (F1Tenth / MIT):
-  - r90: rango a 90° del frente (perpendicular a pared derecha)
-  - r45: rango a 45° del frente (diagonal derecha-adelante)
-  Con geometria trigonometrica se calcula:
-    theta     = angulo de la pared respecto al robot (0 = paralelo)
-    d_pared   = distancia perpendicular real a la pared
-  Control:
-    w = -Kp*(d_pared - objetivo) - Ka*theta
-  Sin deteccion de segmentos, sin longitud minima — siempre da un valor.
+Tres estados:
+  CRUCERO → avanza pegado a la pared derecha.
+             Detecta caja perpendicular (~20 cm) por std de profundidad + ancho.
+  GIRO    → gira a la izquierda para rodear la caja.
+  RODEO   → tras girar, avanza recto junto a la caja hasta que la pared
+             derecha reaparece, luego vuelve a CRUCERO.
 
-Estados:
-  CRUCERO → avanza con wall-following dos rayos.
-  GIRO    → gira izquierda tiempo fijo al detectar caja/pared.
+Deteccion de caja = mismo criterio que lidar_viz.py v7:
+  std_x < perp_std_max  (superficie perpendicular al robot)
+  box_w_min <= y_spread <= box_w_max  (ancho compatible con caja ~20 cm)
+
+ESAN - Robotica de Moviles 2026-I  |  Proyecto CapyTown
 """
 
 import math
@@ -30,8 +29,7 @@ from std_msgs.msg import Float32, String
 
 CRUCERO = 'CRUCERO'
 GIRO    = 'GIRO'
-
-ALPHA = math.pi / 4   # angulo entre los dos rayos (45°)
+RODEO   = 'RODEO'
 
 
 class BehaviorFSM(Node):
@@ -40,11 +38,11 @@ class BehaviorFSM(Node):
 
         # ── Parámetros ────────────────────────────────────────────────────
         self.declare_parameter('lidar_front_deg',     180.0)
-        self.declare_parameter('sector_frontal_deg',   30.0)
+        self.declare_parameter('sector_frontal_deg',   30.0)  # sector ancho emergencia
         self.declare_parameter('sector_lateral_lo',    60.0)
         self.declare_parameter('sector_lateral_hi',   120.0)
 
-        # --- Deteccion de caja ---
+        # --- Deteccion de caja (mismo criterio que lidar_viz.py v7) ---
         self.declare_parameter('detect_half_deg',      20.0)
         self.declare_parameter('detect_max_r',          0.45)
         self.declare_parameter('perp_std_max',          0.04)
@@ -53,27 +51,28 @@ class BehaviorFSM(Node):
         self.declare_parameter('min_box_pts',           5)
 
         # --- Distancias ---
-        self.declare_parameter('dist_pared_lateral',    0.55)
-        self.declare_parameter('dist_emergencia',       0.12)
+        self.declare_parameter('dist_alerta',           0.45)  # m frente libre
+        self.declare_parameter('dist_pared_lateral',    0.55)  # m pared der reapareció
+        self.declare_parameter('dist_emergencia',       0.12)  # m stop total
 
-        # --- Velocidad unica ---
-        self.declare_parameter('vel_crucero',           0.14)
-        self.declare_parameter('vel_giro_gradual',      0.40)  # rad/s
+        # --- Velocidades ---
+        self.declare_parameter('vel_crucero',           0.18)
+        self.declare_parameter('vel_giro_gradual',      0.45)  # rad/s giro izquierda
+        self.declare_parameter('vel_avance_giro',       0.08)  # m/s avance en GIRO
 
-        # --- Wall-following dos rayos (derecha) ---
-        self.declare_parameter('d_objetivo_der',        0.08)  # m objetivo
-        self.declare_parameter('Kp_der',                1.0)   # ganancia distancia
-        self.declare_parameter('Ka_der',                0.5)   # ganancia angulo
-        self.declare_parameter('max_w_der',             0.40)  # rad/s tope
+        # --- RODEO: avance recto para pasar junto a la caja ---
+        self.declare_parameter('t_rodeo',               1.5)   # s tiempo en RODEO
+        self.declare_parameter('v_rodeo',               0.15)  # m/s velocidad
+        self.declare_parameter('w_rodeo',               0.0)   # rad/s (0=recto)
+
+        # --- Temporizacion ---
+        self.declare_parameter('t_giro_min',            0.5)
+        self.declare_parameter('t_giro_max',            6.0)
+        self.declare_parameter('t_cooldown',            1.5)   # s cooldown post-GIRO
 
         # --- Repulsion pared izquierda ---
         self.declare_parameter('dist_izq_min',          0.15)
         self.declare_parameter('Kizq',                  3.0)
-
-        # --- Temporizacion ---
-        self.declare_parameter('t_giro_min',            1.2)
-        self.declare_parameter('t_giro_max',            4.0)
-        self.declare_parameter('t_cooldown',            3.0)
 
         # ── Cargar valores ────────────────────────────────────────────────
         self.front_rad    = math.radians(self.get_parameter('lidar_front_deg').value)
@@ -86,25 +85,20 @@ class BehaviorFSM(Node):
         self.box_w_min    = self.get_parameter('box_w_min').value
         self.box_w_max    = self.get_parameter('box_w_max').value
         self.min_box_pts  = self.get_parameter('min_box_pts').value
+        self.d_alerta     = self.get_parameter('dist_alerta').value
         self.d_pared_lat  = self.get_parameter('dist_pared_lateral').value
         self.d_emerg      = self.get_parameter('dist_emergencia').value
         self.v_cruise     = self.get_parameter('vel_crucero').value
         self.w_giro       = self.get_parameter('vel_giro_gradual').value
-        self.d_obj_der    = self.get_parameter('d_objetivo_der').value
-        self.Kp_der       = self.get_parameter('Kp_der').value
-        self.Ka_der       = self.get_parameter('Ka_der').value
-        self.max_w_der    = self.get_parameter('max_w_der').value
-        self.d_izq_min    = self.get_parameter('dist_izq_min').value
-        self.Kizq         = self.get_parameter('Kizq').value
+        self.v_giro       = self.get_parameter('vel_avance_giro').value
+        self.t_rodeo      = self.get_parameter('t_rodeo').value
+        self.v_rodeo      = self.get_parameter('v_rodeo').value
+        self.w_rodeo      = self.get_parameter('w_rodeo').value
         self.t_giro_min   = self.get_parameter('t_giro_min').value
         self.t_giro_max   = self.get_parameter('t_giro_max').value
         self.t_cooldown   = self.get_parameter('t_cooldown').value
-
-        # Angulos raw de los dos rayos (con front_rad = 180°)
-        # rayo 90°: perpendicular derecha → af = -π/2 → raw = front_rad - π/2
-        # rayo 45°: diagonal derecha-fwd  → af = -π/4 → raw = front_rad - π/4
-        self._raw_90 = self.front_rad - math.pi / 2
-        self._raw_45 = self.front_rad - math.pi / 4
+        self.d_izq_min    = self.get_parameter('dist_izq_min').value
+        self.Kizq         = self.get_parameter('Kizq').value
 
         # ── Estado ────────────────────────────────────────────────────────
         self.estado        = CRUCERO
@@ -115,37 +109,23 @@ class BehaviorFSM(Node):
         self.dist_frente  = float('inf')
         self.dist_izq     = float('inf')
         self.dist_der     = float('inf')
-        self.r90          = float('inf')   # rayo perpendicular derecha
-        self.r45          = float('inf')   # rayo 45° derecha-fwd
+        self._w_lateral   = 0.0
         self.box_detected = False
         self.box_dist     = float('inf')
 
         # ── ROS I/O ───────────────────────────────────────────────────────
         _qos = QoSProfile(depth=10)
         _qos.reliability = ReliabilityPolicy.BEST_EFFORT
-        self.create_subscription(LaserScan, '/scan', self.cb_scan, _qos)
+        self.create_subscription(LaserScan, '/scan',               self.cb_scan, _qos)
+        self.create_subscription(Float32,   '/lateral_correction', self._cb_lat,  10)
         self.pub_cmd    = self.create_publisher(Twist,   '/cmd_vel',     10)
         self.pub_estado = self.create_publisher(String,  '/fsm_state',   10)
         self.pub_parada = self.create_publisher(Float32, '/parada_dist', 10)
         self.create_timer(0.1, self.loop_control)
 
-        self.get_logger().info('BehaviorFSM listo — wall-following DOS RAYOS')
+        self.get_logger().info('BehaviorFSM listo — CRUCERO / GIRO / RODEO')
 
     # ── Callbacks ─────────────────────────────────────────────────────────
-    def _range_at(self, msg: LaserScan, raw_target: float) -> float:
-        """Rango valido mas cercano al angulo raw_target. Promedia ±3 indices."""
-        idx0 = round((raw_target - msg.angle_min) / msg.angle_increment)
-        vals = []
-        for d in range(-3, 4):
-            i = idx0 + d
-            if 0 <= i < len(msg.ranges):
-                r = msg.ranges[i]
-                if math.isfinite(r) and msg.range_min <= r <= msg.range_max:
-                    vals.append(r)
-        if not vals:
-            return float('inf')
-        return sum(vals) / len(vals)
-
     def cb_scan(self, msg: LaserScan):
         d_f = d_l = d_r = float('inf')
         box_pts = []
@@ -174,11 +154,7 @@ class BehaviorFSM(Node):
         self.dist_izq    = d_l
         self.dist_der    = d_r
 
-        # Dos rayos para wall-following
-        self.r90 = self._range_at(msg, self._raw_90)
-        self.r45 = self._range_at(msg, self._raw_45)
-
-        # Deteccion de caja
+        # ── Deteccion de caja ─────────────────────────────────────────────
         self.box_detected = False
         self.box_dist     = float('inf')
         if len(box_pts) >= self.min_box_pts:
@@ -191,6 +167,9 @@ class BehaviorFSM(Node):
             if std_x < self.perp_std_max and self.box_w_min <= y_spread <= self.box_w_max:
                 self.box_detected = True
                 self.box_dist     = mx
+
+    def _cb_lat(self, msg: Float32):
+        self._w_lateral = msg.data
 
     # ── Helpers ───────────────────────────────────────────────────────────
     def _pub(self, v: float, w: float):
@@ -207,33 +186,16 @@ class BehaviorFSM(Node):
     def _cambiar(self, nuevo: str):
         self.get_logger().info(
             f'{self.estado} → {nuevo}  '
-            f'(r90={self.r90:.2f}  r45={self.r45:.2f}  der={self.dist_der:.2f})')
-        if self.estado == GIRO and nuevo == CRUCERO:
+            f'(frente={self.dist_frente:.2f} m  der={self.dist_der:.2f} m)')
+        if self.estado == GIRO and nuevo in (CRUCERO, RODEO):
             self.t_ultimo_giro = self.get_clock().now().nanoseconds * 1e-9
         self.estado   = nuevo
         self.t_inicio = self.get_clock().now()
 
-    def _w_dos_rayos(self) -> float:
-        """
-        Correccion angular por metodo de dos rayos (F1Tenth).
-          theta   = angulo pared respecto robot (0 = paralelo)
-          d_pared = distancia perpendicular real
-          w = -Kp*(d_pared - obj) - Ka*theta
-        """
-        r90 = self.r90
-        r45 = self.r45
-        if not (math.isfinite(r90) and math.isfinite(r45)):
-            return 0.0
-        theta  = math.atan2(r45 * math.cos(ALPHA) - r90,
-                            r45 * math.sin(ALPHA))
-        d_wall = r90 * math.cos(theta)
-        err_d  = d_wall - self.d_obj_der   # + = demasiado lejos
-        w      = -self.Kp_der * err_d - self.Ka_der * theta
-        return max(-self.max_w_der, min(self.max_w_der, w))
-
     # ── FSM principal ─────────────────────────────────────────────────────
     def loop_control(self):
 
+        # Emergencia — override de cualquier estado
         if self.dist_frente < self.d_emerg:
             self.get_logger().warn(
                 f'EMERGENCIA frente={self.dist_frente:.2f}m', throttle_duration_sec=1.0)
@@ -252,24 +214,37 @@ class BehaviorFSM(Node):
 
             v = self.v_cruise
             if math.isfinite(self.dist_izq) and self.dist_izq < self.d_izq_min:
-                # Repulsion pared izquierda (prioridad)
                 w = -self.Kizq * (self.d_izq_min - self.dist_izq)
             else:
-                w = self._w_dos_rayos()
+                w = self._w_lateral  # wall_follower siempre activo
             self._pub(v, w)
 
         # ── GIRO ──────────────────────────────────────────────────────────
         elif self.estado == GIRO:
+            # Seguridad: pared izquierda demasiado cerca → abortar giro
             if math.isfinite(self.dist_izq) and self.dist_izq < self.d_emerg:
-                self._cambiar(CRUCERO)
+                self._cambiar(RODEO)
                 return
             if self._t_estado() > self.t_giro_max:
                 self._cambiar(CRUCERO)
                 return
+            # Salida por TIEMPO FIJO: no usar dist_frente porque la pared izq
+            # entra al cono frontal durante el giro y nunca dejaria salir.
             if self._t_estado() >= self.t_giro_min:
+                if self.dist_der < self.d_pared_lat:
+                    self._cambiar(CRUCERO)  # pared derecha reaparecio → saltar RODEO
+                else:
+                    self._cambiar(RODEO)    # frente libre, sin pared der → pasar caja recto
+                return
+            self._pub(self.v_giro, self.w_giro)
+
+        # ── RODEO ─────────────────────────────────────────────────────────
+        elif self.estado == RODEO:
+            # Avanza recto hasta que la pared derecha reaparece o expira el tiempo
+            if self._t_estado() > self.t_rodeo or self.dist_der < self.d_pared_lat:
                 self._cambiar(CRUCERO)
                 return
-            self._pub(self.v_cruise, self.w_giro)
+            self._pub(self.v_rodeo, self.w_rodeo)
 
 
 def main(args=None):
