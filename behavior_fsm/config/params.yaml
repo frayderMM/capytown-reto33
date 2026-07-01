@@ -34,7 +34,8 @@ behavior_fsm:
                                  # (bajado de 0.45: zona de frenado mas angosta,
                                  # asi pasa mas tiempo a velocidad crucero completa)
     dist_obstaculo:      0.30    # m  giro a maxima intensidad
-    dist_emergencia:    0.05    # m  margen real minimo antes del stop total
+    dist_emergencia:    0.06    # m  margen real minimo antes del stop total
+                                 # (subido 1cm: reacciona un poco antes)
 
     # --- Velocidades ---
     vel_crucero:  0.22     # m/s  velocidad en zona libre (subida de 0.18)

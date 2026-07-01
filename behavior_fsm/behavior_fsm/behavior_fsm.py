@@ -58,7 +58,8 @@ class BehaviorFSM(Node):
         # --- Distancias de reaccion (ya en espacio libre real, post-offset) ---
         self.declare_parameter('dist_alerta',     0.38)  # m  empieza a frenar y a anticipar el giro
         self.declare_parameter('dist_obstaculo',  0.30)  # m  giro a maxima intensidad
-        self.declare_parameter('dist_emergencia', 0.05)  # m  margen real minimo antes del stop total
+        self.declare_parameter('dist_emergencia', 0.06)  # m  margen real minimo antes del stop total
+                                                           # (subido 1cm: reacciona un poco antes)
 
         # --- Velocidades ---
         self.declare_parameter('vel_crucero', 0.22)
@@ -194,11 +195,17 @@ class BehaviorFSM(Node):
         # (no a paredes laterales paralelas al avance). Progresivo desde
         # dist_alerta hasta el maximo en dist_obstaculo, eligiendo el
         # lado con MAS espacio libre para girar -- no siempre el mismo.
+        # La fuerza del giro tambien se limita segun cuanto espacio REAL
+        # hay en el lado elegido (no solo que el frente este bloqueado):
+        # si ese lado esta casi sin margen, un giro a maxima velocidad
+        # angular lo raspa -- se modula hasta casi 0 cerca de d_emerg.
         w = 0.0
         if c_frente < self.d_alerta:
             ratio = max(0.0, min(1.0, (self.d_alerta - c_frente) / (self.d_alerta - self.d_obst)))
             lado = 1.0 if c_izq >= c_der else -1.0  # +1 = izquierda, -1 = derecha
-            w = lado * ratio * self.w_giro_max
+            c_lado = c_izq if lado > 0 else c_der
+            factor_espacio = max(0.0, min(1.0, (c_lado - self.d_emerg) / (self.d_alerta - self.d_emerg)))
+            w = lado * ratio * factor_espacio * self.w_giro_max
 
             if not self._en_evasion:
                 self._en_evasion = True
