@@ -25,8 +25,8 @@ behavior_fsm:
     sector_lateral_hi:  120.0
 
     # Parada absoluta
-    d_stop_front:   0.08   # m  para si frente < 8 cm
-    d_stop_lateral: 0.08   # m  para si izq < 8 cm
+    d_stop_front:   0.14   # m  para si frente < 14 cm
+    d_stop_lateral: 0.06   # m  para si izq < 6 cm
 
     # Umbrales de accion frontal
     d_giro:         0.30   # m  trigger GIRO

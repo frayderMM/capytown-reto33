@@ -39,8 +39,8 @@ class BehaviorFSM(Node):
         self.declare_parameter('sector_lateral_lo',   60.0)
         self.declare_parameter('sector_lateral_hi',  120.0)
 
-        self.declare_parameter('d_stop_front',   0.08)
-        self.declare_parameter('d_stop_lateral', 0.05)
+        self.declare_parameter('d_stop_front',   0.14)  # 14 cm frente
+        self.declare_parameter('d_stop_lateral', 0.06)  # 6 cm costado
         self.declare_parameter('d_giro',         0.22)
         self.declare_parameter('d_front_inicio', 0.40)
 
@@ -209,22 +209,23 @@ class BehaviorFSM(Node):
                 self._pub_dbg(0, 0, 0, 0)
                 return
 
-            # Correccion frontal gradual.
-            # SUPRIMIDA durante t_recuperacion s post-GIRO para que el robot
-            # se alinee con la pared derecha sin interferencia.
             recuperando = t_post_giro < self.t_recuperacion
-            w_front = 0.0
-            if not recuperando and self.dist_frente < self.d_front_ini:
-                w_front = self.Kfront * (self.d_front_ini - self.dist_frente)
 
-            # Tracking pared derecha — se atenua a 0 conforme el frente se cierra.
-            # A d_front_ini: factor=1.0 (tracking normal).
-            # A d_giro:      factor=0.0 (zeroed, deja paso libre a la evasion frontal).
-            w_der = 0.0
-            if math.isfinite(self.dist_der):
-                rng = max(self.d_front_ini - self.d_giro, 1e-3)
-                factor = max(0.0, min(1.0, (self.dist_frente - self.d_giro) / rng))
-                w_der = -self.Kder * (self.dist_der - self.target_der) * factor
+            # Sistema de prioridad exclusivo (sin competencia):
+            #   recuperando        → solo w_der (alinear con pared der post-GIRO)
+            #   f < d_front_ini   → solo w_front (evasion frontal pura, w_der=0)
+            #   f >= d_front_ini  → solo w_der   (tracking pared derecha normal)
+            # Esto elimina la orbita estable donde w_front y w_der se cancelan.
+            w_front = 0.0
+            w_der   = 0.0
+            if recuperando:
+                if math.isfinite(self.dist_der):
+                    w_der = -self.Kder * (self.dist_der - self.target_der)
+            elif self.dist_frente < self.d_front_ini:
+                w_front = self.Kfront * (self.d_front_ini - self.dist_frente)
+            else:
+                if math.isfinite(self.dist_der):
+                    w_der = -self.Kder * (self.dist_der - self.target_der)
 
             # Repulsion pared izquierda
             w_izq = 0.0
