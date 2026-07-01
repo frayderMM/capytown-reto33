@@ -1,4 +1,9 @@
-# Parametros del guardian (Parte B) — CRUCERO / GIRO / RODEO
+# Parametros del guardian — CRUCERO / GIRO
+#
+# Logica:
+#   1. Siempre pegado a la pared derecha (wall_follower).
+#   2. Obstaculo al frente < dist_giro  → GIRO izquierda.
+#   3. Supera limite (frente o izq < dist_parar) → PARA.
 #
 # Ejecutar:
 #   ros2 launch behavior_fsm capytown.launch.py
@@ -9,51 +14,29 @@ behavior_fsm:
     # --- Orientacion del LiDAR ---
     lidar_front_deg: 180.0      # 180 = Yahboom MS200 montado con cable atras
 
-    # --- Sector emergencia (ancho) ---
+    # --- Sector frontal (ancho del cono de deteccion) ---
     sector_frontal_deg: 30.0
 
-    # --- Sectores laterales ---
+    # --- Sectores laterales (para dist_izq y dist_der) ---
     sector_lateral_lo:  60.0
     sector_lateral_hi: 120.0
 
-    # --- Deteccion de caja (mismo criterio que lidar_viz.py v7) ---
-    detect_half_deg:  20.0   # sector de busqueda [deg, semiangulo]
-    detect_max_r:     0.45   # m  rango maximo para considerar un punto
-    perp_std_max:     0.04   # m  max std de profundidad (superficie perpendicular)
-    box_w_min:        0.08   # m  ancho minimo de la caja
-    box_w_max:        0.23   # m  ancho maximo (>= se descarta, es pared)
-    min_box_pts:      5      # puntos minimos para considerar deteccion valida
+    # --- Umbrales de distancia ---
+    dist_parar:   0.20  # m  PARA inmediato si frente o izq < esto
+    dist_giro:    0.35  # m  GIRO si frente < esto
+    dist_izq_min: 0.10  # m  repulsion si izquierda < esto
 
-    # --- Distancias de reaccion ---
-    dist_alerta:        0.45  # m  frente libre para salir de GIRO o RODEO
-    dist_pared_lateral: 0.55  # m  pared derecha reapareció (umbral salida RODEO)
-    dist_emergencia:    0.12  # m  stop total (override de cualquier estado)
+    # --- Velocidad (misma en todos los estados) ---
+    vel_crucero:      0.10  # m/s  avance
+    vel_giro_gradual: 0.40  # rad/s  giro izquierda
 
-    # --- Velocidades ---
-    vel_crucero:      0.10   # m/s  velocidad (misma en todos los estados)
-    vel_giro_gradual: 0.40   # rad/s  giro izquierda en GIRO
-    vel_avance_giro:  0.10   # m/s  avance en GIRO (igual que vel_crucero)
+    # --- Ganancia repulsion pared izquierda ---
+    Kizq: 4.0
 
-    # --- RODEO: avance recto para pasar junto a la caja ---
-    t_rodeo:  1.5            # s   tiempo maximo en RODEO
-    v_rodeo:  0.10           # m/s velocidad en RODEO (igual que vel_crucero)
-    w_rodeo:  0.0            # rad/s angular en RODEO
-
-    # --- Temporizacion del giro ---
-    # t_giro_min es el tiempo FIJO de giro. El GIRO sale por tiempo, no por dist_frente,
-    # porque la pared izq entra al cono frontal y bloquearia la salida por distancia.
-    # 1.2s x 0.40 rad/s = 0.48 rad ≈ 27 grados de giro
-    t_giro_min: 1.2          # s  tiempo fijo de giro (ajustar segun angulo necesario)
-    t_giro_max: 4.0          # s  salvavidas
-
-    # --- Cooldown post-maniobra (GIRO+RODEO) ---
-    # Una vez completada la maniobra, no puede detectar otra caja hasta pasado este tiempo.
-    # 3s x 0.14 m/s = ~42 cm de recorrido libre antes de poder re-detectar.
-    t_cooldown: 3.0          # s  cooldown post-GIRO/RODEO
-
-    # --- Repulsion pared izquierda ---
-    dist_izq_min: 0.10       # m  maximo 10 cm de la pared izquierda
-    Kizq:         4.0        # ganancia de repulsion (gira a la derecha al sobrepasar)
+    # --- Temporizacion ---
+    t_giro_min: 1.2   # s  minimo en GIRO antes de evaluar salida
+    t_giro_max: 4.0   # s  salvavidas: fuerza salida a CRUCERO
+    t_cooldown:  2.0  # s  cooldown post-GIRO (evita re-deteccion inmediata)
 
 wall_follower:
   ros__parameters:
