@@ -1,4 +1,4 @@
-# Parametros del guardian (Parte B) — CRUCERO / GIRO / RODEO
+# Parametros del guardian (Parte B) — ETAPA 1: wall-following + giro
 #
 # Ejecutar:
 #   ros2 launch behavior_fsm capytown.launch.py
@@ -6,60 +6,41 @@
 behavior_fsm:
   ros__parameters:
 
-    # --- Orientacion del LiDAR ---
-    lidar_front_deg: 180.0      # 180 = Yahboom MS200 montado con cable atras
-
-    # --- Sector emergencia (ancho) ---
+    lidar_front_deg: 180.0
     sector_frontal_deg: 30.0
-
-    # --- Sectores laterales ---
     sector_lateral_lo:  60.0
     sector_lateral_hi: 120.0
 
-    # --- Deteccion de caja (mismo criterio que lidar_viz.py v7) ---
-    detect_half_deg:  20.0   # sector de busqueda [deg, semiangulo]
-    detect_max_r:     0.45   # m  rango maximo para considerar un punto
-    perp_std_max:     0.04   # m  max std de profundidad (superficie perpendicular)
-    box_w_min:        0.08   # m  ancho minimo de la caja
-    box_w_max:        0.23   # m  ancho maximo (>= se descarta, es pared)
-    min_box_pts:      5      # puntos minimos para considerar deteccion valida
+    # --- Deteccion de caja ---
+    detect_half_deg:  20.0
+    detect_max_r:     0.45
+    perp_std_max:     0.04
+    box_w_min:        0.08
+    box_w_max:        0.23
+    min_box_pts:      5
 
-    # --- Distancias de reaccion ---
-    dist_alerta:        0.45  # m  frente libre para salir de GIRO o RODEO
-    dist_pared_lateral: 0.55  # m  pared derecha reapareció (umbral salida RODEO)
-    dist_emergencia:    0.12  # m  stop total (override de cualquier estado)
+    # --- Distancias ---
+    dist_alerta:        0.45
+    dist_pared_lateral: 0.55
+    dist_emergencia:    0.12
 
-    # --- Velocidades ---
-    vel_crucero:      0.14   # m/s  velocidad fija (misma en CRUCERO, GIRO y RODEO)
-    vel_giro_gradual: 0.40   # rad/s  giro izquierda en GIRO
-    vel_avance_giro:  0.14   # m/s  avance en GIRO (igual que vel_crucero)
+    # --- Velocidad unica para todos los estados ---
+    vel_crucero:      0.14   # m/s
+    vel_giro_gradual: 0.40   # rad/s  giro izquierda
 
-    # --- RODEO: avance recto para pasar junto a la caja ---
-    t_rodeo:  1.5            # s   tiempo maximo en RODEO
-    v_rodeo:  0.14           # m/s velocidad en RODEO (igual que vel_crucero)
-    w_rodeo:  -0.20          # rad/s curva a la derecha en RODEO para volver a la pared der
-
-    # --- Temporizacion del giro ---
-    # t_giro_min es el tiempo FIJO de giro. El GIRO sale por tiempo, no por dist_frente,
-    # porque la pared izq entra al cono frontal y bloquearia la salida por distancia.
-    # 1.2s x 0.40 rad/s = 0.48 rad ≈ 27 grados de giro
-    t_giro_min: 1.2          # s  tiempo fijo de giro (ajustar segun angulo necesario)
-    t_giro_max: 4.0          # s  salvavidas
-
-    # --- Cooldown post-maniobra (GIRO+RODEO) ---
-    # Una vez completada la maniobra, no puede detectar otra caja hasta pasado este tiempo.
-    # 3s x 0.14 m/s = ~42 cm de recorrido libre antes de poder re-detectar.
-    t_cooldown: 3.0          # s  cooldown post-GIRO/RODEO
-
-    # --- Seguimiento pared derecha (controlador directo en CRUCERO y RODEO) ---
-    # w = -Kder * (dist_der - d_objetivo_der)  →  negativo = curva derecha
-    d_objetivo_der: 0.08     # m  objetivo: 8 cm de la pared derecha
-    Kder:           2.0      # ganancia proporcional [rad/s por metro de error]
-    max_w_der:      0.40     # rad/s  tope de corrección lateral
+    # --- Seguimiento pared derecha: w = -Kder*(dist_der - 0.08) ---
+    d_objetivo_der: 0.08     # m  objetivo 8 cm
+    Kder:           2.0      # ganancia proporcional
+    max_w_der:      0.40     # rad/s  tope de correccion
 
     # --- Repulsion pared izquierda ---
-    dist_izq_min: 0.15       # m  distancia minima a la pared izquierda
-    Kizq:         3.0        # ganancia de repulsion [rad/s por metro de exceso]
+    dist_izq_min: 0.15
+    Kizq:         3.0
+
+    # --- Temporizacion ---
+    t_giro_min: 1.2          # s  tiempo fijo de giro (~27 grados a 0.40 rad/s)
+    t_giro_max: 4.0          # s  salvavidas
+    t_cooldown: 3.0          # s  cooldown post-GIRO
 
 wall_follower:
   ros__parameters:
