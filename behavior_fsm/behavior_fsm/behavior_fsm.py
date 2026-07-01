@@ -210,10 +210,14 @@ class BehaviorFSM(Node):
             if self.dist_frente < self.d_front_ini:
                 w_front = self.Kfront * (self.d_front_ini - self.dist_frente)
 
-            # Tracking pared derecha
+            # Tracking pared derecha — se atenua a 0 conforme el frente se cierra.
+            # A d_front_ini: factor=1.0 (tracking normal).
+            # A d_giro:      factor=0.0 (zeroed, deja paso libre a la evasion frontal).
             w_der = 0.0
             if math.isfinite(self.dist_der):
-                w_der = -self.Kder * (self.dist_der - self.target_der)
+                rng = max(self.d_front_ini - self.d_giro, 1e-3)
+                factor = max(0.0, min(1.0, (self.dist_frente - self.d_giro) / rng))
+                w_der = -self.Kder * (self.dist_der - self.target_der) * factor
 
             # Repulsion pared izquierda
             w_izq = 0.0

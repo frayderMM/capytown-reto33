@@ -65,6 +65,8 @@ class Captura(Node):
         f  = self._fmt(self.d_f)
         l  = self._fmt(self.d_l)
         r  = self._fmt(self.d_r)
+        # frente: GIRO<30cm  grad<45cm  stop<8cm
+        # der: target=13cm
         print(f'{t:6.1f}  {self.estado:<8}  {f}  {l}  {r} |'
               f' {self.w_front:+.3f} {self.w_der:+.3f} {self.w_izq:+.3f} {self.w_total:+.3f} |'
               f' {self.vel_lin:+.3f} {self.vel_ang:+.3f}')
