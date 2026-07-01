@@ -8,7 +8,7 @@ ni siquiera rotaba lidar_front_deg — y se coordinaban por /lateral_correction
 con carreras de tiempo; esa inconsistencia de marcos era la causa de los
 giros erráticos).
 
-FSM exigida por el reto, restaurada:
+FSM exigida por el reto:
 
   CRUCERO ── caja al frente ──▶ CAJA_DETECTADA ─▶ PARAR ─▶ ESPERAR_3S ─▶ RODEAR ─▶ CRUCERO
       │
@@ -27,9 +27,10 @@ FSM exigida por el reto, restaurada:
 · GIRAR_ESQUINA: 90° a la IZQUIERDA (lazo antihorario) con cooldown para no
   encadenar giros. Nunca gira a la derecha en esquinas ni retrocede →
   el recorrido no puede invertirse ("no regresa").
-· EMERGENCIA omnidireccional con los offsets reales del chasis
-  (15 cm frente / 10 cm atrás / 8 cm lados): si algo invade el footprint
-  inflado, se detiene y rota alejándose; si persiste, lo trata como caja.
+· Clamp de seguridad con los offsets reales del chasis (15 cm frente /
+  10 cm atrás / 8 cm lados): si algo invade el footprint inflado, se
+  detiene ese ciclo sin cambiar de estado (no es un estado aparte, para
+  no bloquear el avance del estado real una vez que el obstáculo se aleja).
 · Cono trasero excluido (cable del LiDAR) y frente en raw=180° (MS200).
 
 Publica /fsm_state (String) y /guardian/debug (String JSON) para lidar_viz.py.
@@ -59,7 +60,6 @@ PARAR          = 'PARAR'
 ESPERAR_3S     = 'ESPERAR_3S'
 RODEAR         = 'RODEAR'
 GIRAR_ESQUINA  = 'GIRAR_ESQUINA'
-EMERGENCIA     = 'EMERGENCIA'
 
 
 class Guardian(Node):
@@ -249,8 +249,6 @@ class Guardian(Node):
             self.accion = 'PASANDO_OBSTACULO'
         elif self.estado == GIRAR_ESQUINA:
             self.accion = 'GIRANDO'
-        elif self.estado == EMERGENCIA:
-            self.accion = 'SEGURIDAD'
         elif abs(cmd.angular.z) > 0.08 and cmd.linear.x > 0.01:
             self.accion = 'CORRIGIENDO_DERECHA'
         elif abs(cmd.angular.z) > 0.08:
@@ -313,10 +311,15 @@ class Guardian(Node):
     def loop(self):
         d = self.d_frente
 
+        # Clamp de seguridad: si algo invade el footprint, frena este ciclo
+        # sin cambiar de estado. PARAR/ESPERAR_3S/RODEAR ya se manejan solos
+        # a esta distancia (o incluso más conservador) — dejarlos fuera evita
+        # que el clamp los interrumpa justo cuando van a progresar (el bug
+        # del log: EMERGENCIA↔PARAR en bucle sin llegar nunca a RODEAR).
         if (self.punto_fp is not None and d < self.d_emerg
-                and self.clase_frente not in (pc.PARED, pc.ESQUINA)
-                and self.estado != EMERGENCIA):
-            self._cambiar(EMERGENCIA)
+                and self.estado not in (PARAR, ESPERAR_3S, RODEAR)):
+            self._pub(0.0, 0.0)
+            return
 
         if self.estado == CRUCERO:
             en_cd = (self.get_clock().now() - self.t_fin_esquina
@@ -371,15 +374,6 @@ class Guardian(Node):
                 self._cambiar(CRUCERO)
             else:
                 self._pub(0.0, self.w_giro)     # 90° IZQUIERDA (lazo CCW)
-
-        elif self.estado == EMERGENCIA:
-            if (self.punto_fp is None or self.d_frente >= self.d_emerg
-                    or self.clase_frente in (pc.PARED, pc.ESQUINA)):
-                self._cambiar(CRUCERO)
-            elif self._t() > 4.0:
-                self._cambiar(PARAR)            # persistente → tratar como caja
-            else:
-                self._pub(0.0, 0.0)
 
     # ── Seguimiento de pared derecha (PD + alineación + rate limiter) ───────
     def _w_pared(self):

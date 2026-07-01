@@ -376,9 +376,9 @@ def frente_y_lados(pts_idx, clusters, off_frente, off_lado,
                 d_izq = min(d_izq, y - off_lado)
             else:
                 d_der = min(d_der, -y - off_lado)
-        # Emergencia solo por invasión frontal real. La pared derecha puede
-        # pasar cerca del costado sin ser choque; si se toma como footprint,
-        # el robot entra en EMERGENCIA y gira a la izquierda sin avanzar.
+        # Frenado de seguridad solo por invasión frontal real. La pared
+        # derecha puede pasar cerca del costado sin ser choque; si se toma
+        # como footprint, el robot se frena innecesariamente sin avanzar.
         if punto_fp is None and (0.02 <= x <= off_frente + 0.04
                                  and abs(y) <= off_lado * 0.80):
             punto_fp = (x, y)

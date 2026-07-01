@@ -10,7 +10,9 @@
       "Bash(python3 -)",
       "Bash(python \"C:\\\\Users\\\\andre\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\c--web-capytown-reto33\\\\d98e13f9-812c-4340-9407-8837cfade500\\\\scratchpad\\\\corner_trace.py\")",
       "Bash(git revert *)",
-      "Bash(python -m py_compile behavior_fsm/behavior_fsm/wall_follower.py)"
+      "Bash(python -m py_compile behavior_fsm/behavior_fsm/wall_follower.py)",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('behavior_fsm/behavior_fsm/behavior_fsm.py', encoding='utf-8'\\).read\\(\\)\\)\")",
+      "Bash(python -c ' *)"
     ]
   }
 }
