@@ -44,10 +44,17 @@ behavior_fsm:
                             # hay emergencia real, siempre sigue avanzando)
     w_giro_max:   0.45     # rad/s  maximo giro al evadir un frente bloqueado
 
+    # --- Clasificacion esquina real vs. caja ---
+    cono_clasificacion_deg: 50.0  # +/- grados para medir el ancho de lo que bloquea el frente
+    salto_cluster:           0.15  # m  salto de rango que separa un cluster de otro
+    ancho_max_caja:          0.35  # m  bajo esto es caja (evade); sobre esto es esquina
+                                    # real del circuito (gira fijo a la izquierda)
+
 wall_follower:
   ros__parameters:
     # --- Control lateral ---
-    dist_objetivo:  0.08        # m    distancia deseada a la pared DERECHA (objetivo 8 cm confirmado en pista)
+    dist_objetivo:  0.08        # m    distancia deseada a la pared DERECHA en crucero normal
+    dist_objetivo_evasion: 0.06 # m    mas cerca mientras behavior_fsm esta evadiendo un obstaculo
     Kp:             0.80        # ganancia proporcional
     Kd:             0.10        # ganancia derivativa
     max_correccion: 0.40        # rad/s  saturación de salida

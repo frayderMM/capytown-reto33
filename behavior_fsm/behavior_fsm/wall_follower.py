@@ -31,7 +31,7 @@ import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import LaserScan
-from std_msgs.msg import Float32
+from std_msgs.msg import Float32, String
 
 
 class WallFollower(Node):
@@ -41,6 +41,9 @@ class WallFollower(Node):
 
         # ── Parametros ────────────────────────────────────────────────────
         self.declare_parameter('dist_objetivo',  0.50)   # m  – dist. a pared si solo hay una
+        self.declare_parameter('dist_objetivo_evasion', 0.06)  # m  – mas cerca mientras
+                                                                 # behavior_fsm esta evadiendo
+                                                                 # un obstaculo (no en AVANCE)
         self.declare_parameter('Kp',             0.8)    # ganancia proporcional
         self.declare_parameter('Kd',             0.1)    # ganancia derivativa
         self.declare_parameter('min_long_pared', 0.35)   # m  – longitud minima = pared
@@ -53,7 +56,9 @@ class WallFollower(Node):
         self.declare_parameter('remove_min_deg', float('nan'))  # zona angular ignorada (inicio)
         self.declare_parameter('remove_max_deg', float('nan'))  # zona angular ignorada (fin)
 
-        self._d_obj    = self.get_parameter('dist_objetivo').value
+        self._d_obj_normal  = self.get_parameter('dist_objetivo').value
+        self._d_obj_evasion = self.get_parameter('dist_objetivo_evasion').value
+        self._fsm_state     = 'AVANCE'
         self._Kp       = self.get_parameter('Kp').value
         self._Kd       = self.get_parameter('Kd').value
         self._min_pared = self.get_parameter('min_long_pared').value
@@ -79,9 +84,19 @@ class WallFollower(Node):
         self.create_subscription(LaserScan, '/scan', self._cb_scan, _qos_scan)
         self._pub = self.create_publisher(Float32, '/lateral_correction', 10)
 
+        self.create_subscription(String, '/fsm_state', self._cb_estado, 10)
+
         self.get_logger().info(
             f'wall_follower listo  |  Kp={self._Kp}  Kd={self._Kd}'
-            f'  dist_obj={self._d_obj} m  min_pared={self._min_pared} m')
+            f'  dist_obj={self._d_obj_normal}m (evasion={self._d_obj_evasion}m)'
+            f'  min_pared={self._min_pared} m')
+
+    @property
+    def _d_obj(self) -> float:
+        return self._d_obj_normal if self._fsm_state == 'AVANCE' else self._d_obj_evasion
+
+    def _cb_estado(self, msg: String):
+        self._fsm_state = msg.data
 
     # ── Filtrado ──────────────────────────────────────────────────────────
     def _en_arco(self, theta: float) -> bool:

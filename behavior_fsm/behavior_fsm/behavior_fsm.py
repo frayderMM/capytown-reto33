@@ -11,9 +11,12 @@ por evasion:
 
   - velocidad: progresiva, baja segun se cierra el espacio al frente.
   - giro: con el frente libre, sigue la pared derecha. Si hay algo
-    perpendicular al frente, evade progresivamente eligiendo el lado
-    con MAS espacio libre, limitando la fuerza del giro segun cuanto
-    espacio real hay ahi (no gira fuerte hacia un lado casi sin margen).
+    perpendicular al frente, se distingue por ANCHO: una caja (angosta)
+    se evade eligiendo el lado con mas espacio libre; una esquina real
+    del circuito (pared ancha) gira siempre a la izquierda, el mismo
+    sentido en que se sigue la pared derecha, sin reevaluar lado. En
+    ambos casos la fuerza del giro se limita segun cuanto espacio real
+    hay en el lado elegido (no gira fuerte hacia un lado casi sin margen).
 
 La parada de emergencia (omnidireccional) es la unica que vigila los
 costados, usando los offsets reales LiDAR->borde para no chocar por
@@ -68,6 +71,17 @@ class BehaviorFSM(Node):
         self.declare_parameter('vel_min',     0.08)
         self.declare_parameter('w_giro_max',  0.45)  # rad/s  maximo giro al evadir un frente bloqueado
 
+        # --- Clasificacion esquina real vs. caja ---
+        self.declare_parameter('cono_clasificacion_deg', 50.0)  # +/- grados para medir el
+                                                                  # ancho de lo que bloquea el frente
+        self.declare_parameter('salto_cluster',          0.15)  # m  salto de rango que separa
+                                                                  # un cluster de otro
+        self.declare_parameter('ancho_max_caja',         0.35)  # m  por debajo de esto es una
+                                                                  # caja (evade); por encima es
+                                                                  # una pared/esquina real (gira
+                                                                  # fijo a la izquierda, mismo
+                                                                  # sentido que sigue el circuito)
+
         self.front_rad = math.radians(self.get_parameter('lidar_front_deg').value)
         self.sector    = math.radians(self.get_parameter('sector_frontal_deg').value)
         self.lat_lo    = math.radians(self.get_parameter('sector_lateral_lo').value)
@@ -86,11 +100,16 @@ class BehaviorFSM(Node):
         self.v_min     = self.get_parameter('vel_min').value
         self.w_giro_max = self.get_parameter('w_giro_max').value
 
+        self.cono_clas     = math.radians(self.get_parameter('cono_clasificacion_deg').value)
+        self.salto_cluster = self.get_parameter('salto_cluster').value
+        self.ancho_max_caja = self.get_parameter('ancho_max_caja').value
+
         # ── Sensores ──────────────────────────────────────────────────────
         self.dist_frente = float('inf')  # cono ancho frontal
         self.dist_izq    = float('inf')
         self.dist_der    = float('inf')
         self.dist_min    = float('inf')  # minimo global, todos los angulos
+        self.ancho_obstruccion = None    # ancho (m) de lo que bloquea el frente, o None
         self._w_lateral  = 0.0           # correccion de wall_follower (seguir pared derecha)
 
         # ── ROS I/O ───────────────────────────────────────────────────────
@@ -111,6 +130,15 @@ class BehaviorFSM(Node):
     def cb_scan(self, msg: LaserScan):
         d_f = d_l = d_r = d_min = float('inf')
 
+        # Clusters dentro del cono de clasificacion (mas ancho que el
+        # cono frontal), agrupados por salto de rango -- el cluster que
+        # contiene el punto mas cercano determina que tan ANCHO es lo
+        # que bloquea el frente (una caja ~20cm vs. una pared/esquina
+        # real, que abarca mucho mas del jiron de 60cm).
+        clusters = []
+        actual   = []
+        prev_r   = None
+
         for i, r in enumerate(msg.ranges):
             raw    = msg.angle_min + i * msg.angle_increment
             af     = math.atan2(math.sin(raw - self.front_rad),
@@ -118,6 +146,7 @@ class BehaviorFSM(Node):
             abs_af = abs(af)
             valid  = math.isfinite(r) and msg.range_min <= r <= msg.range_max
             if not valid:
+                prev_r = None
                 continue
 
             # Minimo global (casi todos los angulos, excepto el cono
@@ -136,10 +165,29 @@ class BehaviorFSM(Node):
                 else:
                     d_r = min(d_r, r)
 
+            if abs_af <= self.cono_clas:
+                if prev_r is not None and abs(r - prev_r) > self.salto_cluster:
+                    if actual:
+                        clusters.append(actual)
+                    actual = []
+                actual.append((r, r * math.sin(af)))
+                prev_r = r
+            else:
+                prev_r = None
+
+        if actual:
+            clusters.append(actual)
+
         self.dist_frente = d_f
         self.dist_izq    = d_l
         self.dist_der    = d_r
         self.dist_min    = d_min
+
+        self.ancho_obstruccion = None
+        if clusters:
+            cluster_cercano = min(clusters, key=lambda c: min(p[0] for p in c))
+            xs = [p[1] for p in cluster_cercano]
+            self.ancho_obstruccion = max(xs) - min(xs)
 
     def _cb_lat(self, msg: Float32):
         self._w_lateral = msg.data
@@ -200,16 +248,31 @@ class BehaviorFSM(Node):
 
         # Giro: solo reacciona a lo que tiene perpendicular al frente
         # (no a paredes laterales paralelas al avance). Progresivo desde
-        # dist_alerta hasta el maximo en dist_obstaculo, eligiendo el
-        # lado con MAS espacio libre para girar -- no siempre el mismo.
-        # La fuerza del giro tambien se limita segun cuanto espacio REAL
-        # hay en el lado elegido (no solo que el frente este bloqueado):
-        # si ese lado esta casi sin margen, un giro a maxima velocidad
-        # angular lo raspa -- se modula hasta casi 0 cerca de d_emerg.
+        # dist_alerta hasta el maximo en dist_obstaculo. Distingue dos
+        # casos segun el ANCHO de lo que bloquea (ver cb_scan):
+        #   - caja (angosto, < ancho_max_caja): evade eligiendo el lado
+        #     con MAS espacio libre -- no siempre el mismo lado.
+        #   - esquina real del circuito (ancho, >= ancho_max_caja, o sin
+        #     cluster valido): gira SIEMPRE a la izquierda, el mismo
+        #     sentido en que se sigue la pared derecha del jiron -- no
+        #     reevalua lado por lado, evita "girar de mas" en la esquina.
+        # En ambos casos la fuerza del giro se limita segun cuanto
+        # espacio REAL hay en el lado elegido (no solo que el frente
+        # este bloqueado): casi sin margen ahi, se modula hasta casi 0.
         w = 0.0
+        estado = 'AVANCE'
         if c_frente < self.d_alerta:
             ratio = max(0.0, min(1.0, (self.d_alerta - c_frente) / (self.d_alerta - self.d_obst)))
-            lado = 1.0 if c_izq >= c_der else -1.0  # +1 = izquierda, -1 = derecha
+
+            es_esquina = (self.ancho_obstruccion is None
+                          or self.ancho_obstruccion >= self.ancho_max_caja)
+            if es_esquina:
+                lado = 1.0  # izquierda fija, sigue el sentido del circuito
+                estado = 'ESQUINA'
+            else:
+                lado = 1.0 if c_izq >= c_der else -1.0  # +1 = izquierda, -1 = derecha
+                estado = 'EVADIR'
+
             c_lado = c_izq if lado > 0 else c_der
             factor_espacio = max(0.0, min(1.0, (c_lado - self.d_emerg) / (self.d_alerta - self.d_emerg)))
             w = lado * ratio * factor_espacio * self.w_giro_max
@@ -225,9 +288,10 @@ class BehaviorFSM(Node):
             w = self._w_lateral
 
         self.get_logger().info(
-            f'c_frente={c_frente:.2f} c_izq={c_izq:.2f} c_der={c_der:.2f}  v={v:.2f} w={w:.2f}',
+            f'c_frente={c_frente:.2f} c_izq={c_izq:.2f} c_der={c_der:.2f} '
+            f'ancho={self.ancho_obstruccion}  v={v:.2f} w={w:.2f}  estado={estado}',
             throttle_duration_sec=0.5)
-        self._pub(v, w, 'EVADIR' if self._en_evasion else 'AVANCE')
+        self._pub(v, w, estado)
 
 
 def main(args=None):
