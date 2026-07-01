@@ -1,42 +1,56 @@
-# Parametros del guardian — CRUCERO / GIRO
+# Parametros Guardian v2 — CRUCERO / GIRO
 #
-# Logica:
-#   1. Siempre pegado a la pared derecha (wall_follower).
-#   2. Obstaculo al frente < dist_giro  → GIRO izquierda.
-#   3. Supera limite (frente o izq < dist_parar) → PARA.
+# Control:
+#   w = w_der(tracking pared der) + w_front(correccion gradual frente) + w_izq(repulsion)
 #
-# Ejecutar:
-#   ros2 launch behavior_fsm capytown.launch.py
+# Zonas de distancia (frente):
+#   > 0.40m  → solo tracking pared derecha, sin correccion frontal
+#   0.22-0.40m → tracking + correccion frontal gradual proporcional
+#   < 0.22m  → GIRO izquierda
+#   < 0.08m  → PARADA absoluta
+#
+# Zonas distancia (izquierda):
+#   > 0.15m  → sin repulsion
+#   < 0.15m  → repulsion proporcional hacia la derecha
+#   < 0.05m  → PARADA absoluta
 
 behavior_fsm:
   ros__parameters:
 
-    # --- Orientacion del LiDAR ---
-    lidar_front_deg: 180.0      # 180 = Yahboom MS200 montado con cable atras
+    # LiDAR
+    lidar_front_deg:    180.0
+    sector_frontal_deg:  30.0
+    sector_lateral_lo:   60.0
+    sector_lateral_hi:  120.0
 
-    # --- Sector frontal (ancho del cono de deteccion) ---
-    sector_frontal_deg: 30.0
+    # Parada absoluta (zona de crash real)
+    d_stop_front:   0.08   # m  para si frente < 8 cm
+    d_stop_lateral: 0.05   # m  para si izq < 5 cm
 
-    # --- Sectores laterales (para dist_izq y dist_der) ---
-    sector_lateral_lo:  60.0
-    sector_lateral_hi: 120.0
+    # Umbrales de accion frontal
+    d_giro:         0.22   # m  trigger GIRO (llave izquierda)
+    d_front_inicio: 0.40   # m  inicio correccion frontal gradual
 
-    # --- Umbrales de distancia ---
-    dist_parar:   0.20  # m  PARA inmediato si frente o izq < esto
-    dist_giro:    0.35  # m  GIRO si frente < esto
-    dist_izq_min: 0.10  # m  repulsion si izquierda < esto
+    # Control pared derecha  (objetivo: 10-16 cm)
+    target_der: 0.13        # m  punto objetivo (medio del rango 10-16 cm)
+    Kder:       4.0         # ganancia: mayor = ajuste mas rapido
 
-    # --- Velocidad (misma en todos los estados) ---
-    vel_crucero:      0.10  # m/s  avance
-    vel_giro_gradual: 0.40  # rad/s  giro izquierda
+    # Repulsion pared izquierda
+    d_izq_min: 0.15         # m  inicio de repulsion izquierda
+    Kizq:      4.0
 
-    # --- Ganancia repulsion pared izquierda ---
-    Kizq: 4.0
+    # Correccion frontal gradual
+    Kfront: 1.2             # ganancia: mayor = gira mas fuerte al acercarse
 
-    # --- Temporizacion ---
-    t_giro_min: 1.2   # s  minimo en GIRO antes de evaluar salida
-    t_giro_max: 4.0   # s  salvavidas: fuerza salida a CRUCERO
-    t_cooldown:  2.0  # s  cooldown post-GIRO (evita re-deteccion inmediata)
+    # Velocidad
+    vel_crucero:      0.10  # m/s  avance (todos los estados)
+    vel_giro_gradual: 0.50  # rad/s  giro en estado GIRO
+    max_w:            0.60  # rad/s  cap angular en CRUCERO
+
+    # Temporizacion
+    t_giro_min: 1.0         # s  minimo en GIRO antes de evaluar salida
+    t_giro_max: 4.0         # s  salvavidas
+    t_cooldown:  2.0        # s  cooldown post-GIRO
 
 wall_follower:
   ros__parameters:
