@@ -37,6 +37,9 @@ behavior_fsm:
 
     # Velocidad
     vel_crucero:      0.10
+    vel_maniobra:     0.07   # lineal en GIRO/RODEO: mas lento que crucero para
+                             # recorrer menos distancia "a ciegas" si el rumbo
+                             # queda torcido tras el giro (problema de la diagonal)
     vel_giro_gradual: 0.55   # subido de 0.50 (a veces el giro se quedaba corto)
     max_w:            0.60
 

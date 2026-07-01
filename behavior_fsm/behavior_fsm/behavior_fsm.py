@@ -71,6 +71,10 @@ class BehaviorFSM(Node):
         self.declare_parameter('Kfront',      2.0)
 
         self.declare_parameter('vel_crucero',      0.10)
+        self.declare_parameter('vel_maniobra',     0.07)   # lineal en GIRO/RODEO: mas lento
+                                                            # que crucero para recorrer menos
+                                                            # distancia "a ciegas" si el rumbo
+                                                            # queda torcido tras el giro
         self.declare_parameter('vel_giro_gradual', 0.55)
         self.declare_parameter('max_w',            0.60)
 
@@ -153,6 +157,7 @@ class BehaviorFSM(Node):
         self.Kizq              = self.get_parameter('Kizq').value
         self.Kfront            = self.get_parameter('Kfront').value
         self.v_cruise          = self.get_parameter('vel_crucero').value
+        self.v_maniobra        = self.get_parameter('vel_maniobra').value
         self.w_giro            = self.get_parameter('vel_giro_gradual').value
         self.max_w             = self.get_parameter('max_w').value
         self.t_giro_min        = self.get_parameter('t_giro_min').value
@@ -355,8 +360,10 @@ class BehaviorFSM(Node):
                 return
 
             # Magnitud congelada al entrar a GIRO (ver comentario en CRUCERO).
+            # v_maniobra (mas lenta que crucero): menos distancia recorrida
+            # "a ciegas" por ciclo si el rumbo queda torcido.
             self._pub_dbg(self.w_giro_efectivo, 0, 0, self.w_giro_efectivo)
-            self._pub(self.v_cruise, self.w_giro_efectivo)
+            self._pub(self.v_maniobra, self.w_giro_efectivo)
 
         # ── RODEO: avance recto para separarse del obstaculo ──────────────
         elif self.estado == RODEO:
@@ -371,7 +378,7 @@ class BehaviorFSM(Node):
                 self._cambiar(CRUCERO)
                 return
             self._pub_dbg(0, 0, 0, 0)
-            self._pub(self.v_cruise, 0.0)   # w=0: absolutamente recto
+            self._pub(self.v_maniobra, 0.0)   # w=0: absolutamente recto, mas lento que crucero
 
 
 def _esperar_inicio(logger, segundos: float):
