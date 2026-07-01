@@ -51,6 +51,8 @@ behavior_fsm:
     t_evasion_min:           0.3   # s  compromiso minimo en evasion antes de volver a
                                     # AVANCE (evita pegarse a la derecha con el obstaculo
                                     # aun al costado, recien despejado del frente)
+    angulo_esquina_deg:      90.0  # grados: giro medido en una esquina real (integra w),
+                                    # no solo hasta que el frente se despeje
 
 wall_follower:
   ros__parameters:
