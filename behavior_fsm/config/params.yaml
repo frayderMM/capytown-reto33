@@ -1,7 +1,6 @@
-# Parametros del guardian (Parte B) — ETAPA 1: wall-following + giro
+# Parametros del guardian — wall-following DOS RAYOS + GIRO
 #
-# Ejecutar:
-#   ros2 launch behavior_fsm capytown.launch.py
+# ros2 launch behavior_fsm capytown.launch.py
 
 behavior_fsm:
   ros__parameters:
@@ -20,22 +19,30 @@ behavior_fsm:
     min_box_pts:      5
 
     # --- Distancias ---
-    dist_alerta:        0.45
     dist_pared_lateral: 0.55
     dist_emergencia:    0.12
 
-    # --- Velocidad unica para todos los estados ---
-    vel_crucero:      0.14   # m/s
-    vel_giro_gradual: 0.40   # rad/s  giro izquierda
+    # --- Velocidad ---
+    vel_crucero:      0.14   # m/s  (misma en CRUCERO y GIRO)
+    vel_giro_gradual: 0.40   # rad/s giro izquierda
+
+    # --- Wall-following DOS RAYOS (derecha) ---
+    # rayo 90°: perpendicular a la pared derecha
+    # rayo 45°: diagonal derecha-adelante
+    # w = -Kp*(d_pared - objetivo) - Ka*theta_pared
+    d_objetivo_der: 0.08   # m  pegarse a 8 cm de la pared derecha
+    Kp_der:         1.0    # ganancia de distancia (sube si no corrige suficiente)
+    Ka_der:         0.5    # ganancia de angulo  (sube si robot va en diagonal)
+    max_w_der:      0.40   # rad/s  tope de correccion
 
     # --- Repulsion pared izquierda ---
     dist_izq_min: 0.15
     Kizq:         3.0
 
     # --- Temporizacion ---
-    t_giro_min: 1.2          # s  tiempo fijo de giro (~27 grados a 0.40 rad/s)
-    t_giro_max: 4.0          # s  salvavidas
-    t_cooldown: 3.0          # s  cooldown post-GIRO
+    t_giro_min: 1.2   # s  tiempo fijo de giro
+    t_giro_max: 4.0   # s  salvavidas
+    t_cooldown: 3.0   # s  cooldown post-GIRO
 
 wall_follower:
   ros__parameters:

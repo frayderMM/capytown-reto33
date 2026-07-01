@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
 """
-lidar_viz.py — Monitor visual en tiempo real del robot CapyTown.
-VERSION: v6
+lidar_viz_super_hud.py — Monitor visual en tiempo real del robot CapyTown.
+VERSION: SUPER HUD
 
-Panel izquierdo : mapa LiDAR con sector frontal coloreado por estado.
-  - cyan   : sector ±12° libre (sin caja)
-  - naranja: caja 25 cm perpendicular detectada → se dibuja rectángulo en el mapa
-Panel derecho   : DER (grande) + IZQ (grande) + historial velocidad.
-
-Deteccion de caja: std_x < 4 cm (perpendicular) + 8 cm <= ancho <= 32 cm (25 cm ± margen)
+Mejoras visuales:
+- Dashboard tipo HUD con panel principal LiDAR + tarjetas de métricas.
+- Sector frontal resaltado y cambio visual cuando se detecta caja.
+- Cards grandes para FRENTE, DERECHA, IZQUIERDA y COMANDOS.
+- Historial de velocidad más limpio.
+- Mantiene la misma lógica ROS y los mismos tópicos del archivo original.
 """
 
-VIZ_VERSION = 'v14'
+VIZ_VERSION = 'SUPER HUD v15'
 
 import math
 import argparse
@@ -32,53 +32,61 @@ import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 import matplotlib.gridspec as gridspec
 from matplotlib.collections import LineCollection
-import numpy as np
 
 
-# ── Paleta ────────────────────────────────────────────────────────────────────
-BG          = '#0d1117'
-PANEL       = '#161b22'
-BORDER      = '#30363d'
-C_FRONT_OK  = '#00bcd4'   # cyan: sector frontal sin caja
-C_FRONT_BOX = '#f39c12'   # naranja: caja perpendicular detectada
-C_LEFT      = '#4f8ef7'   # azul: sector izquierdo
-C_RIGHT     = '#2ecc71'   # verde: sector derecho
-C_OTHER     = '#3a4a5a'   # gris: resto
-C_BOX       = '#f39c12'   # naranja: cajas censadas en odom
-C_RODEO     = '#b07fff'   # purpura: estado RODEO
-C_TRAJ      = '#8b949e'
-C_ARROW     = '#f5c518'
-C_TEXT      = '#e6edf3'
-C_DIM       = '#8b949e'
-C_WARN      = '#f39c12'
-C_ALERT     = '#e94560'
-C_OK        = '#2ecc71'
+# ──────────────────────────────────────────────────────────────────────────────
+# PALETA VISUAL
+# ──────────────────────────────────────────────────────────────────────────────
+BG          = '#070b12'
+PANEL       = '#0f1724'
+PANEL_2     = '#111c2d'
+BORDER      = '#26364d'
+GRID        = '#1d2a3d'
 
-# ── Constantes ────────────────────────────────────────────────────────────────
-FRONT_GIRO_HALF = math.radians(12.0)   # ±12° dispara GIRO en la FSM
+C_FRONT_OK  = '#00e5ff'   # cyan: sector frontal libre
+C_FRONT_BOX = '#ffb020'   # naranja: caja detectada
+C_LEFT      = '#65a3ff'   # azul: pared izquierda
+C_RIGHT     = '#35e087'   # verde: pared derecha
+C_OTHER     = '#33465f'   # gris/azul: resto LiDAR
+C_BOX       = '#ffb020'
+C_RODEO     = '#b388ff'
+C_TRAJ      = '#a6b3c5'
+C_ARROW     = '#ffe066'
+C_TEXT      = '#edf6ff'
+C_DIM       = '#8fa3bd'
+C_WARN      = '#ffb020'
+C_ALERT     = '#ff4d6d'
+C_OK        = '#35e087'
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# CONSTANTES
+# ──────────────────────────────────────────────────────────────────────────────
+FRONT_GIRO_HALF = math.radians(12.0)
 SIDE_LO    = math.radians(60.0)
 SIDE_HI    = math.radians(120.0)
 
-TARGET_DER   = 0.08   # m  objetivo pared derecha
-TOL_OK       = 0.02   # m  tolerancia OK
-MAX_GAUGE    = 0.70   # m  maximo del gauge
+TARGET_DER   = 0.08   # m
+TOL_OK       = 0.02   # m
+MAX_GAUGE    = 0.70   # m
 
-DIST_IZQ_MIN  = 0.15  # m  zona de repulsion (= dist_izq_min en FSM)
-DIST_IZQ_WARN = 0.25  # m  inicio de advertencia
+DIST_IZQ_MIN  = 0.15  # m
+DIST_IZQ_WARN = 0.25  # m
 
-# Deteccion de caja (~25 cm): perpendicular (std_x) + ancho lateral
-DETECT_HALF   = math.radians(20.0)  # sector de busqueda para caja
-DETECT_MAX_R  = 0.45   # m  rango maximo de busqueda
-PERP_STD_MAX  = 0.04   # m  max std de profundidad (x). perpendicular → std_x≈0
-BOX_W_MIN     = 0.08   # m  ancho minimo de caja
-BOX_W_MAX     = 0.23   # m  ancho maximo de caja (20 cm + 3 cm margen de medicion)
-MIN_FRONT_PTS = 5      # minimo de puntos para considerar deteccion valida
+DETECT_HALF   = math.radians(20.0)
+DETECT_MAX_R  = 0.45
+PERP_STD_MAX  = 0.04
+BOX_W_MIN     = 0.08
+BOX_W_MAX     = 0.23
+MIN_FRONT_PTS = 5
 
 MAX_TRAJ    = 400
 MAX_VEL_T   = 10.0
 
 
-# ── Nodo ROS ──────────────────────────────────────────────────────────────────
+# ──────────────────────────────────────────────────────────────────────────────
+# NODO ROS
+# ──────────────────────────────────────────────────────────────────────────────
 class LidarViz(Node):
     def __init__(self, front_deg: float):
         super().__init__('lidar_viz')
@@ -94,9 +102,9 @@ class LidarViz(Node):
 
         self.box_frente      = False
         self.box_frente_dist = float('inf')
-        self.box_cx          = 0.0   # profundidad (x robot) del centro de la caja
-        self.box_cy          = 0.0   # lateral (y robot) del centro de la caja
-        self.box_w           = 0.0   # ancho detectado de la caja
+        self.box_cx          = 0.0
+        self.box_cy          = 0.0
+        self.box_w           = 0.0
 
         self.fsm_state  = 'CRUCERO'
 
@@ -116,6 +124,7 @@ class LidarViz(Node):
 
         qos = QoSProfile(depth=10)
         qos.reliability = ReliabilityPolicy.BEST_EFFORT
+
         self.create_subscription(LaserScan, '/scan',               self._cb_scan,   qos)
         self.create_subscription(Odometry,  '/odom_raw',           self._cb_odom,   qos)
         self.create_subscription(Twist,     '/cmd_vel',            self._cb_cmd,    10)
@@ -129,7 +138,8 @@ class LidarViz(Node):
 
     def _odom_to_display(self, ox, oy):
         dx, dy = ox - self.robot_x, oy - self.robot_y
-        c = math.cos(-self.robot_yaw); s = math.sin(-self.robot_yaw)
+        c = math.cos(-self.robot_yaw)
+        s = math.sin(-self.robot_yaw)
         xb = c * dx - s * dy
         yb = s * dx + c * dy
         return -yb, xb
@@ -141,6 +151,10 @@ class LidarViz(Node):
         front_rf  = []
         prev_xd = prev_yd = prev_r = None
 
+        self.range_min = msg.range_min
+        self.range_max = msg.range_max
+
+        # Saltamos de 4 en 4 puntos para que el panel sea fluido en Raspberry.
         for i in range(0, len(msg.ranges), 4):
             r = msg.ranges[i]
             if not math.isfinite(r) or r == 0.0:
@@ -155,19 +169,19 @@ class LidarViz(Node):
                                 math.cos(theta - self.front_rad))
             abs_af = abs(af)
 
-            # Coloreado y medicion de distancias por sector
             if abs_af <= FRONT_GIRO_HALF:
-                color = '__front__'   # placeholder: naranja o cyan segun deteccion
+                color = '__front__'
                 d_f = min(d_f, r)
             elif SIDE_LO <= abs_af <= SIDE_HI:
                 if af > 0:
-                    color = C_LEFT;  d_l = min(d_l, r)
+                    color = C_LEFT
+                    d_l = min(d_l, r)
                 else:
-                    color = C_RIGHT; d_r = min(d_r, r)
+                    color = C_RIGHT
+                    d_r = min(d_r, r)
             else:
                 color = C_OTHER
 
-            # Colectar puntos cercanos en sector de deteccion (independiente del color)
             if abs_af <= DETECT_HALF and r <= DETECT_MAX_R:
                 front_rf.append((r * math.cos(af), r * math.sin(af)))
 
@@ -184,15 +198,11 @@ class LidarViz(Node):
         self.d_left  = d_l
         self.d_right = d_r
 
-        # ── Deteccion de caja (~25 cm perpendicular) ─────────────────────
-        # Doble chequeo:
-        #   1. std_x < PERP_STD_MAX  → todos los puntos a la misma profundidad
-        #      (superficie perpendicular al robot). Pared diagonal → std_x grande.
-        #   2. BOX_W_MIN <= y_spread <= BOX_W_MAX → ancho compatible con caja 25 cm.
-        #      Filtra paredes largas (> 32 cm en el cono) y puntos sueltos (< 8 cm).
+        # Detección de caja perpendicular de aprox. 25 cm.
         self.box_frente      = False
         self.box_frente_dist = float('inf')
         self.box_cx = self.box_cy = self.box_w = 0.0
+
         if len(front_rf) >= MIN_FRONT_PTS:
             xs    = [p[0] for p in front_rf]
             ys    = [p[1] for p in front_rf]
@@ -200,6 +210,7 @@ class LidarViz(Node):
             mx    = sum(xs) / n
             std_x = math.sqrt(sum((x - mx) ** 2 for x in xs) / n)
             y_spread = max(ys) - min(ys)
+
             if std_x < PERP_STD_MAX and BOX_W_MIN <= y_spread <= BOX_W_MAX:
                 self.box_frente      = True
                 self.box_frente_dist = mx
@@ -207,11 +218,9 @@ class LidarViz(Node):
                 self.box_cy          = (max(ys) + min(ys)) / 2.0
                 self.box_w           = y_spread
 
-        # Asignar color definitivo al sector frontal segun si hay caja o no
         front_color = C_FRONT_BOX if self.box_frente else C_FRONT_OK
         self.scan_segs     = segs
-        self.scan_seg_cols = [front_color if c == '__front__' else c
-                              for c in seg_cols]
+        self.scan_seg_cols = [front_color if c == '__front__' else c for c in seg_cols]
 
     def _cb_cmd(self, msg: Twist):
         self.vel_lin = msg.linear.x
@@ -243,314 +252,404 @@ class LidarViz(Node):
         self.traj_odom.append((p.x, p.y))
 
 
-# ── Helpers para construir un panel de distancia ──────────────────────────────
-def _build_dist_panel(ax, title, title_color):
-    """Panel generico con numero grande, barra y status. Devuelve dict de artistas."""
+# ──────────────────────────────────────────────────────────────────────────────
+# HELPERS VISUALES
+# ──────────────────────────────────────────────────────────────────────────────
+def _style_axis(ax):
+    ax.set_facecolor(PANEL)
+    for sp in ax.spines.values():
+        sp.set_edgecolor(BORDER)
+        sp.set_linewidth(1.2)
+    ax.tick_params(colors=C_DIM, labelsize=8)
+
+
+def _add_card_bg(ax, edge=BORDER):
+    """Fondo tipo tarjeta dentro de un eje sin ticks."""
     ax.axis('off')
     ax.set_xlim(0, 1)
     ax.set_ylim(0, 1)
-    ax.set_title(title, color=title_color, fontsize=12, pad=6)
-
-    # Numero grande en el centro
-    lbl_val = ax.text(0.5, 0.60, '---', ha='center', va='center',
-                      color=C_TEXT, fontsize=36, fontweight='bold')
-    # Status (OK / CERCA / ALERTA etc.)
-    lbl_status = ax.text(0.5, 0.22, '', ha='center', va='center',
-                         color=C_DIM, fontsize=11)
-    return {'lbl_val': lbl_val, 'lbl_status': lbl_status}
+    card = mpatches.FancyBboxPatch(
+        (0.02, 0.04), 0.96, 0.92,
+        boxstyle='round,pad=0.02,rounding_size=0.05',
+        fc=PANEL_2, ec=edge, lw=1.5, alpha=0.98, zorder=0
+    )
+    ax.add_patch(card)
+    return card
 
 
-# ── Figura ────────────────────────────────────────────────────────────────────
-def build_figure():
-    fig = plt.figure(figsize=(12, 7), facecolor=BG)
-    # 3 filas en la columna derecha: DER (grande), IZQ (grande), vel (pequena)
-    gs = gridspec.GridSpec(3, 2,
-                           width_ratios=[2.2, 1],
-                           height_ratios=[2.2, 2.2, 1.0],
-                           hspace=0.45, wspace=0.28,
-                           left=0.05, right=0.97,
-                           top=0.94, bottom=0.07)
-
-    ax_lidar = fig.add_subplot(gs[:, 0])
-    ax_der   = fig.add_subplot(gs[0, 1])
-    ax_izq   = fig.add_subplot(gs[1, 1])
-    ax_vel   = fig.add_subplot(gs[2, 1])
-
-    for ax in [ax_lidar, ax_der, ax_izq, ax_vel]:
-        ax.set_facecolor(PANEL)
-        for sp in ax.spines.values():
-            sp.set_edgecolor(BORDER)
-        ax.tick_params(colors=C_DIM, labelsize=8)
-
-    # ── LiDAR ─────────────────────────────────────────────────────────────
-    ax_lidar.set_xlim(-1.5, 1.5)
-    ax_lidar.set_ylim(-1.5, 1.5)
-    ax_lidar.set_aspect('equal')
-    ax_lidar.grid(True, color=BORDER, lw=0.5, ls='--')
-    ax_lidar.set_title(f'LiDAR — Vista en tiempo real  [{VIZ_VERSION}]', color=C_TEXT, fontsize=12, pad=8)
-    ax_lidar.set_xlabel('← IZQ   DER →', color=C_DIM, fontsize=8)
-    ax_lidar.set_ylabel('↑ FRENTE', color=C_DIM, fontsize=8)
-    for d, label in [(0.3, '30cm'), (0.5, '50cm'), (1.0, '1m'), (1.5, '1.5m')]:
-        ax_lidar.add_patch(plt.Circle((0, 0), d, color=BORDER, fill=False, lw=0.7, ls=':'))
-        ax_lidar.text(0.01, d + 0.02, label, color=BORDER, fontsize=7)
-    ax_lidar.scatter([0], [0], s=80, c='white', zorder=6)
-    ax_lidar.annotate('', xy=(0, 0.25), xytext=(0, 0),
-                      arrowprops=dict(arrowstyle='->', color=C_ARROW, lw=2.5), zorder=7)
-    lc = LineCollection([], linewidths=3.0, zorder=4)
-    ax_lidar.add_collection(lc)
-    traj_line, = ax_lidar.plot([], [], color=C_TRAJ, lw=1.2, alpha=0.6, zorder=3)
-    box_patches = []
-    range_circ = plt.Circle((0, 0), 1.5, color='#223344', fill=False, lw=1, ls='--', zorder=2)
-    ax_lidar.add_patch(range_circ)
-
-    # Alerta frontal — texto abajo del lidar (solo cuando hay caja)
-    alert_txt = ax_lidar.text(0, -1.42, '', color=C_ALERT, fontsize=12,
-                              ha='center', va='bottom', fontweight='bold', zorder=8)
-    # Texto de caja en parte superior del lidar
-    box_front_txt = ax_lidar.text(0, 1.42, '', color=C_FRONT_BOX, fontsize=11,
-                                  ha='center', va='top', fontweight='bold', zorder=9)
-    # Estado FSM — esquina inferior izquierda del panel lidar
-    state_badge = ax_lidar.text(-1.45, -1.45, 'CRUCERO', color=C_OK,
-                                fontsize=14, fontweight='bold',
-                                ha='left', va='bottom', zorder=10,
-                                bbox=dict(boxstyle='round,pad=0.3',
-                                          fc=BG, ec=C_OK, lw=2.0, alpha=0.92))
-    ax_lidar.legend(handles=[
-        mpatches.Patch(color=C_FRONT_OK,  label='FRENTE (sin caja)'),
-        mpatches.Patch(color=C_FRONT_BOX, label='FRENTE (CAJA!)'),
-        mpatches.Patch(color=C_LEFT,      label='IZQ'),
-        mpatches.Patch(color=C_RIGHT,     label='DER'),
-    ], loc='upper right', facecolor=BG, labelcolor=C_TEXT, fontsize=8, framealpha=0.9)
-
-    # ── Panel DER ─────────────────────────────────────────────────────────
-    ax_der.axis('off')
-    ax_der.set_xlim(0, 1)
-    ax_der.set_ylim(0, 1)
-    ax_der.set_title('PARED DERECHA', color=C_RIGHT, fontsize=12, pad=6)
-
-    # Barra gauge horizontal
-    ax_der.add_patch(mpatches.FancyBboxPatch(
-        (0.06, 0.76), 0.88, 0.10, boxstyle='round,pad=0.01',
-        fc='#1e2a1e', ec=BORDER, lw=1.5, zorder=1))
-    ok_lo = (TARGET_DER - TOL_OK) / MAX_GAUGE
-    ok_hi = (TARGET_DER + TOL_OK) / MAX_GAUGE
-    ax_der.add_patch(mpatches.Rectangle(
-        (0.06 + 0.88 * ok_lo, 0.76), 0.88 * (ok_hi - ok_lo), 0.10,
-        fc='#1a4a1a', ec='none', zorder=2))
-    tgt_x = 0.06 + 0.88 * (TARGET_DER / MAX_GAUGE)
-    ax_der.plot([tgt_x, tgt_x], [0.74, 0.88], color=C_OK, lw=2.0, zorder=4)
-    ax_der.text(tgt_x, 0.70, f'{int(TARGET_DER*100)} cm',
-                ha='center', va='top', color=C_OK, fontsize=7)
-    for cm in [0, 10, 20, 30, 40, 50, 60, 70]:
-        xp = 0.06 + 0.88 * (cm / 100 / MAX_GAUGE)
-        if xp > 0.94:
-            break
-        ax_der.text(xp, 0.89, f'{cm}', ha='center', va='bottom',
-                    color=C_DIM, fontsize=6)
-        ax_der.plot([xp, xp], [0.87, 0.89], color=BORDER, lw=0.8)
-
-    bar_der = mpatches.FancyBboxPatch(
-        (0.06, 0.77), 0.0, 0.08, boxstyle='round,pad=0.0',
-        fc=C_OK, ec='none', zorder=3)
-    ax_der.add_patch(bar_der)
-    needle_der, = ax_der.plot([], [], color='white', lw=2.5, zorder=5)
-
-    lbl_der_val    = ax_der.text(0.5, 0.48, '---', ha='center', va='center',
-                                  color=C_TEXT, fontsize=34, fontweight='bold')
-    lbl_der_status = ax_der.text(0.5, 0.20, '', ha='center', va='center',
-                                  color=C_DIM, fontsize=10)
-
-    der_artists = {
-        'bar': bar_der, 'needle': needle_der,
-        'lbl_val': lbl_der_val, 'lbl_status': lbl_der_status,
+def _metric_card(ax, title, accent, unit='cm', hint=''):
+    card = _add_card_bg(ax, edge=accent)
+    ax.text(0.07, 0.84, title, ha='left', va='center',
+            color=accent, fontsize=10, fontweight='bold')
+    value = ax.text(0.07, 0.53, '---', ha='left', va='center',
+                    color=C_TEXT, fontsize=30, fontweight='bold')
+    unit_txt = ax.text(0.91, 0.53, unit, ha='right', va='center',
+                       color=C_DIM, fontsize=12, fontweight='bold')
+    status = ax.text(0.07, 0.25, '', ha='left', va='center',
+                     color=C_DIM, fontsize=10)
+    hint_txt = ax.text(0.07, 0.10, hint, ha='left', va='center',
+                       color=C_DIM, fontsize=8)
+    return {
+        'card': card,
+        'value': value,
+        'unit': unit_txt,
+        'status': status,
+        'hint': hint_txt,
     }
 
-    # ── Panel IZQ ─────────────────────────────────────────────────────────
-    ax_izq.axis('off')
-    ax_izq.set_xlim(0, 1)
-    ax_izq.set_ylim(0, 1)
-    ax_izq.set_title('PARED IZQUIERDA', color=C_LEFT, fontsize=12, pad=6)
 
-    lbl_izq_val    = ax_izq.text(0.5, 0.60, '---', ha='center', va='center',
-                                  color=C_LEFT, fontsize=34, fontweight='bold')
-    lbl_izq_status = ax_izq.text(0.5, 0.22, '', ha='center', va='center',
-                                  color=C_DIM, fontsize=11)
-    # Linea indicadora del limite de repulsion (15cm)
-    ax_izq.text(0.5, 0.07, f'Limite repulsion: {int(DIST_IZQ_MIN*100)} cm',
-                ha='center', va='bottom', color=C_DIM, fontsize=8)
+def _cmd_card(ax):
+    card = _add_card_bg(ax, edge=C_ARROW)
+    ax.text(0.07, 0.84, 'COMANDOS', ha='left', va='center',
+            color=C_ARROW, fontsize=10, fontweight='bold')
+    v_lin = ax.text(0.07, 0.58, 'v: ---', ha='left', va='center',
+                    color=C_TEXT, fontsize=20, fontweight='bold')
+    v_ang = ax.text(0.07, 0.38, 'w: ---', ha='left', va='center',
+                    color=C_DIM, fontsize=14, fontweight='bold')
+    corr = ax.text(0.07, 0.18, 'corr: ---', ha='left', va='center',
+                   color=C_DIM, fontsize=12)
+    return {'card': card, 'v_lin': v_lin, 'v_ang': v_ang, 'corr': corr}
 
-    izq_artists = {'lbl_val': lbl_izq_val, 'lbl_status': lbl_izq_status}
 
-    # ── Velocidad ──────────────────────────────────────────────────────────
-    ax_vel.set_title('Vel. lineal (m/s)', color=C_TEXT, fontsize=9, pad=4)
+def _set_card_state(card_art, color):
+    card_art['card'].set_edgecolor(color)
+    card_art['value'].set_color(color)
+    card_art['status'].set_color(color)
+
+
+def _fmt_cm(value_m):
+    if math.isfinite(value_m):
+        return f'{value_m * 100:.1f}'
+    return '---'
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# FIGURA / DASHBOARD
+# ──────────────────────────────────────────────────────────────────────────────
+def build_figure():
+    plt.rcParams['font.family'] = 'DejaVu Sans'
+
+    fig = plt.figure(figsize=(15.5, 8.6), facecolor=BG)
+    gs = gridspec.GridSpec(
+        4, 3,
+        width_ratios=[2.45, 1.0, 1.0],
+        height_ratios=[0.36, 1.0, 1.0, 0.90],
+        hspace=0.25,
+        wspace=0.20,
+        left=0.035,
+        right=0.975,
+        top=0.965,
+        bottom=0.06,
+    )
+
+    ax_header = fig.add_subplot(gs[0, :])
+    ax_lidar  = fig.add_subplot(gs[1:, 0])
+    ax_front  = fig.add_subplot(gs[1, 1])
+    ax_der    = fig.add_subplot(gs[1, 2])
+    ax_izq    = fig.add_subplot(gs[2, 1])
+    ax_cmd    = fig.add_subplot(gs[2, 2])
+    ax_vel    = fig.add_subplot(gs[3, 1:])
+
+    # Header
+    ax_header.axis('off')
+    ax_header.set_xlim(0, 1)
+    ax_header.set_ylim(0, 1)
+    ax_header.add_patch(mpatches.FancyBboxPatch(
+        (0.0, 0.10), 1.0, 0.80,
+        boxstyle='round,pad=0.01,rounding_size=0.03',
+        fc=PANEL, ec=BORDER, lw=1.2, alpha=0.96
+    ))
+    ax_header.text(0.025, 0.55, 'CAPYTOWN · LiDAR REAL-TIME HUD',
+                   ha='left', va='center', color=C_TEXT,
+                   fontsize=18, fontweight='bold')
+    ax_header.text(0.42, 0.55,
+                   'scan · odom · cmd_vel · fsm_state · cajas_avistadas',
+                   ha='left', va='center', color=C_DIM, fontsize=10)
+    header_state = ax_header.text(
+        0.965, 0.55, 'CRUCERO', ha='right', va='center',
+        color=C_OK, fontsize=13, fontweight='bold',
+        bbox=dict(boxstyle='round,pad=0.35', fc=BG, ec=C_OK, lw=1.8, alpha=0.95)
+    )
+
+    # LiDAR principal
+    _style_axis(ax_lidar)
+    ax_lidar.set_xlim(-1.55, 1.55)
+    ax_lidar.set_ylim(-1.55, 1.55)
+    ax_lidar.set_aspect('equal')
+    ax_lidar.grid(True, color=GRID, lw=0.55, ls='--', alpha=0.9)
+    ax_lidar.set_title(f'MAPA LiDAR 360°  ·  {VIZ_VERSION}',
+                       color=C_TEXT, fontsize=13, fontweight='bold', pad=10)
+    ax_lidar.set_xlabel('← IZQUIERDA        DERECHA →', color=C_DIM, fontsize=8)
+    ax_lidar.set_ylabel('↑ FRENTE', color=C_DIM, fontsize=8)
+
+    # Sectores sutiles de referencia. En matplotlib, 90° apunta hacia arriba.
+    front_wedge = mpatches.Wedge((0, 0), 1.45, 78, 102,
+                                 facecolor=C_FRONT_OK, edgecolor=C_FRONT_OK,
+                                 alpha=0.08, lw=1.0, zorder=1)
+    left_wedge = mpatches.Wedge((0, 0), 1.45, 102, 150,
+                                facecolor=C_LEFT, edgecolor='none', alpha=0.04, zorder=1)
+    right_wedge = mpatches.Wedge((0, 0), 1.45, 30, 78,
+                                 facecolor=C_RIGHT, edgecolor='none', alpha=0.04, zorder=1)
+    ax_lidar.add_patch(front_wedge)
+    ax_lidar.add_patch(left_wedge)
+    ax_lidar.add_patch(right_wedge)
+
+    for d, label in [(0.3, '30 cm'), (0.5, '50 cm'), (1.0, '1 m'), (1.5, '1.5 m')]:
+        ax_lidar.add_patch(plt.Circle((0, 0), d, color=BORDER,
+                                      fill=False, lw=0.8, ls=':', alpha=0.95, zorder=2))
+        ax_lidar.text(0.03, d + 0.025, label, color=C_DIM, fontsize=7, alpha=0.85)
+
+    # Robot en el centro
+    ax_lidar.scatter([0], [0], s=95, c=C_TEXT, edgecolor=BG, linewidth=1.0, zorder=7)
+    ax_lidar.annotate('', xy=(0, 0.28), xytext=(0, 0),
+                      arrowprops=dict(arrowstyle='-|>', color=C_ARROW, lw=3.0), zorder=8)
+    ax_lidar.text(0.05, -0.08, 'robot', color=C_DIM, fontsize=8, zorder=8)
+
+    lc = LineCollection([], linewidths=3.2, alpha=0.98, zorder=5)
+    ax_lidar.add_collection(lc)
+
+    traj_line, = ax_lidar.plot([], [], color=C_TRAJ, lw=1.4, alpha=0.65, zorder=3)
+
+    range_circ = plt.Circle((0, 0), 1.45, color='#27405f',
+                            fill=False, lw=1.0, ls='--', alpha=0.9, zorder=2)
+    ax_lidar.add_patch(range_circ)
+
+    alert_txt = ax_lidar.text(0, -1.43, '', color=C_ALERT, fontsize=12,
+                              ha='center', va='bottom', fontweight='bold', zorder=9,
+                              bbox=dict(boxstyle='round,pad=0.25', fc=BG, ec='none', alpha=0.70))
+    box_front_txt = ax_lidar.text(0, 1.43, '', color=C_FRONT_BOX, fontsize=12,
+                                  ha='center', va='top', fontweight='bold', zorder=9,
+                                  bbox=dict(boxstyle='round,pad=0.25', fc=BG, ec='none', alpha=0.70))
+
+    state_badge = ax_lidar.text(-1.45, -1.45, 'CRUCERO', color=C_OK,
+                                fontsize=13, fontweight='bold',
+                                ha='left', va='bottom', zorder=10,
+                                bbox=dict(boxstyle='round,pad=0.35',
+                                          fc=BG, ec=C_OK, lw=2.0, alpha=0.95))
+
+    ax_lidar.legend(handles=[
+        mpatches.Patch(color=C_FRONT_OK,  label='Frente libre'),
+        mpatches.Patch(color=C_FRONT_BOX, label='Caja frontal'),
+        mpatches.Patch(color=C_LEFT,      label='Sector izquierdo'),
+        mpatches.Patch(color=C_RIGHT,     label='Sector derecho'),
+    ], loc='upper right', facecolor=BG, edgecolor=BORDER,
+       labelcolor=C_TEXT, fontsize=8, framealpha=0.92)
+
+    box_patches = []
+
+    # Cards laterales
+    front_card = _metric_card(ax_front, 'FRENTE', C_FRONT_OK, unit='cm', hint='Sector ±12°')
+    der_card   = _metric_card(ax_der,   'PARED DERECHA', C_RIGHT, unit='cm', hint=f'Objetivo: {int(TARGET_DER*100)} cm')
+    izq_card   = _metric_card(ax_izq,   'PARED IZQUIERDA', C_LEFT, unit='cm', hint=f'Repulsión < {int(DIST_IZQ_MIN*100)} cm')
+    cmd_card   = _cmd_card(ax_cmd)
+
+    # Velocidad
+    _style_axis(ax_vel)
+    ax_vel.set_title('HISTORIAL DE VELOCIDAD LINEAL', color=C_TEXT,
+                     fontsize=10, fontweight='bold', pad=6)
     ax_vel.set_xlim(0, MAX_VEL_T)
     ax_vel.set_ylim(-0.25, 0.30)
-    ax_vel.axhline(0, color=BORDER, lw=0.8)
-    ax_vel.set_xlabel('t (s)', color=C_DIM, fontsize=7)
-    vel_line, = ax_vel.plot([], [], color=C_ALERT, lw=1.5)
+    ax_vel.grid(True, color=GRID, lw=0.5, ls='--', alpha=0.8)
+    ax_vel.axhline(0, color=BORDER, lw=0.9)
+    ax_vel.set_xlabel('últimos 10 s', color=C_DIM, fontsize=8)
+    ax_vel.set_ylabel('m/s', color=C_DIM, fontsize=8)
+    vel_line, = ax_vel.plot([], [], color=C_ALERT, lw=2.0)
 
-    return (fig, ax_lidar, ax_der, ax_izq, ax_vel,
+    artists = {
+        'header_state': header_state,
+        'front_wedge': front_wedge,
+        'front_card': front_card,
+        'der_card': der_card,
+        'izq_card': izq_card,
+        'cmd_card': cmd_card,
+    }
+
+    return (fig, ax_lidar, ax_vel,
             lc, traj_line, box_patches, range_circ,
             alert_txt, box_front_txt, state_badge,
-            der_artists, izq_artists, vel_line)
+            artists, vel_line)
 
 
-# ── Main ──────────────────────────────────────────────────────────────────────
+# ──────────────────────────────────────────────────────────────────────────────
+# MAIN LOOP
+# ──────────────────────────────────────────────────────────────────────────────
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--front', type=float, default=180.0)
+    parser.add_argument('--front', type=float, default=180.0,
+                        help='Ángulo que representa el frente del robot en grados. Default: 180')
     args = parser.parse_args()
 
     rclpy.init()
     node = LidarViz(front_deg=args.front)
 
     plt.ion()
-    (fig, ax_lidar, ax_der, ax_izq, ax_vel,
+    (fig, ax_lidar, ax_vel,
      lc, traj_line, box_patches, range_circ,
      alert_txt, box_front_txt, state_badge,
-     der_artists, izq_artists, vel_line) = build_figure()
+     artists, vel_line) = build_figure()
+
     plt.show()
-    box_scan_patches = []   # rectangulo de caja detectada por scan (se borra cada frame)
+    box_scan_patches = []
 
     try:
         while rclpy.ok():
             rclpy.spin_once(node, timeout_sec=0.04)
 
-            # ── Líneas LiDAR ──────────────────────────────────────────────
+            # ── LiDAR ────────────────────────────────────────────────────
             if node.scan_segs:
                 lc.set_segments(node.scan_segs)
                 lc.set_colors(node.scan_seg_cols)
             else:
                 lc.set_segments([])
 
-            # ── Trayectoria ───────────────────────────────────────────────
+            # ── Trayectoria odométrica ───────────────────────────────────
             if len(node.traj_odom) > 1:
                 txs = [node._odom_to_display(x, y)[0] for x, y in node.traj_odom]
                 tys = [node._odom_to_display(x, y)[1] for x, y in node.traj_odom]
                 traj_line.set_data(txs, tys)
 
-            # ── Cajas censadas ────────────────────────────────────────────
+            # ── Cajas censadas por odometría ─────────────────────────────
             for p in box_patches:
                 p.remove()
             box_patches.clear()
+
             for ox, oy in node.cajas_odom:
                 xd, yd = node._odom_to_display(ox, oy)
                 rect = mpatches.FancyBboxPatch(
                     (xd - 0.10, yd - 0.10), 0.20, 0.20,
-                    boxstyle='square,pad=0', lw=1.5,
-                    edgecolor=C_BOX, facecolor=C_BOX + '44', zorder=5)
+                    boxstyle='round,pad=0.01,rounding_size=0.02',
+                    lw=1.8, edgecolor=C_BOX, facecolor=C_BOX + '44', zorder=6)
                 ax_lidar.add_patch(rect)
                 box_patches.append(rect)
 
-            range_circ.set_radius(min(node.range_max, 1.4))
+            range_circ.set_radius(min(node.range_max, 1.45))
 
-            # ── Rectángulo de caja detectada por scan ─────────────────────
-            # Se dibuja en el mapa en la posicion real del obstaculo detectado.
-            # display: xd = -cy_robot (lateral), yd = cx_robot (profundidad)
+            # ── Caja detectada por el scan frontal ───────────────────────
             for p in box_scan_patches:
                 p.remove()
             box_scan_patches.clear()
+
             if node.box_frente:
-                xd_c = -node.box_cy          # centro x en display
-                yd_c =  node.box_cx          # centro y en display
-                hw   =  node.box_w / 2.0    # semiancho
-                depth = 0.06                 # grosor del rectangulo en display
+                xd_c = -node.box_cy
+                yd_c =  node.box_cx
+                hw   =  node.box_w / 2.0
+                depth = 0.07
+
                 rect = mpatches.FancyBboxPatch(
                     (xd_c - hw, yd_c - depth / 2), node.box_w, depth,
-                    boxstyle='square,pad=0.01', lw=3,
-                    edgecolor=C_FRONT_BOX, facecolor=C_FRONT_BOX + '55', zorder=7)
+                    boxstyle='round,pad=0.01,rounding_size=0.015',
+                    lw=3.0, edgecolor=C_FRONT_BOX,
+                    facecolor=C_FRONT_BOX + '66', zorder=9)
                 ax_lidar.add_patch(rect)
                 box_scan_patches.append(rect)
 
-            # ── Alerta frontal en LiDAR ───────────────────────────────────
+            # ── Estado visual frontal ────────────────────────────────────
+            front_card = artists['front_card']
             if node.box_frente:
-                alert_txt.set_text(f'! CAJA: {node.box_frente_dist*100:.0f} cm  ancho:{node.box_w*100:.0f} cm')
+                front_value = node.box_frente_dist
+                front_card['value'].set_text(_fmt_cm(front_value))
+                front_card['unit'].set_text('cm')
+                front_card['status'].set_text(f'CAJA DETECTADA · ancho {node.box_w*100:.0f} cm')
+                _set_card_state(front_card, C_FRONT_BOX)
+                artists['front_wedge'].set_facecolor(C_FRONT_BOX)
+                artists['front_wedge'].set_edgecolor(C_FRONT_BOX)
+                artists['front_wedge'].set_alpha(0.18)
+                alert_txt.set_text(f'⚠ CAJA FRONTAL: {node.box_frente_dist*100:.0f} cm · ancho {node.box_w*100:.0f} cm')
                 alert_txt.set_color(C_FRONT_BOX)
-                box_front_txt.set_text('▶ CAJA PERPENDICULAR DETECTADA ◀')
+                box_front_txt.set_text('OBJETO PERPENDICULAR DETECTADO')
                 box_front_txt.set_color(C_FRONT_BOX)
             else:
+                front_card['value'].set_text(_fmt_cm(node.d_front))
+                front_card['unit'].set_text('cm')
+                front_card['status'].set_text('LIBRE' if math.isfinite(node.d_front) else 'sin lectura frontal')
+                _set_card_state(front_card, C_FRONT_OK)
+                artists['front_wedge'].set_facecolor(C_FRONT_OK)
+                artists['front_wedge'].set_edgecolor(C_FRONT_OK)
+                artists['front_wedge'].set_alpha(0.08)
                 alert_txt.set_text('')
                 box_front_txt.set_text('')
 
-            # ── Panel DER ─────────────────────────────────────────────────
+            # ── Panel pared derecha ──────────────────────────────────────
             dr = node.d_right
-            da = der_artists
+            der_card = artists['der_card']
             if math.isfinite(dr) and dr <= MAX_GAUGE:
-                frac = min(dr / MAX_GAUGE, 1.0)
-                err  = dr - TARGET_DER
+                err = dr - TARGET_DER
+                der_card['value'].set_text(_fmt_cm(dr))
                 if abs(err) <= TOL_OK:
                     col_der = C_OK
-                    der_status = f'EN OBJETIVO  ({err*100:+.0f} cm)'
+                    status = f'EN OBJETIVO ({err*100:+.0f} cm)'
                 elif abs(err) <= 0.08:
                     col_der = C_WARN
-                    der_status = f'{"LEJOS" if err > 0 else "CERCA"}  {abs(err)*100:.0f} cm'
+                    status = f'{"LEJOS" if err > 0 else "CERCA"} · error {abs(err)*100:.0f} cm'
                 else:
                     col_der = C_ALERT
-                    der_status = f'{"MUY LEJOS" if err > 0 else "MUY CERCA"}  {abs(err)*100:.0f} cm'
-
-                da['bar'].set_x(0.06)
-                da['bar'].set_width(0.88 * frac)
-                da['bar'].set_facecolor(col_der + 'bb')
-                nx = 0.06 + 0.88 * frac
-                da['needle'].set_data([nx, nx], [0.74, 0.88])
-                da['lbl_val'].set_text(f'{dr*100:.1f} cm')
-                da['lbl_val'].set_color(col_der)
-                da['lbl_status'].set_text(der_status)
-                da['lbl_status'].set_color(col_der)
+                    status = f'{"MUY LEJOS" if err > 0 else "MUY CERCA"} · error {abs(err)*100:.0f} cm'
+                der_card['status'].set_text(status)
+                _set_card_state(der_card, col_der)
             else:
-                da['bar'].set_width(0.0)
-                da['needle'].set_data([], [])
-                da['lbl_val'].set_text('---')
-                da['lbl_val'].set_color(C_DIM)
-                da['lbl_status'].set_text('pared no visible')
-                da['lbl_status'].set_color(C_DIM)
+                der_card['value'].set_text('---')
+                der_card['status'].set_text('pared no visible')
+                _set_card_state(der_card, C_DIM)
 
-            # ── Panel IZQ ─────────────────────────────────────────────────
+            # ── Panel pared izquierda ────────────────────────────────────
             dl = node.d_left
-            ia = izq_artists
+            izq_card = artists['izq_card']
             if math.isfinite(dl):
+                izq_card['value'].set_text(_fmt_cm(dl))
                 if dl < DIST_IZQ_MIN:
-                    col_izq    = C_ALERT
-                    izq_status = f'! REPULSION ({dl*100:.1f} cm)'
-                    ax_izq.set_facecolor('#1a0a0a')
+                    col_izq = C_ALERT
+                    status = f'REPULSIÓN · {dl*100:.1f} cm'
                 elif dl < DIST_IZQ_WARN:
-                    col_izq    = C_WARN
-                    izq_status = f'CERCA  ({dl*100:.1f} cm del limite)'
-                    ax_izq.set_facecolor('#1a1208')
+                    col_izq = C_WARN
+                    status = f'CERCA DEL LÍMITE · {dl*100:.1f} cm'
                 else:
-                    col_izq    = C_LEFT
-                    izq_status = 'OK'
-                    ax_izq.set_facecolor(PANEL)
-                ia['lbl_val'].set_text(f'{dl*100:.1f} cm')
-                ia['lbl_val'].set_color(col_izq)
-                ia['lbl_status'].set_text(izq_status)
-                ia['lbl_status'].set_color(col_izq)
+                    col_izq = C_LEFT
+                    status = 'OK'
+                izq_card['status'].set_text(status)
+                _set_card_state(izq_card, col_izq)
             else:
-                ia['lbl_val'].set_text('---')
-                ia['lbl_val'].set_color(C_DIM)
-                ia['lbl_status'].set_text('pared no visible')
-                ia['lbl_status'].set_color(C_DIM)
-                ax_izq.set_facecolor(PANEL)
+                izq_card['value'].set_text('---')
+                izq_card['status'].set_text('pared no visible')
+                _set_card_state(izq_card, C_DIM)
 
-            # ── Historial velocidad ───────────────────────────────────────
+            # ── Card comandos ────────────────────────────────────────────
+            cmd_card = artists['cmd_card']
+            cmd_card['v_lin'].set_text(f'v: {node.vel_lin:+.3f} m/s')
+            cmd_card['v_ang'].set_text(f'w: {node.vel_ang:+.3f} rad/s')
+            cmd_card['corr'].set_text(f'corr lateral: {node.lat_corr:+.3f}')
+
+            if abs(node.vel_ang) > 0.35:
+                cmd_card['card'].set_edgecolor(C_WARN)
+                cmd_card['v_ang'].set_color(C_WARN)
+            else:
+                cmd_card['card'].set_edgecolor(C_ARROW)
+                cmd_card['v_ang'].set_color(C_DIM)
+
+            # ── Historial velocidad ──────────────────────────────────────
             if len(node.vel_times) > 1:
                 t_now = time.time() - node._t0
                 ts = [t - t_now + MAX_VEL_T for t in node.vel_times]
                 vel_line.set_data(ts, list(node.vel_vals))
                 ax_vel.set_xlim(0, MAX_VEL_T)
 
-            # ── Estado FSM ────────────────────────────────────────────────
-            st = node.fsm_state
+            # ── Estado FSM ───────────────────────────────────────────────
+            st = node.fsm_state.strip() if node.fsm_state else '---'
             if st == 'GIRO':
-                sc, bg_col = C_WARN,  '#1a1000'
+                sc, bg_col = C_WARN, '#1f1607'
             elif st == 'RODEO':
-                sc, bg_col = C_RODEO, '#110a1a'
+                sc, bg_col = C_RODEO, '#160d25'
             else:
-                sc, bg_col = C_OK,    PANEL
+                sc, bg_col = C_OK, PANEL
+
             state_badge.set_text(st)
             state_badge.set_color(sc)
             state_badge.get_bbox_patch().set_edgecolor(sc)
-            ax_lidar.set_facecolor(bg_col if not node.box_frente else '#1a1000')
+
+            artists['header_state'].set_text(st)
+            artists['header_state'].set_color(sc)
+            artists['header_state'].get_bbox_patch().set_edgecolor(sc)
+
+            ax_lidar.set_facecolor('#1f1607' if node.box_frente else bg_col)
 
             fig.canvas.draw_idle()
             plt.pause(0.05)
