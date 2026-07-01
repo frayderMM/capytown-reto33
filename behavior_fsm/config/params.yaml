@@ -14,13 +14,11 @@ behavior_fsm:
                                 # CAMBIAR si el robot reacciona en dirección equivocada
 
     # --- Sectores ---
-    sector_frontal_deg: 30.0    # +/- grados del cono frontal
-    sector_lateral_lo:  60.0    # inicio sector lateral [grados]
-    sector_lateral_hi: 120.0    # fin sector lateral [grados]
-    excluir_atras_deg:  60.0    # +/- grados detras del robot excluidos del minimo
-                                 # global -- el cable/soporte del LiDAR esta justo
-                                 # ahi y se leia como obstaculo fijo a ~12cm,
-                                 # disparando EMERGENCIA en casi todos los ciclos
+    sector_frontal_deg: 30.0    # +/- grados: define las zonas frente/atras/lados
+                                 # para elegir el offset de cada sector del histograma
+    excluir_atras_deg:  60.0    # +/- grados detras del robot excluidos del histograma
+                                 # -- el cable/soporte del LiDAR esta justo ahi y se
+                                 # leia como obstaculo fijo a ~12cm
 
     # --- Offsets LiDAR -> borde fisico del robot (medidos en el chasis,
     # NO son iguales en cada direccion) -- todas las distancias del LiDAR
@@ -29,19 +27,27 @@ behavior_fsm:
     offset_atras:  0.10          # m  LiDAR -> borde trasero
     offset_lados:  0.08          # m  LiDAR -> borde lateral
 
+    # --- Histograma polar (VFH — Borenstein & Koren 1991, simplificado
+    # a un solo scan sin grid persistente) ---
+    alpha_hist_deg:      5.0     # grados por sector (360/5 = 72 sectores)
+    ancho_robot_m:       0.16    # m  ancho fisico total del chasis (asumido:
+                                  # 2 x offset_lados, LiDAR centrado lateralmente --
+                                  # corregir si se mide el chasis real)
+    margen_paso_extra_m: 0.05    # m  colchon extra a cada lado del ancho del
+                                  # robot al validar si un hueco es pasable
+
     # --- Distancias de reaccion (en espacio libre real, post-offset) ---
     dist_alerta:        0.38    # m  empieza a frenar y a anticipar el giro
-                                 # (bajado de 0.45: zona de frenado mas angosta,
-                                 # asi pasa mas tiempo a velocidad crucero completa)
-    dist_obstaculo:      0.30    # m  giro a maxima intensidad
-    dist_emergencia:    0.05    # m  margen real minimo antes del stop total
+    dist_obstaculo:      0.30    # m  umbral de sector "bloqueado" en el histograma
+                                 # binario Y de giro maximo
+    dist_emergencia:    0.05    # m  margen real minimo del candidato elegido
+                                 # antes del stop total
 
     # --- Velocidades ---
-    vel_crucero:  0.22     # m/s  velocidad en zona libre (subida de 0.18)
+    vel_crucero:  0.22     # m/s  velocidad en zona libre
     vel_min:      0.08     # m/s  velocidad minima al estar a dist_obstaculo
-                            # (subida de 0.05: nunca se detiene del todo si no
-                            # hay emergencia real, siempre sigue avanzando)
-    w_giro_max:   0.45     # rad/s  maximo giro al evadir un frente bloqueado
+    w_giro_max:   0.45     # rad/s  saturacion del giro
+    Kp_giro:      0.2865   # rad/s por rad de error angular (w_giro_max / (pi/2))
 
 wall_follower:
   ros__parameters:
