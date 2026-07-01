@@ -30,10 +30,7 @@ behavior_fsm:
     offset_lados:  0.08          # m  LiDAR -> borde lateral
 
     # --- Distancias de reaccion (en espacio libre real, post-offset) ---
-    dist_alerta:        0.33    # m  empieza a frenar y a anticipar el giro
-                                 # (cerca de dist_obstaculo: sigue pegado a la
-                                 # derecha mas tiempo, decide el giro solo cuando
-                                 # el obstaculo ya esta cerca, no mucho antes)
+    dist_alerta:        0.38    # m  empieza a frenar y a anticipar el giro
     dist_obstaculo:      0.30    # m  giro a maxima intensidad
     dist_emergencia:    0.04    # m  margen real minimo antes del stop total
 
@@ -52,8 +49,6 @@ behavior_fsm:
     t_evasion_min:           0.3   # s  compromiso minimo en evasion antes de volver a
                                     # AVANCE (evita pegarse a la derecha con el obstaculo
                                     # aun al costado, recien despejado del frente)
-    angulo_esquina_deg:      90.0  # grados: giro medido en una esquina real (integra w),
-                                    # no solo hasta que el frente se despeje
 
 wall_follower:
   ros__parameters:
