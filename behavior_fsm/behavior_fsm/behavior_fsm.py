@@ -54,9 +54,10 @@ class BehaviorFSM(Node):
         self.declare_parameter('vel_giro_gradual', 0.50)
         self.declare_parameter('max_w',            0.60)
 
-        self.declare_parameter('t_giro_min', 1.0)
+        self.declare_parameter('t_giro_min', 1.2)
         self.declare_parameter('t_giro_max', 4.0)
         self.declare_parameter('t_cooldown', 2.0)
+        self.declare_parameter('t_recuperacion', 1.5)  # s  suprime w_front post-GIRO
 
         # ── Cargar ────────────────────────────────────────────────────────
         self.front_rad    = math.radians(self.get_parameter('lidar_front_deg').value)
@@ -114,9 +115,10 @@ class BehaviorFSM(Node):
         self.v_cruise     = self.get_parameter('vel_crucero').value
         self.w_giro       = self.get_parameter('vel_giro_gradual').value
         self.max_w        = self.get_parameter('max_w').value
-        self.t_giro_min   = self.get_parameter('t_giro_min').value
-        self.t_giro_max   = self.get_parameter('t_giro_max').value
-        self.t_cooldown   = self.get_parameter('t_cooldown').value
+        self.t_giro_min    = self.get_parameter('t_giro_min').value
+        self.t_giro_max    = self.get_parameter('t_giro_max').value
+        self.t_cooldown    = self.get_parameter('t_cooldown').value
+        self.t_recuperacion = self.get_parameter('t_recuperacion').value
 
     def _on_params(self, params):
         self._reload_params()
@@ -199,15 +201,20 @@ class BehaviorFSM(Node):
         # CRUCERO
         if self.estado == CRUCERO:
             ahora = self.get_clock().now().nanoseconds * 1e-9
-            if (ahora - self.t_ultimo_giro) >= self.t_cooldown and \
-               self.dist_frente <= self.d_giro:
+            t_post_giro = ahora - self.t_ultimo_giro
+            cooldown_ok = t_post_giro >= self.t_cooldown
+
+            if cooldown_ok and self.dist_frente <= self.d_giro:
                 self._cambiar(GIRO)
                 self._pub_dbg(0, 0, 0, 0)
                 return
 
-            # Correccion frontal gradual
+            # Correccion frontal gradual.
+            # SUPRIMIDA durante t_recuperacion s post-GIRO para que el robot
+            # se alinee con la pared derecha sin interferencia.
+            recuperando = t_post_giro < self.t_recuperacion
             w_front = 0.0
-            if self.dist_frente < self.d_front_ini:
+            if not recuperando and self.dist_frente < self.d_front_ini:
                 w_front = self.Kfront * (self.d_front_ini - self.dist_frente)
 
             # Tracking pared derecha — se atenua a 0 conforme el frente se cierra.

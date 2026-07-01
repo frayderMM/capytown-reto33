@@ -29,8 +29,8 @@ behavior_fsm:
     d_stop_lateral: 0.08   # m  para si izq < 8 cm
 
     # Umbrales de accion frontal
-    d_giro:         0.30   # m  trigger GIRO (antes 22cm, demasiado tarde)
-    d_front_inicio: 0.45   # m  inicio atenuacion w_der + correccion frontal
+    d_giro:         0.30   # m  trigger GIRO
+    d_front_inicio: 0.40   # m  inicio correccion frontal (45cm causaba w_front en recuperacion)
 
     # Control pared derecha
     target_der: 0.13        # m  objetivo (rango ideal 10-16 cm)
@@ -49,9 +49,10 @@ behavior_fsm:
     max_w:            0.60  # rad/s  cap angular
 
     # Temporizacion
-    t_giro_min: 1.2         # s
-    t_giro_max: 4.0         # s
-    t_cooldown:  2.0        # s
+    t_giro_min:      1.2    # s
+    t_giro_max:      4.0    # s
+    t_cooldown:      2.0    # s
+    t_recuperacion:  1.5    # s  suprime w_front tras GIRO para recuperar alineacion
 
 wall_follower:
   ros__parameters:
