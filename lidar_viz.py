@@ -26,7 +26,7 @@ Deteccion de caja frontal (heuristica de visualizacion, independiente del
 censo oficial de box_detector): std_x < 4 cm (perpendicular) + 8 cm <= ancho <= 32 cm.
 """
 
-VIZ_VERSION = 'v30'
+VIZ_VERSION = 'v31'
 
 import math
 import argparse

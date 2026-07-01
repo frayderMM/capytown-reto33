@@ -64,19 +64,20 @@ class BehaviorFSM(Node):
         self.declare_parameter('d_front_inicio', 0.40)
 
         self.declare_parameter('target_der', 0.17)   # robot consistente a 17-20cm
-        self.declare_parameter('Kder',        2.0)   # suave: radio giro = 0.10/0.14 ≈ 70cm
+        self.declare_parameter('Kder',        2.6)   # ganancia proporcional (subida de 2.0: pegaba poco)
+        self.declare_parameter('Kd_der',      0.3)   # derivativo: amortigua el overshoot de subir Kder
         self.declare_parameter('d_izq_min',  0.15)
         self.declare_parameter('Kizq',        4.0)
         self.declare_parameter('Kfront',      2.0)
 
         self.declare_parameter('vel_crucero',      0.10)
-        self.declare_parameter('vel_giro_gradual', 0.50)
+        self.declare_parameter('vel_giro_gradual', 0.55)
         self.declare_parameter('max_w',            0.60)
 
         self.declare_parameter('t_giro_min',        0.8)
         self.declare_parameter('t_giro_max',        4.0)
         self.declare_parameter('d_lado_salida_giro', 0.20)  # sale de GIRO si el lado hacia el que gira se cierra
-        self.declare_parameter('k_urgencia_giro',   1.5)   # amplifica w_giro si el obstaculo esta muy cerca
+        self.declare_parameter('k_urgencia_giro',   1.7)   # amplifica w_giro si el obstaculo esta muy cerca
         self.declare_parameter('t_rodeo_min',       0.4)   # minimo recto tras GIRO antes de evaluar salida
         self.declare_parameter('t_rodeo_max',       1.2)   # salvavidas — RODEO es ciego (w=0)
         self.declare_parameter('t_cooldown',        2.0)
@@ -94,6 +95,11 @@ class BehaviorFSM(Node):
         self.t_inicio      = self.get_clock().now()
         self.t_ultimo_giro = -float('inf')
         self.dir_giro      = 1.0   # +1 = izquierda (w>0), -1 = derecha (w<0)
+        self.w_giro_efectivo = 0.0  # magnitud del giro, congelada al entrar a GIRO
+
+        # ── PD tracking pared derecha ────────────────────────────────────
+        self._err_der_prev = 0.0
+        self._t_der_prev   = self.get_clock().now()
 
         # ── Sensores ──────────────────────────────────────────────────────
         self.dist_frente = float('inf')
@@ -141,7 +147,8 @@ class BehaviorFSM(Node):
         self.d_giro            = self.get_parameter('d_giro').value
         self.d_front_ini       = self.get_parameter('d_front_inicio').value
         self.target_der        = self.get_parameter('target_der').value
-        self.Kder              = self.get_parameter('Kder').value
+        self.Kder               = self.get_parameter('Kder').value
+        self.Kd_der             = self.get_parameter('Kd_der').value
         self.d_izq_min         = self.get_parameter('d_izq_min').value
         self.Kizq              = self.get_parameter('Kizq').value
         self.Kfront            = self.get_parameter('Kfront').value
@@ -216,6 +223,17 @@ class BehaviorFSM(Node):
     def _t_estado(self) -> float:
         return (self.get_clock().now() - self.t_inicio).nanoseconds * 1e-9
 
+    def _w_der_pd(self) -> float:
+        """PD de tracking a la pared derecha. El termino derivativo amortigua
+        el overshoot que trae subir Kder para pegarse mas rapido al target."""
+        error = self.dist_der - self.target_der
+        now   = self.get_clock().now()
+        dt    = max((now - self._t_der_prev).nanoseconds * 1e-9, 0.01)
+        d_err = (error - self._err_der_prev) / dt
+        self._err_der_prev = error
+        self._t_der_prev   = now
+        return -(self.Kder * error + self.Kd_der * d_err)
+
     def _cambiar(self, nuevo: str):
         self.get_logger().info(
             f'{self.estado}→{nuevo}  '
@@ -223,6 +241,11 @@ class BehaviorFSM(Node):
         # Marca cooldown al salir de GIRO o RODEO hacia CRUCERO
         if self.estado in (GIRO, RODEO) and nuevo == CRUCERO:
             self.t_ultimo_giro = self.get_clock().now().nanoseconds * 1e-9
+            # Resetea la derivada: si no, el primer tick calcula d_err sobre
+            # un salto acumulado durante todo GIRO+RODEO (spike falso).
+            if math.isfinite(self.dist_der):
+                self._err_der_prev = self.dist_der - self.target_der
+            self._t_der_prev = self.get_clock().now()
         self.estado   = nuevo
         self.t_inicio = self.get_clock().now()
 
@@ -271,10 +294,20 @@ class BehaviorFSM(Node):
                     self.dir_giro = -1.0
                 else:
                     self.dir_giro = 1.0
+                # Magnitud del giro: se calcula UNA vez aqui, con las
+                # lecturas de este instante, y queda fija durante todo el
+                # GIRO. Recalcularla en cada ciclo con dist_frente en vivo
+                # (como antes) la hacia erratica: dist_frente cambia rapido
+                # y de forma poco representativa mientras el robot rota,
+                # asi que el giro salia a veces corto, a veces excesivo.
+                urgencia = max(0.0, self.d_giro - self.dist_frente) / max(self.d_giro, 1e-6)
+                self.w_giro_efectivo = max(-self.max_w, min(self.max_w,
+                    self.dir_giro * self.w_giro * (1.0 + self.k_urgencia_giro * urgencia)))
                 self._cambiar(GIRO)
                 self.get_logger().info(
                     f'GIRO dir={"izq" if self.dir_giro > 0 else "der"}'
-                    f'  izq={self.dist_izq:.2f}  der={self.dist_der:.2f}')
+                    f'  izq={self.dist_izq:.2f}  der={self.dist_der:.2f}'
+                    f'  w_giro={self.w_giro_efectivo:.2f}')
                 self._pub_dbg(0, 0, 0, 0)
                 return
 
@@ -285,14 +318,14 @@ class BehaviorFSM(Node):
             if recuperando:
                 # Solo tracking pared derecha — permite alinearse tras RODEO
                 if math.isfinite(self.dist_der):
-                    w_der = -self.Kder * (self.dist_der - self.target_der)
+                    w_der = self._w_der_pd()
             elif self.dist_frente < self.d_front_ini:
                 # Evasion frontal pura — sin competencia con w_der
                 w_front = self.Kfront * (self.d_front_ini - self.dist_frente)
             else:
                 # Tracking normal pared derecha
                 if math.isfinite(self.dist_der):
-                    w_der = -self.Kder * (self.dist_der - self.target_der)
+                    w_der = self._w_der_pd()
 
             # Repulsion izquierda (siempre activa)
             w_izq = 0.0
@@ -321,13 +354,9 @@ class BehaviorFSM(Node):
                 self._cambiar(RODEO)
                 return
 
-            # Magnitud proporcional a la urgencia: mientras mas cerca este
-            # el obstaculo frontal respecto de d_giro, mas cerrado el giro.
-            urgencia   = max(0.0, self.d_giro - self.dist_frente) / max(self.d_giro, 1e-6)
-            w_efectivo = self.dir_giro * self.w_giro * (1.0 + self.k_urgencia_giro * urgencia)
-            w_efectivo = max(-self.max_w, min(self.max_w, w_efectivo))
-            self._pub_dbg(w_efectivo, 0, 0, w_efectivo)
-            self._pub(self.v_cruise, w_efectivo)
+            # Magnitud congelada al entrar a GIRO (ver comentario en CRUCERO).
+            self._pub_dbg(self.w_giro_efectivo, 0, 0, self.w_giro_efectivo)
+            self._pub(self.v_cruise, self.w_giro_efectivo)
 
         # ── RODEO: avance recto para separarse del obstaculo ──────────────
         elif self.estado == RODEO:

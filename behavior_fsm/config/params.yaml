@@ -22,9 +22,11 @@ behavior_fsm:
 
     # Tracking pared derecha
     # target_der 17cm: robot consistente a 17-20cm, 13cm generaba overcorreccion
-    # Kder 2.0: radio giro = v/w = 0.10/(2.0*0.04) = 1.25m (amplio, no espiral)
+    # Kder subido de 2.0 a 2.6 (no se pegaba lo suficiente al target desde 25cm);
+    # Kd_der amortigua el overshoot que trae el Kder mas alto.
     target_der: 0.17
-    Kder:       2.0
+    Kder:       2.6
+    Kd_der:     0.3
 
     # Repulsion pared izquierda
     d_izq_min: 0.15
@@ -35,14 +37,19 @@ behavior_fsm:
 
     # Velocidad
     vel_crucero:      0.10
-    vel_giro_gradual: 0.50
+    vel_giro_gradual: 0.55   # subido de 0.50 (a veces el giro se quedaba corto)
     max_w:            0.60
 
     # Temporizacion / geometria de GIRO y RODEO
+    # k_urgencia_giro y la magnitud del giro se calculan UNA vez al entrar a
+    # GIRO (con dist_frente de ese instante) y quedan fijas durante todo el
+    # giro — antes se recalculaban en cada ciclo con dist_frente en vivo,
+    # que cambia rapido mientras el robot rota, y eso lo hacia errático
+    # (a veces corto, a veces se pasaba de largo).
     t_giro_min:         0.8   # s  giro minimo (~23 deg)
     t_giro_max:         4.0   # s  salvavidas
     d_lado_salida_giro: 0.20  # m  sale de GIRO si el lado hacia el que gira < 20cm
-    k_urgencia_giro:    1.5   # amplifica el giro si el obstaculo esta muy cerca de d_giro
+    k_urgencia_giro:    1.7   # amplifica el giro si el obstaculo esta muy cerca de d_giro
     t_rodeo_min:        0.4   # s  minimo recto tras GIRO antes de evaluar salida
     t_rodeo_max:        1.2   # s  salvavidas — RODEO es ciego (w=0, no corrige rumbo);
                               # si GIRO no dejo el robot bien alineado, acotar esto limita
