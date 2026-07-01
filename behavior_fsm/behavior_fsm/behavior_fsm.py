@@ -63,14 +63,8 @@ class BehaviorFSM(Node):
         # --- Distancias de reaccion (ya en espacio libre real, post-offset) ---
         self.declare_parameter('dist_alerta',     0.38)  # m  empieza a frenar y a anticipar el giro
         self.declare_parameter('dist_obstaculo',  0.30)  # m  giro a maxima intensidad
-        self.declare_parameter('dist_emergencia', 0.06)  # m  margen real minimo (frente) antes del stop total
-        self.declare_parameter('dist_emergencia_lateral', 0.03)  # m  margen real minimo a los
-                                                                   # costados (3cm mas ajustado
-                                                                   # que el frontal)
-        self.declare_parameter('t_reenganche', 0.5)  # s  al volver de una evasion/esquina a
-                                                       # seguir la pared derecha, la correccion
-                                                       # entra gradual en vez de de golpe (evita
-                                                       # el giro derecho brusco al reenganchar)
+        self.declare_parameter('dist_emergencia', 0.06)  # m  margen real minimo antes del stop total
+                                                           # (subido 1cm: reacciona un poco antes)
 
         # --- Velocidades ---
         self.declare_parameter('vel_crucero', 0.22)
@@ -101,8 +95,6 @@ class BehaviorFSM(Node):
         self.d_alerta = self.get_parameter('dist_alerta').value
         self.d_obst   = self.get_parameter('dist_obstaculo').value
         self.d_emerg  = self.get_parameter('dist_emergencia').value
-        self.d_emerg_lat = self.get_parameter('dist_emergencia_lateral').value
-        self.t_reenganche = self.get_parameter('t_reenganche').value
 
         self.v_cruise  = self.get_parameter('vel_crucero').value
         self.v_min     = self.get_parameter('vel_min').value
@@ -131,7 +123,6 @@ class BehaviorFSM(Node):
         self.create_timer(0.1, self.loop_control)
 
         self._en_evasion = False  # para publicar /parada_dist solo al entrar a la zona de evasion
-        self._t_avance_inicio = self.get_clock().now()  # para el reenganche gradual a la pared
 
         self.get_logger().info('BehaviorFSM listo — evasion omnidireccional continua')
 
@@ -246,10 +237,8 @@ class BehaviorFSM(Node):
 
         # Algo muy cerca por un costado/diagonal (frente libre): en vez de
         # parar, gira al maximo hacia el lado con MAS espacio mientras
-        # sigue avanzando -- se recalibra sin detenerse. Umbral mas
-        # ajustado que el frontal (permite acercarse mas a los costados
-        # antes de reaccionar).
-        if c_min < self.d_emerg_lat:
+        # sigue avanzando -- se recalibra sin detenerse.
+        if c_min < self.d_emerg:
             lado = 1.0 if c_izq >= c_der else -1.0
             self.get_logger().warn(
                 f'cerca por un costado (margen={c_min:.2f}m) — girando hacia el lado mas libre',
@@ -294,17 +283,9 @@ class BehaviorFSM(Node):
                 self.pub_parada.publish(d_msg)
         else:
             # Frente libre, sin obstaculo que evadir: seguir la pared
-            # derecha para recorrer el circuito. Justo al volver de una
-            # evasion/esquina, la correccion entra GRADUAL (rampa de
-            # t_reenganche segundos) en vez de aplicarse de golpe -- si
-            # no, el salto brusco de la correccion produce un giro
-            # derecho abrupto al reenganchar la pared.
-            if self._en_evasion:
-                self._t_avance_inicio = self.get_clock().now()
+            # derecha para recorrer el circuito.
             self._en_evasion = False
-            elapsed = (self.get_clock().now() - self._t_avance_inicio).nanoseconds * 1e-9
-            rampa = max(0.0, min(1.0, elapsed / self.t_reenganche))
-            w = self._w_lateral * rampa
+            w = self._w_lateral
 
         self.get_logger().info(
             f'c_frente={c_frente:.2f} c_izq={c_izq:.2f} c_der={c_der:.2f} '
