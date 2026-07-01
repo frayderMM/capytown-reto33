@@ -11,7 +11,7 @@ Panel derecho   : DER (grande) + IZQ (grande) + historial velocidad.
 Deteccion de caja: std_x < 4 cm (perpendicular) + 8 cm <= ancho <= 32 cm (25 cm ± margen)
 """
 
-VIZ_VERSION = 'v11'
+VIZ_VERSION = 'v12'
 
 import math
 import argparse

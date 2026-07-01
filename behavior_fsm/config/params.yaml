@@ -51,6 +51,12 @@ behavior_fsm:
     # 3s x 0.14 m/s = ~42 cm de recorrido libre antes de poder re-detectar.
     t_cooldown: 3.0          # s  cooldown post-GIRO/RODEO
 
+    # --- Seguimiento pared derecha (controlador directo en CRUCERO y RODEO) ---
+    # w = -Kder * (dist_der - d_objetivo_der)  →  negativo = curva derecha
+    d_objetivo_der: 0.08     # m  objetivo: 8 cm de la pared derecha
+    Kder:           2.0      # ganancia proporcional [rad/s por metro de error]
+    max_w_der:      0.40     # rad/s  tope de corrección lateral
+
     # --- Repulsion pared izquierda ---
     dist_izq_min: 0.15       # m  distancia minima a la pared izquierda
     Kizq:         3.0        # ganancia de repulsion [rad/s por metro de exceso]

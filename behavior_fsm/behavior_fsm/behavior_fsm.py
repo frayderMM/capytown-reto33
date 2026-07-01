@@ -70,6 +70,11 @@ class BehaviorFSM(Node):
         self.declare_parameter('t_giro_max',            6.0)
         self.declare_parameter('t_cooldown',            1.5)   # s cooldown post-GIRO
 
+        # --- Seguimiento pared derecha (directo, sin depender del wall_follower) ---
+        self.declare_parameter('d_objetivo_der',        0.08)  # m  objetivo 8 cm
+        self.declare_parameter('Kder',                  2.0)   # ganancia proporcional
+        self.declare_parameter('max_w_der',             0.40)  # rad/s tope de corrección
+
         # --- Repulsion pared izquierda ---
         self.declare_parameter('dist_izq_min',          0.15)
         self.declare_parameter('Kizq',                  3.0)
@@ -97,6 +102,9 @@ class BehaviorFSM(Node):
         self.t_giro_min   = self.get_parameter('t_giro_min').value
         self.t_giro_max   = self.get_parameter('t_giro_max').value
         self.t_cooldown   = self.get_parameter('t_cooldown').value
+        self.d_obj_der    = self.get_parameter('d_objetivo_der').value
+        self.Kder         = self.get_parameter('Kder').value
+        self.max_w_der    = self.get_parameter('max_w_der').value
         self.d_izq_min    = self.get_parameter('dist_izq_min').value
         self.Kizq         = self.get_parameter('Kizq').value
 
@@ -214,9 +222,14 @@ class BehaviorFSM(Node):
 
             v = self.v_cruise
             if math.isfinite(self.dist_izq) and self.dist_izq < self.d_izq_min:
+                # Repulsion pared izquierda (prioridad)
                 w = -self.Kizq * (self.d_izq_min - self.dist_izq)
+            elif math.isfinite(self.dist_der):
+                # Seguimiento directo pared derecha: error = dist - objetivo
+                err = self.dist_der - self.d_obj_der
+                w = max(-self.max_w_der, min(self.max_w_der, -self.Kder * err))
             else:
-                w = self._w_lateral if self.dist_frente >= self.d_alerta else 0.0
+                w = 0.0  # sin pared visible
             self._pub(v, w)
 
         # ── GIRO ──────────────────────────────────────────────────────────
@@ -240,11 +253,16 @@ class BehaviorFSM(Node):
 
         # ── RODEO ─────────────────────────────────────────────────────────
         elif self.estado == RODEO:
-            # Avanza recto hasta que la pared derecha reaparece o expira el tiempo
             if self._t_estado() > self.t_rodeo or self.dist_der < self.d_pared_lat:
                 self._cambiar(CRUCERO)
                 return
-            self._pub(self.v_rodeo, self.w_rodeo)
+            # Mismo controlador proporcional que CRUCERO: busca 8 cm de la pared der
+            if math.isfinite(self.dist_der):
+                err = self.dist_der - self.d_obj_der
+                w = max(-self.max_w_der, min(self.max_w_der, -self.Kder * err))
+            else:
+                w = self.w_rodeo  # fallback: curva derecha fija si no ve la pared
+            self._pub(self.v_rodeo, w)
 
 
 def main(args=None):
