@@ -18,7 +18,7 @@ Tópicos usados:
   /fsm_state
 """
 
-VIZ_VERSION = 'ULTRA UI v16'
+VIZ_VERSION = 'ULTRA UI v17'
 
 import math
 import argparse

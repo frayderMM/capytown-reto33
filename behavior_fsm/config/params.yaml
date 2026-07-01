@@ -30,14 +30,14 @@ behavior_fsm:
     dist_emergencia:    0.12  # m  stop total (override de cualquier estado)
 
     # --- Velocidades ---
-    vel_crucero:      0.14   # m/s  velocidad en CRUCERO (reducida para mas control)
+    vel_crucero:      0.10   # m/s  velocidad (misma en todos los estados)
     vel_giro_gradual: 0.40   # rad/s  giro izquierda en GIRO
-    vel_avance_giro:  0.06   # m/s  avance lineal mientras gira
+    vel_avance_giro:  0.10   # m/s  avance en GIRO (igual que vel_crucero)
 
     # --- RODEO: avance recto para pasar junto a la caja ---
     t_rodeo:  1.5            # s   tiempo maximo en RODEO
-    v_rodeo:  0.13           # m/s velocidad en RODEO
-    w_rodeo:  0.0            # rad/s angular en RODEO (0.0 = recto; <0 = curva a la derecha)
+    v_rodeo:  0.10           # m/s velocidad en RODEO (igual que vel_crucero)
+    w_rodeo:  0.0            # rad/s angular en RODEO
 
     # --- Temporizacion del giro ---
     # t_giro_min es el tiempo FIJO de giro. El GIRO sale por tiempo, no por dist_frente,
@@ -52,8 +52,8 @@ behavior_fsm:
     t_cooldown: 3.0          # s  cooldown post-GIRO/RODEO
 
     # --- Repulsion pared izquierda ---
-    dist_izq_min: 0.15       # m  distancia minima a la pared izquierda
-    Kizq:         3.0        # ganancia de repulsion [rad/s por metro de exceso]
+    dist_izq_min: 0.10       # m  maximo 10 cm de la pared izquierda
+    Kizq:         4.0        # ganancia de repulsion (gira a la derecha al sobrepasar)
 
 wall_follower:
   ros__parameters:
