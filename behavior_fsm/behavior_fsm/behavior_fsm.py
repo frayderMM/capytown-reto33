@@ -401,10 +401,9 @@ class Guardian(Node):
 
     # ── Rodeo por la izquierda ───────────────────────────────────────────────
     def _rodear(self):
-        # guardia de colisión en las fases de avance
-        if self.fase in (0, 2) and self.punto_trasero is not None:
-            self._pub(0.0, 0.0)
-            return
+        # guardia de colisión solo en las fases de avance (los giros +45/−45
+        # ya no se bloquean por punto_trasero: avanzan sin importar lo que
+        # haya detrás, solo se detienen ante riesgo real de choque frontal)
         if self.fase in (1, 3) and self.d_frente < self.d_parada:
             self._pub(0.0, 0.0)
             self._cambiar(PARAR)                 # replanifica: espera y rodea de nuevo

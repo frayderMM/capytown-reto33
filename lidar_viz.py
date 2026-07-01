@@ -167,7 +167,7 @@ def main():
                     ancho = 4.0 if s['clase'] == 'CAJA' else 2.6
                     axL.plot([s['x1'], s['x2']], [s['y1'], s['y2']],
                              color=c, linewidth=ancho, zorder=4, label=lbl)
-                    if s['clase'] in ('CAJA', 'ESQUINA', 'PARED'):
+                    if s['clase'] == 'CAJA':
                         etiqueta_segmento(axL, s, c)
                 if vistos:
                     axL.legend(loc='upper right', facecolor=BG,
