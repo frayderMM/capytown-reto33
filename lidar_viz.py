@@ -51,6 +51,7 @@ C_LEFT  = '#4f8ef7'
 C_RIGHT = '#2ecc71'
 C_OTHER = '#3a4a5a'
 C_TRAJ  = '#8b949e'
+C_GUIDE = '#ffdd00'   # linea de guia derecha (amarillo)
 C_ARROW = '#f5c518'
 C_TEXT  = '#e6edf3'
 C_DIM   = '#8b949e'
@@ -87,6 +88,7 @@ class LidarViz(Node):
         self.d_right    = float('inf')
         self.range_min  = 0.0
         self.range_max  = 8.0
+        self.right_wall_line = None  # ((x0,y0),(x1,y1)) linea de guia derecha
 
         self.vel_lin    = 0.0
         self.vel_ang    = 0.0
@@ -124,6 +126,7 @@ class LidarViz(Node):
     def _cb_scan(self, msg: LaserScan):
         segs      = []   # [[(x0,y0),(x1,y1)], ...]  segmentos de linea
         seg_cols  = []   # color por segmento
+        right_pts = []   # puntos del sector derecho, para la linea de guia
         d_f = d_l = d_r = float('inf')
         prev_xd = prev_yd = prev_r = None
 
@@ -156,6 +159,9 @@ class LidarViz(Node):
 
             xd, yd = self._sensor_to_display(theta, r)
 
+            if color == C_RIGHT:
+                right_pts.append((xd, yd))
+
             # Conectar con el punto anterior solo si estan cerca
             # (sin salto de rango grande = misma superficie continua).
             if (prev_xd is not None and prev_r is not None
@@ -171,6 +177,22 @@ class LidarViz(Node):
         self.d_front  = d_f
         self.d_left   = d_l
         self.d_right  = d_r
+        self.right_wall_line = self._fit_line(right_pts)
+
+    @staticmethod
+    def _fit_line(pts):
+        """Ajusta una recta x = m*y + b a los puntos del sector derecho
+        (la pared corre a lo largo de "adelante", asi que y es la variable
+        independiente) y devuelve sus extremos, o None si no hay suficientes."""
+        if len(pts) < 3:
+            return None
+        ys = np.array([p[1] for p in pts])
+        xs = np.array([p[0] for p in pts])
+        if ys.max() - ys.min() < 0.05:
+            return None
+        m, b = np.polyfit(ys, xs, 1)
+        y0, y1 = ys.min(), ys.max()
+        return (m * y0 + b, y0), (m * y1 + b, y1)
 
     def _cb_cmd(self, msg: Twist):
         self.vel_lin = msg.linear.x
@@ -233,6 +255,8 @@ def build_figure():
     lc = LineCollection([], linewidths=3.0, zorder=4)
     ax_lidar.add_collection(lc)
     traj_line, = ax_lidar.plot([], [], color=C_TRAJ, lw=1.2, alpha=0.6, zorder=3)
+    guide_line, = ax_lidar.plot([], [], color=C_GUIDE, lw=3.5, zorder=5,
+                                solid_capstyle='round', alpha=0.9)
     range_circ = plt.Circle((0, 0), 1.5, color='#223344', fill=False, lw=1, ls='--', zorder=2)
     ax_lidar.add_patch(range_circ)
     alert_txt = ax_lidar.text(0, -1.42, '', color=C_ALERT, fontsize=11,
@@ -241,6 +265,7 @@ def build_figure():
         mpatches.Patch(color='#ffffff', label='FRENTE ±12°'),
         mpatches.Patch(color=C_LEFT,    label='IZQ'),
         mpatches.Patch(color=C_RIGHT,   label='DER'),
+        mpatches.Patch(color=C_GUIDE,   label='Guia derecha'),
     ], loc='upper right', facecolor=BG, labelcolor=C_TEXT, fontsize=8, framealpha=0.9)
 
     # ── Gauge pared derecha ────────────────────────────────────────────────
@@ -318,7 +343,7 @@ def build_figure():
     vel_line, = ax_vel.plot([], [], color=C_FRONT, lw=1.5)
 
     return (fig, ax_lidar, ax_gauge, ax_vel,
-            lc, traj_line, range_circ,
+            lc, traj_line, guide_line, range_circ,
             alert_txt, gauge_artists, vel_line)
 
 
@@ -333,7 +358,7 @@ def main():
 
     plt.ion()
     (fig, ax_lidar, ax_gauge, ax_vel,
-     lc, traj_line, range_circ,
+     lc, traj_line, guide_line, range_circ,
      alert_txt, gauge_artists, vel_line) = build_figure()
     plt.show()
 
@@ -353,6 +378,13 @@ def main():
                 txs = [node._odom_to_display(x, y)[0] for x, y in node.traj_odom]
                 tys = [node._odom_to_display(x, y)[1] for x, y in node.traj_odom]
                 traj_line.set_data(txs, tys)
+
+            # ── Linea de guia derecha ────────────────────────────────────
+            if node.right_wall_line is not None:
+                (gx0, gy0), (gx1, gy1) = node.right_wall_line
+                guide_line.set_data([gx0, gx1], [gy0, gy1])
+            else:
+                guide_line.set_data([], [])
 
             # ── Rango sensor ──────────────────────────────────────────────
             range_circ.set_radius(min(node.range_max, 1.4))
