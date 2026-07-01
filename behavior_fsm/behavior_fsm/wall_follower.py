@@ -1,26 +1,30 @@
 #!/usr/bin/env python3
 """
-wall_follower.py  —  Deteccion de paredes laterales por RANSAC.
+wall_follower.py  —  Deteccion de paredes laterales por minimos cuadrados.
 
-Suscribe a /scan, ajusta una recta por RANSAC a los puntos de cada lado
+Suscribe a /scan, ajusta una recta por regresion ortogonal (minimos
+cuadrados, ver lidar_utils.recta_por_pca) a los puntos de cada lado
 (izquierda / derecha) del jiron y publica la distancia perpendicular del
 robot a cada pared en /dist_izq y /dist_der (std_msgs/Float32). behavior_fsm
 consume estos dos topicos para el tracking lateral; el frente (parada de
 seguridad) lo sigue midiendo behavior_fsm directamente sobre /scan, sin
 saltos entre nodos, para no anadir latencia a esa reaccion critica.
 
-Por que RANSAC y no Split-and-Merge:
-    S&M necesita que los puntos de la pared sean contiguos. Si una caja
-    interrumpe el tramo de pared que ve el LiDAR, el segmento se corta o
-    se fusiona mal. RANSAC ajusta por consenso: los puntos de la caja
-    quedan fuera del modelo (outliers) sin necesidad de pre-segmentar por
-    huecos de indice o de rango.
+Por que minimos cuadrados y no RANSAC:
+    Se probo RANSAC (consenso robusto a outliers) pero en la practica dio
+    peor resultado: el muestreo aleatorio produce variacion de cuadro a
+    cuadro incluso con la pared quieta, lo que se nota como ruido en el
+    control. Minimos cuadrados sobre TODOS los puntos del lado es
+    deterministico (mismo scan → misma recta, siempre) y mas simple. La
+    contrapartida es que ya no descarta outliers a proposito: si una caja
+    queda pegada al costado (dentro del sector lateral, no en el frontal),
+    sus puntos SI van a sesgar la recta de esa pared.
 
 Pipeline:
     /scan → filtrar + separar en sector izq/der (excluyendo el frontal,
-            reservado para deteccion de obstaculos) → RANSAC por lado
-          → refinar por PCA sobre los inliers → distancia perpendicular
-          → fallback a minimo rango crudo si RANSAC no encuentra pared
+            reservado para deteccion de obstaculos, y el trasero) →
+            recta_por_pca() por lado → distancia perpendicular
+          → fallback a minimo rango crudo si no hay suficientes puntos
           → suavizado temporal (EMA) → publicar
 
     Convencion angular (igual que behavior_fsm): af = angulo relativo al
@@ -28,12 +32,12 @@ Pipeline:
 
 Topicos:
     /dist_izq, /dist_der              (Float32, m)   — para behavior_fsm
-    /dbg/confianza_izq, /dbg/confianza_der (Float32) — ratio de inliers RANSAC
+    /dbg/confianza_izq, /dbg/confianza_der (Float32) — 1.0 si se ajusto
+        recta, 0.0 si se uso el fallback (minimo rango crudo)
     /dbg/ancho_jiron_medido           (Float32, m)   — dist_izq + dist_der
 """
 
 import math
-import random
 
 import rclpy
 from rclpy.node import Node
@@ -57,11 +61,7 @@ class WallFollower(Node):
         self.declare_parameter('sector_trasero_deg', 160.0)  # excluido del ajuste (detras del robot)
         self.declare_parameter('rango_max',           3.5)  # m  ignora lecturas mas lejanas
 
-        self.declare_parameter('umbral_inlier_ransac', 0.03)  # m  tolerancia de inlier
-        self.declare_parameter('iteraciones_ransac',      80)
-        self.declare_parameter('min_inliers_ransac',      12)
-        self.declare_parameter('min_puntos_lado',         15)  # puntos minimos para intentar RANSAC
-        self.declare_parameter('semilla_ransac',          -1)  # -1 = aleatorio real
+        self.declare_parameter('min_puntos_lado', 15)  # puntos minimos para ajustar la recta
 
         self.declare_parameter('ema_alpha', 0.5)  # suavizado temporal (1=sin suavizar)
 
@@ -75,12 +75,7 @@ class WallFollower(Node):
         self.sector_trasero = math.radians(self.get_parameter('sector_trasero_deg').value)
         self.rango_max = self.get_parameter('rango_max').value
 
-        self.umbral_inlier = self.get_parameter('umbral_inlier_ransac').value
-        self.iteraciones   = int(self.get_parameter('iteraciones_ransac').value)
-        self.min_inliers   = int(self.get_parameter('min_inliers_ransac').value)
-        self.min_lado      = int(self.get_parameter('min_puntos_lado').value)
-        semilla = int(self.get_parameter('semilla_ransac').value)
-        self._rng = random.Random(semilla) if semilla >= 0 else random.Random()
+        self.min_lado = int(self.get_parameter('min_puntos_lado').value)
 
         self.alpha = self.get_parameter('ema_alpha').value
 
@@ -103,8 +98,8 @@ class WallFollower(Node):
         self.pub_ancho    = self.create_publisher(Float32, '/dbg/ancho_jiron_medido', 10)
 
         self.get_logger().info(
-            f'wall_follower (RANSAC) listo  |  umbral_inlier={self.umbral_inlier} m'
-            f'  min_inliers={self.min_inliers}  ancho_jiron={self.ancho_jiron} m')
+            f'wall_follower (minimos cuadrados) listo  |  min_puntos_lado={self.min_lado}'
+            f'  ancho_jiron={self.ancho_jiron} m')
 
     # ── Filtrado y separacion por lado ───────────────────────────────────
     def _separar_lados(self, msg: LaserScan):
@@ -142,19 +137,15 @@ class WallFollower(Node):
 
         return izq_xy, der_xy, fallback_izq, fallback_der
 
-    # ── Distancia por lado: RANSAC con fallback a minimo rango ──────────
+    # ── Distancia por lado: minimos cuadrados con fallback a minimo rango ──
     def _distancia_lado(self, puntos_xy, fallback):
-        """Devuelve (distancia, confianza). confianza=0 si se uso el fallback."""
+        """Devuelve (distancia, confianza). Ajusta una recta por minimos
+        cuadrados a TODOS los puntos del lado (deterministico, sin
+        muestreo aleatorio). confianza=1.0 si se pudo ajustar, 0.0 si se
+        uso el fallback (minimo rango crudo) por falta de puntos."""
         if len(puntos_xy) >= self.min_lado:
-            modelo = lu.ajustar_recta_ransac(
-                puntos_xy,
-                umbral_inlier=self.umbral_inlier,
-                iteraciones=self.iteraciones,
-                min_inliers=self.min_inliers,
-                rng=self._rng)
-            if modelo is not None:
-                recta = (modelo['a'], modelo['b'], modelo['c'])
-                return lu.distancia_recta_origen(recta), modelo['ratio']
+            recta = lu.recta_por_pca(puntos_xy)
+            return lu.distancia_recta_origen(recta), 1.0
         return fallback, 0.0
 
     @staticmethod

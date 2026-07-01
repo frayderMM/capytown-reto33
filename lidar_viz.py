@@ -13,11 +13,13 @@ Panel derecho   : gauge IZQUIERDA (con target, arriba) + panel DERECHA
 
 v35: la FSM (Guardian v6) sigue la pared IZQUIERDA, no la derecha —
 paneles y sector frontal actualizados a juego. DER/IZQ se leen de los
-topicos que publica wall_follower (RANSAC): /dist_izq, /dist_der, mas su
-confianza (ratio de inliers) en /dbg/confianza_izq y /dbg/confianza_der,
-y el chequeo de consistencia del ancho del jiron en
-/dbg/ancho_jiron_medido. Asi el monitor muestra exactamente lo que ve
-behavior_fsm, no una aproximacion paralela.
+topicos que publica wall_follower (minimos cuadrados, no RANSAC): mas
+simple y deterministico, sin variacion de cuadro a cuadro con la pared
+quieta. /dist_izq, /dist_der, mas si se pudo ajustar recta o se uso el
+fallback en /dbg/confianza_izq y /dbg/confianza_der, y el chequeo de
+consistencia del ancho del jiron en /dbg/ancho_jiron_medido. Asi el
+monitor muestra exactamente lo que ve behavior_fsm, no una aproximacion
+paralela.
 
 Direccion real del GIRO inferida del signo de angular.z en /cmd_vel
 mientras el estado es GIRO (dir_giro no se publica directo).
@@ -26,7 +28,7 @@ Deteccion de caja frontal (heuristica de visualizacion, independiente del
 censo oficial de box_detector): std_x < 4 cm (perpendicular) + 8 cm <= ancho <= 32 cm.
 """
 
-VIZ_VERSION = 'v35'
+VIZ_VERSION = 'v36'
 
 import math
 import argparse
@@ -68,7 +70,7 @@ C_DIM       = '#8b949e'
 C_WARN      = '#f39c12'
 C_ALERT     = '#e94560'
 C_OK        = '#2ecc71'
-C_CONF_LO   = '#e94560'   # confianza RANSAC baja (fallback usado)
+C_CONF_LO   = '#e94560'   # fallback usado (no se pudo ajustar recta)
 
 # ── Constantes ────────────────────────────────────────────────────────────────
 # Sector FRENTE: debe ser el mismo que sector_frontal_deg en
@@ -90,9 +92,6 @@ DIST_DER_WARN = 0.25  # m  inicio de advertencia
 # Chequeo de consistencia del ancho del jiron (wall_follower: ancho_jiron / tol_ancho_jiron)
 ANCHO_JIRON     = 0.60
 TOL_ANCHO_JIRON = 0.15
-
-# Confianza RANSAC (ratio de inliers): por debajo de esto se considera "fallback"
-CONF_MIN_OK = 0.30
 
 # Deteccion de caja (~25 cm): perpendicular (std_x) + ancho lateral
 DETECT_HALF   = math.radians(20.0)  # sector de busqueda para caja
@@ -130,7 +129,7 @@ class LidarViz(Node):
         self.vel_ang    = 0.0
         self.cajas_odom = []
 
-        # Distancias laterales: llegan de wall_follower (RANSAC), no se
+        # Distancias laterales: llegan de wall_follower (minimos cuadrados), no se
         # recalculan aqui. Igual para su confianza (ratio de inliers).
         self.dist_izq   = float('inf')
         self.dist_der   = float('inf')
@@ -372,7 +371,7 @@ def build_figure():
     ax_der.axis('off')
     ax_der.set_xlim(0, 1)
     ax_der.set_ylim(0, 1)
-    ax_der.set_title('PARED IZQUIERDA (RANSAC) — tracking', color=C_LEFT, fontsize=12, pad=6)
+    ax_der.set_title('PARED IZQUIERDA (mín. cuadrados) — tracking', color=C_LEFT, fontsize=12, pad=6)
 
     # Barra gauge horizontal
     ax_der.add_patch(mpatches.FancyBboxPatch(
@@ -417,7 +416,7 @@ def build_figure():
     ax_izq.axis('off')
     ax_izq.set_xlim(0, 1)
     ax_izq.set_ylim(0, 1)
-    ax_izq.set_title('PARED DERECHA (RANSAC) — repulsión', color=C_RIGHT, fontsize=12, pad=6)
+    ax_izq.set_title('PARED DERECHA (mín. cuadrados) — repulsión', color=C_RIGHT, fontsize=12, pad=6)
 
     lbl_izq_val    = ax_izq.text(0.5, 0.60, '---', ha='center', va='center',
                                   color=C_RIGHT, fontsize=34, fontweight='bold')
@@ -446,12 +445,9 @@ def build_figure():
 
 
 def _color_confianza(conf):
-    """Color segun la confianza RANSAC (ratio de inliers). 0 = fallback usado."""
-    if conf <= 0.0:
-        return C_CONF_LO
-    if conf < CONF_MIN_OK:
-        return C_WARN
-    return C_OK
+    """Color segun si se pudo ajustar recta (conf=1.0) o se uso el
+    fallback de minimo rango crudo (conf=0.0, sin suficientes puntos)."""
+    return C_CONF_LO if conf <= 0.0 else C_OK
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
@@ -566,7 +562,7 @@ def main():
 
             col_conf_der = _color_confianza(node.conf_izq)
             conf_txt_der = ('fallback (min. rango)' if node.conf_izq <= 0.0
-                            else f'RANSAC conf: {node.conf_izq*100:.0f}%')
+                            else 'recta ajustada (mín. cuadrados)')
             da['lbl_conf'].set_text(conf_txt_der)
             da['lbl_conf'].set_color(col_conf_der)
 
@@ -599,7 +595,7 @@ def main():
 
             col_conf_izq = _color_confianza(node.conf_der)
             conf_txt_izq = ('fallback (min. rango)' if node.conf_der <= 0.0
-                            else f'RANSAC conf: {node.conf_der*100:.0f}%')
+                            else 'recta ajustada (mín. cuadrados)')
             ia['lbl_conf'].set_text(conf_txt_izq)
             ia['lbl_conf'].set_color(col_conf_izq)
 

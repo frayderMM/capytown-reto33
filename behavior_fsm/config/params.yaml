@@ -5,8 +5,8 @@
 # deteccion durante esa ventana) → CRUCERO (recalibra contra la pared
 # izquierda).
 # dist_izq / dist_der ya NO se calculan aqui: los publica wall_follower
-# (RANSAC sobre las paredes laterales, con casi todo el barrido del
-# LiDAR, simetrico para ambos lados) en /dist_izq y /dist_der.
+# (minimos cuadrados sobre las paredes laterales, con casi todo el
+# barrido del LiDAR, simetrico para ambos lados) en /dist_izq y /dist_der.
 
 behavior_fsm:
   ros__parameters:
@@ -52,7 +52,9 @@ behavior_fsm:
     t_cooldown:      2.0   # s  cooldown post-GIRO antes de poder disparar otro AVISO
     t_recuperacion:  1.5   # s  suprime w_front tras GIRO, solo w_izq (recalibra)
 
-# wall_follower — paredes laterales por RANSAC (reemplaza Split-and-Merge).
+# wall_follower — paredes laterales por minimos cuadrados (antes RANSAC:
+# en la practica daba peor resultado por el muestreo aleatorio, que
+# variaba de cuadro a cuadro con la pared quieta).
 # Publica /dist_izq y /dist_der; behavior_fsm los consume, no los recalcula.
 wall_follower:
   ros__parameters:
@@ -63,11 +65,7 @@ wall_follower:
     sector_trasero_deg: 160.0   # excluido del ajuste (posible otra pared tras un giro)
     rango_max:            3.50  # m  ignora lecturas mas lejanas
 
-    umbral_inlier_ransac: 0.03  # m  tolerancia de inlier
-    iteraciones_ransac:   80
-    min_inliers_ransac:   12
-    min_puntos_lado:      15    # puntos minimos en el lado para intentar RANSAC
-    semilla_ransac:       -1    # -1 = aleatorio real; >=0 = reproducible (defensa/debug)
+    min_puntos_lado: 15         # puntos minimos en el lado para ajustar la recta
 
     ema_alpha: 0.5              # suavizado temporal de dist_izq/dist_der
 

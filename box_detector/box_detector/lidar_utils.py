@@ -11,8 +11,7 @@ de forma independiente y reutilizarlas tanto en el detector como en la FSM.
 """
 
 import math
-import random
-from typing import List, Optional, Tuple
+from typing import List, Tuple
 
 # Un "punto" del barrido se representa como (angulo, rango) en coordenadas polares.
 PuntoPolar = Tuple[float, float]
@@ -183,55 +182,3 @@ def distancia_recta_origen(recta: Recta) -> float:
     """Distancia perpendicular del origen (el robot, marco base_link) a la recta."""
     _, _, c = recta
     return abs(c)
-
-
-def ajustar_recta_ransac(puntos_xy: List[PuntoXY],
-                         umbral_inlier: float = 0.03,
-                         iteraciones: int = 80,
-                         min_inliers: int = 12,
-                         rng: Optional[random.Random] = None) -> Optional[dict]:
-    """Ajusta una recta a puntos_xy por RANSAC, robusta a outliers.
-
-    Es la alternativa a Split-and-Merge para detectar paredes: no requiere
-    que los puntos sean contiguos, asi que si una caja interrumpe la pared,
-    sus puntos quedan fuera del consenso (outliers) en vez de romper o
-    fusionar mal los segmentos.
-
-    Procedimiento: en cada iteracion se muestrean 2 puntos al azar, se arma
-    la recta que pasa por ellos y se cuentan los inliers (puntos a distancia
-    <= umbral_inlier). Se conserva el modelo con mas inliers y, al final, se
-    refina con recta_por_pca() sobre ese conjunto de inliers (mas preciso
-    que la recta de 2 puntos usada solo para muestrear).
-
-    Devuelve un dict {'a','b','c','inliers','ratio'} o None si no hay
-    puntos suficientes o ningun modelo alcanza min_inliers.
-    """
-    n = len(puntos_xy)
-    if n < min_inliers:
-        return None
-    if rng is None:
-        rng = random.Random()
-
-    mejor_inliers: List[int] = []
-    for _ in range(iteraciones):
-        i, j = rng.sample(range(n), 2)
-        x1, y1 = puntos_xy[i]
-        x2, y2 = puntos_xy[j]
-        dx, dy = x2 - x1, y2 - y1
-        norm = math.hypot(dx, dy)
-        if norm < 1e-6:
-            continue
-        a, b = -dy / norm, dx / norm
-        c = -(a * x1 + b * y1)
-
-        inliers = [k for k, (px, py) in enumerate(puntos_xy)
-                  if abs(a * px + b * py + c) <= umbral_inlier]
-        if len(inliers) > len(mejor_inliers):
-            mejor_inliers = inliers
-
-    if len(mejor_inliers) < min_inliers:
-        return None
-
-    pts_inlier = [puntos_xy[k] for k in mejor_inliers]
-    a, b, c = recta_por_pca(pts_inlier)
-    return {'a': a, 'b': b, 'c': c, 'inliers': mejor_inliers, 'ratio': len(mejor_inliers) / n}
