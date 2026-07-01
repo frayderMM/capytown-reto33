@@ -44,7 +44,9 @@ behavior_fsm:
     d_lado_salida_giro: 0.20  # m  sale de GIRO si el lado hacia el que gira < 20cm
     k_urgencia_giro:    1.5   # amplifica el giro si el obstaculo esta muy cerca de d_giro
     t_rodeo_min:        0.4   # s  minimo recto tras GIRO antes de evaluar salida
-    t_rodeo_max:        3.0   # s  salvavidas si el frente nunca despeja
+    t_rodeo_max:        1.2   # s  salvavidas — RODEO es ciego (w=0, no corrige rumbo);
+                              # si GIRO no dejo el robot bien alineado, acotar esto limita
+                              # cuanto se puede ir en diagonal antes de volver a CRUCERO
     t_cooldown:         2.0   # s  cooldown post-RODEO
     t_recuperacion:     1.5   # s  suprime w_front tras RODEO
 

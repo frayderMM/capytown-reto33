@@ -78,7 +78,7 @@ class BehaviorFSM(Node):
         self.declare_parameter('d_lado_salida_giro', 0.20)  # sale de GIRO si el lado hacia el que gira se cierra
         self.declare_parameter('k_urgencia_giro',   1.5)   # amplifica w_giro si el obstaculo esta muy cerca
         self.declare_parameter('t_rodeo_min',       0.4)   # minimo recto tras GIRO antes de evaluar salida
-        self.declare_parameter('t_rodeo_max',       3.0)   # salvavidas si el frente nunca despeja
+        self.declare_parameter('t_rodeo_max',       1.2)   # salvavidas — RODEO es ciego (w=0)
         self.declare_parameter('t_cooldown',        2.0)
         self.declare_parameter('t_recuperacion',    1.5)
 
