@@ -6,18 +6,21 @@ Control reactivo continuo. La pista es un circuito cerrado (jiron de
 60cm) con paredes a ambos lados, asi que con el frente libre se sigue
 la pared derecha (correccion de wall_follower.py via /lateral_correction,
 objetivo 8cm) para recorrer el circuito -- no es "avanzar sin rumbo".
-Cuando aparece un obstaculo (caja) al frente, esa guia se reemplaza
-por evasion:
+Cuando algo bloquea el frente (caja o esquina real del circuito -- no
+se distinguen: medir el ANCHO de lo que bloquea el frente con el LiDAR
+resulto poco confiable en pista y confundia una caja con una esquina,
+dejando al robot forzado a girar hacia un lado sin espacio real), esa
+guia se reemplaza por una unica evasion en "U":
 
   - velocidad: progresiva, baja segun se cierra el espacio al frente.
-  - giro: con el frente libre, sigue la pared derecha. Si hay algo
-    perpendicular al frente, se distingue por ANCHO: una caja (angosta)
-    se evade con un giro en "U" (sale hacia la izquierda, y al pasarla
-    vuelve a pegarse a la derecha); una esquina real del circuito (pared
-    ancha) tambien gira a la izquierda, el mismo sentido en que se
-    sigue el circuito, hasta que el frente se despeja. En ambos casos la
-    fuerza del giro se limita segun cuanto espacio real hay en el lado
-    elegido.
+  - giro: con el frente libre, sigue la pared derecha. Si algo bloquea
+    el frente, se evade siempre hacia el lado con espacio REAL
+    disponible (prioriza izquierda -- mismo sentido en que se sigue el
+    circuito -- pero cae a la derecha si a la izquierda no hay
+    espacio), hasta que el frente se despeje; luego vuelve a pegarse a
+    la derecha. La fuerza del giro se limita segun cuanto espacio real
+    hay en el lado elegido, para nunca forzar un giro hacia un lado sin
+    salida (eso dejaba al robot atascado girando casi sin avanzar).
 
 La parada de emergencia (omnidireccional) es la unica que vigila los
 costados, usando los offsets reales LiDAR->borde para no chocar por
@@ -74,21 +77,17 @@ class BehaviorFSM(Node):
         self.declare_parameter('vel_min',     0.08)
         self.declare_parameter('w_giro_max',  0.45)  # rad/s  maximo giro al evadir un frente bloqueado
 
-        # --- Clasificacion esquina real vs. caja ---
-        self.declare_parameter('cono_clasificacion_deg', 50.0)  # +/- grados para medir el
-                                                                  # ancho de lo que bloquea el frente
-        self.declare_parameter('salto_cluster',          0.15)  # m  salto de rango que separa
-                                                                  # un cluster de otro
-        self.declare_parameter('ancho_max_caja',         0.35)  # m  por debajo de esto es una
-                                                                  # caja (evade); por encima es
-                                                                  # una pared/esquina real (gira
-                                                                  # fijo a la izquierda, mismo
-                                                                  # sentido que sigue el circuito)
         self.declare_parameter('t_evasion_min', 0.3)  # s  compromiso minimo en evasion
-                                                        # (caja o esquina) antes de poder volver
-                                                        # a AVANCE -- evita pegarse de nuevo a
-                                                        # la derecha con el obstaculo apenas
-                                                        # despejado del frente pero aun al lado
+                                                        # antes de poder volver a AVANCE -- evita
+                                                        # pegarse de nuevo a la derecha con el
+                                                        # obstaculo apenas despejado del frente
+                                                        # pero aun al lado
+        self.declare_parameter('margen_salida_evasion', 0.05)  # m  extra sobre dist_alerta
+                                                        # para SALIR de evasion (histeresis) --
+                                                        # con el mismo umbral para entrar y
+                                                        # salir, c_frente oscilando justo en
+                                                        # dist_alerta hacia adentro/afuera de
+                                                        # evasion en ciclos sucesivos
 
         self.front_rad = math.radians(self.get_parameter('lidar_front_deg').value)
         self.sector    = math.radians(self.get_parameter('sector_frontal_deg').value)
@@ -108,17 +107,14 @@ class BehaviorFSM(Node):
         self.v_min     = self.get_parameter('vel_min').value
         self.w_giro_max = self.get_parameter('w_giro_max').value
 
-        self.cono_clas     = math.radians(self.get_parameter('cono_clasificacion_deg').value)
-        self.salto_cluster = self.get_parameter('salto_cluster').value
-        self.ancho_max_caja = self.get_parameter('ancho_max_caja').value
         self.t_evasion_min = self.get_parameter('t_evasion_min').value
+        self.margen_salida = self.get_parameter('margen_salida_evasion').value
 
         # ── Sensores ──────────────────────────────────────────────────────
         self.dist_frente = float('inf')  # cono ancho frontal
         self.dist_izq    = float('inf')
         self.dist_der    = float('inf')
         self.dist_min    = float('inf')  # minimo global, todos los angulos
-        self.ancho_obstruccion = None    # ancho (m) de lo que bloquea el frente, o None
         self._w_lateral  = 0.0           # correccion de wall_follower (seguir pared derecha)
 
         # ── ROS I/O ───────────────────────────────────────────────────────
@@ -132,8 +128,7 @@ class BehaviorFSM(Node):
         self.create_timer(0.1, self.loop_control)
 
         self._en_evasion = False  # para publicar /parada_dist solo al entrar a la zona de evasion
-        self._es_esquina_evasion = False  # tipo de evasion, fijado UNA vez al entrar
-        self._lado_evasion = 1.0          # lado de evasion, fijado UNA vez al entrar
+        self._lado_evasion = 1.0  # lado de evasion, fijado UNA vez al entrar
         self._t_evasion_inicio = self.get_clock().now()
 
         self.get_logger().info('BehaviorFSM listo — evasion omnidireccional continua')
@@ -142,15 +137,6 @@ class BehaviorFSM(Node):
     def cb_scan(self, msg: LaserScan):
         d_f = d_l = d_r = d_min = float('inf')
 
-        # Clusters dentro del cono de clasificacion (mas ancho que el
-        # cono frontal), agrupados por salto de rango -- el cluster que
-        # contiene el punto mas cercano determina que tan ANCHO es lo
-        # que bloquea el frente (una caja ~20cm vs. una pared/esquina
-        # real, que abarca mucho mas del jiron de 60cm).
-        clusters = []
-        actual   = []
-        prev_r   = None
-
         for i, r in enumerate(msg.ranges):
             raw    = msg.angle_min + i * msg.angle_increment
             af     = math.atan2(math.sin(raw - self.front_rad),
@@ -158,7 +144,6 @@ class BehaviorFSM(Node):
             abs_af = abs(af)
             valid  = math.isfinite(r) and msg.range_min <= r <= msg.range_max
             if not valid:
-                prev_r = None
                 continue
 
             # Minimo global (casi todos los angulos, excepto el cono
@@ -177,29 +162,10 @@ class BehaviorFSM(Node):
                 else:
                     d_r = min(d_r, r)
 
-            if abs_af <= self.cono_clas:
-                if prev_r is not None and abs(r - prev_r) > self.salto_cluster:
-                    if actual:
-                        clusters.append(actual)
-                    actual = []
-                actual.append((r, r * math.sin(af)))
-                prev_r = r
-            else:
-                prev_r = None
-
-        if actual:
-            clusters.append(actual)
-
         self.dist_frente = d_f
         self.dist_izq    = d_l
         self.dist_der    = d_r
         self.dist_min    = d_min
-
-        self.ancho_obstruccion = None
-        if clusters:
-            cluster_cercano = min(clusters, key=lambda c: min(p[0] for p in c))
-            xs = [p[1] for p in cluster_cercano]
-            self.ancho_obstruccion = max(xs) - min(xs)
 
     def _cb_lat(self, msg: Float32):
         self._w_lateral = msg.data
@@ -233,23 +199,18 @@ class BehaviorFSM(Node):
         # Avanzar depende SOLO del frente -- los costados nunca lo frenan.
         v = self._vel_adaptativa(c_frente)
 
-        # Peligro (frente en zona de alerta O costado a menos de
-        # d_emerg): si NO se estaba ya evadiendo, decide tipo (esquina
-        # real vs. caja) y lado UNA sola vez aqui, y quedan fijos para
-        # las tres ramas siguientes (EMERGENCIA, RECALIBRAR, evasion
-        # normal). Antes, EMERGENCIA/RECALIBRAR reseteaban el episodio
-        # de evasion en cada disparo -- y durante un giro real en un
-        # pasillo angosto disparan seguido -- asi que la esquina nunca
-        # llegaba a completar un giro limpio, se reiniciaba una y otra
-        # vez (la causa real de las trayectorias en espiral / "360").
+        # Peligro (frente en zona de alerta O costado a menos de d_emerg):
+        # si NO se estaba ya evadiendo, decide el LADO una sola vez aqui
+        # (segun cual costado tiene espacio real), y queda fijo para las
+        # tres ramas siguientes (EMERGENCIA, RECALIBRAR, evasion normal).
+        # Antes, EMERGENCIA/RECALIBRAR reseteaban el episodio de evasion
+        # en cada disparo -- y durante un giro real en un pasillo angosto
+        # disparan seguido -- asi que el giro nunca llegaba a completarse
+        # limpio, se reiniciaba una y otra vez (la causa real de las
+        # trayectorias en espiral / "360").
         peligro = c_frente < self.d_alerta or c_min < self.d_emerg
         if peligro and not self._en_evasion:
-            self._es_esquina_evasion = (self.ancho_obstruccion is None
-                                         or self.ancho_obstruccion >= self.ancho_max_caja)
-            if self._es_esquina_evasion:
-                self._lado_evasion = 1.0  # esquina real: siempre izquierda
-            else:
-                self._lado_evasion = 1.0 if c_izq >= (self.d_emerg + 0.05) else -1.0
+            self._lado_evasion = 1.0 if c_izq >= (self.d_emerg + 0.05) else -1.0
             self._en_evasion = True
             self._t_evasion_inicio = self.get_clock().now()
             d_msg = Float32(); d_msg.data = float(c_frente)
@@ -279,20 +240,17 @@ class BehaviorFSM(Node):
             self._pub(v, w, 'RECALIBRAR')
             return
 
-        # Giro: solo reacciona a lo que tiene perpendicular al frente
-        # (no a paredes laterales paralelas al avance). Progresivo desde
-        # dist_alerta hasta el maximo en dist_obstaculo. El TIPO (esquina
-        # real vs. caja) y el LADO ya se decidieron arriba y quedan fijos
-        # todo el episodio -- reevaluarlos cada ciclo (10Hz) es lo que
-        # producia giros erraticos cuando c_izq/c_der estaban parecidos.
-        #   - esquina real (ancho >= ancho_max_caja, o sin cluster valido):
-        #     izquierda fija, el mismo sentido en que se sigue el circuito.
-        #   - caja (angosta): tambien prioriza izquierda (se aleja
-        #     momentaneamente de la pared derecha que sigue normalmente);
-        #     solo cae a la derecha si ahi no hay espacio real de entrada.
-        # La fuerza del giro se limita segun cuanto espacio REAL hay en el
-        # lado elegido (no solo que el frente este bloqueado): casi sin
-        # margen ahi, se modula hasta casi 0.
+        # Giro: solo reacciona a lo que tiene perpendicular al frente (no
+        # a paredes laterales paralelas al avance). Progresivo desde
+        # dist_alerta hasta el maximo en dist_obstaculo. El LADO ya se
+        # decidio arriba y queda fijo todo el episodio -- reevaluarlo cada
+        # ciclo (10Hz) es lo que producia giros erraticos cuando c_izq/
+        # c_der estaban parecidos. Prioriza izquierda (mismo sentido en
+        # que se sigue el circuito); solo cae a la derecha si ahi no hay
+        # espacio real de entrada. La fuerza del giro se limita segun
+        # cuanto espacio REAL hay en el lado elegido (no solo que el
+        # frente este bloqueado): casi sin margen ahi, se modula hasta
+        # casi 0 -- nunca se fuerza un giro contra una pared sin salida.
         w = 0.0
         estado = 'AVANCE'
         t_desde_evasion = (self.get_clock().now() - self._t_evasion_inicio).nanoseconds * 1e-9
@@ -308,14 +266,21 @@ class BehaviorFSM(Node):
         # volver nunca a pegarse a la pared derecha.
         forzar_evasion = self._en_evasion and t_desde_evasion < self.t_evasion_min
 
-        if c_frente < self.d_alerta or forzar_evasion:
+        # Histeresis: para ENTRAR a evasion basta cruzar dist_alerta (igual
+        # que la deteccion de "peligro" arriba); para SALIR, ya en evasion,
+        # se exige despejar un poco mas alla (dist_alerta + margen_salida) --
+        # sin esto, c_frente oscilando justo en el umbral producia entradas
+        # y salidas de evasion en ciclos sucesivos (zigzag).
+        umbral = self.d_alerta + self.margen_salida if self._en_evasion else self.d_alerta
+
+        if c_frente < umbral or forzar_evasion:
             if c_frente < self.d_alerta:
                 ratio = max(0.0, min(1.0, (self.d_alerta - c_frente) / (self.d_alerta - self.d_obst)))
             else:
                 ratio = 0.0  # solo en gracia de evasion (t_evasion_min): avanza recto
 
             lado = self._lado_evasion
-            estado = 'ESQUINA' if self._es_esquina_evasion else 'EVADIR'
+            estado = 'EVADIR'
 
             c_lado = c_izq if lado > 0 else c_der
             factor_espacio = max(0.0, min(1.0, (c_lado - self.d_emerg) / (self.d_alerta - self.d_emerg)))
@@ -328,7 +293,7 @@ class BehaviorFSM(Node):
 
         self.get_logger().info(
             f'c_frente={c_frente:.2f} c_izq={c_izq:.2f} c_der={c_der:.2f} '
-            f'ancho={self.ancho_obstruccion}  v={v:.2f} w={w:.2f}  estado={estado}',
+            f'v={v:.2f} w={w:.2f}  estado={estado}',
             throttle_duration_sec=0.5)
         self._pub(v, w, estado)
 

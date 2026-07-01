@@ -44,14 +44,15 @@ behavior_fsm:
                             # hay emergencia real, siempre sigue avanzando)
     w_giro_max:   0.45     # rad/s  maximo giro al evadir un frente bloqueado
 
-    # --- Clasificacion esquina real vs. caja ---
-    cono_clasificacion_deg: 50.0  # +/- grados para medir el ancho de lo que bloquea el frente
-    salto_cluster:           0.15  # m  salto de rango que separa un cluster de otro
-    ancho_max_caja:          0.35  # m  bajo esto es caja (evade); sobre esto es esquina
-                                    # real del circuito (gira fijo a la izquierda)
+    # --- Evasion (caja u esquina real, no se distinguen -- medir el ancho
+    # de lo que bloquea el frente con el LiDAR resulto poco confiable en
+    # pista y confundia una caja con una esquina) ---
     t_evasion_min:           0.3   # s  compromiso minimo en evasion antes de volver a
                                     # AVANCE (evita pegarse a la derecha con el obstaculo
                                     # aun al costado, recien despejado del frente)
+    margen_salida_evasion:   0.05  # m  extra sobre dist_alerta para SALIR de evasion
+                                    # (histeresis, evita zigzag AVANCE/EVADIR justo en
+                                    # el umbral de entrada)
 
 wall_follower:
   ros__parameters:

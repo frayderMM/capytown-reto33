@@ -84,6 +84,7 @@ class WallFollower(Node):
         self._err_prev = 0.0
         self._t_prev   = self.get_clock().now()
         self._w_prev   = 0.0  # para el limitador de tasa de cambio
+        self._ref_prev = None  # 'der' / 'izq' -- para no derivar entre formulas distintas
 
         # ── ROS I/O ───────────────────────────────────────────────────────
         _qos_scan = QoSProfile(depth=10)
@@ -265,15 +266,22 @@ class WallFollower(Node):
             self._pub.publish(out)
             self._err_prev = 0.0   # resetear derivada para evitar spike al reaparecer
             self._w_prev   = 0.0   # tambien resetea el limitador de tasa de cambio
+            self._ref_prev = None
             self.get_logger().info(
                 'sin referencia lateral (ninguna pared >= min_long_pared)',
                 throttle_duration_sec=1.0)
             return
 
+        ref_actual = 'der' if der else 'izq'
+
         # Controlador PD
         now = self.get_clock().now()
         dt  = max((now - self._t_prev).nanoseconds * 1e-9, 0.01)
-        d_err = (error - self._err_prev) / dt
+        # der/izq usan formulas con referencias distintas -- derivar entre
+        # una lectura 'der' y una 'izq' (o viceversa) no mide un movimiento
+        # real del robot, solo el cambio de formula, y producia un pico de
+        # error/w falso justo al perder o recuperar la pared derecha.
+        d_err = (error - self._err_prev) / dt if ref_actual == self._ref_prev else 0.0
         w   = self._Kp * error + self._Kd * d_err
         w   = max(-self._max_w, min(self._max_w, w))
 
@@ -286,6 +294,7 @@ class WallFollower(Node):
 
         self._err_prev = error
         self._t_prev   = now
+        self._ref_prev = ref_actual
 
         out = Float32()
         out.data = float(w)
