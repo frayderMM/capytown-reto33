@@ -102,7 +102,7 @@ class Guardian(Node):
         self.declare_parameter('dist_parada', 0.17)    # se detiene (reto exige ≥0.15)
         self.declare_parameter('dist_esquina', 0.20)   # borde→pared frontal p/ girar
         self.declare_parameter('dist_emergencia', 0.04)
-        self.declare_parameter('espera_seg', 3.0)
+        self.declare_parameter('espera_seg', 10.0)
         self.declare_parameter('ang_rodeo_deg', 45.0)
         self.declare_parameter('avance_diag', 0.38)
         self.declare_parameter('avance_paralelo', 0.55)
@@ -149,6 +149,7 @@ class Guardian(Node):
         self.votos = deque(maxlen=self.n_votos)   # voto por mayoría de clase
         self.pared_der = None
         self.punto_fp = None
+        self.punto_trasero = None
         self.d_izq = self.d_der = float('inf')
         self.clusters = []
 
@@ -160,6 +161,7 @@ class Guardian(Node):
         # ── FSM ─────────────────────────────────────────────────────────────
         self.estado = CRUCERO
         self.fase = 0
+        self.accion = 'AVANZANDO'
         self.t0 = self.get_clock().now()
         self.yaw0 = 0.0
         self.pos0 = (0.0, 0.0)
@@ -206,7 +208,8 @@ class Guardian(Node):
         self.pared_der = (pc.camino_derecho(pts, self.off_l)
                           or pc.pared_derecha(cls, self.min_pared, self.cos_lat))
         (self.d_frente, clase_f, self.d_izq, self.d_der,
-         self.punto_fp) = pc.frente_y_lados(pts, cls, self.off_f, self.off_l)
+         self.punto_fp, self.punto_trasero) = pc.frente_y_lados(
+             pts, cls, self.off_f, self.off_l)
         self._actualizar_cajas_desde_scan(cls)
 
         # Voto por mayoría: la clase del frente solo cambia si la mayoría de
@@ -240,6 +243,22 @@ class Guardian(Node):
         cmd = Twist()
         cmd.linear.x = float(max(0.0, v))   # NUNCA retrocede
         cmd.angular.z = float(w)
+        if self.estado == ESPERAR_3S:
+            self.accion = 'ESPERANDO_10S'
+        elif self.estado == RODEAR:
+            self.accion = 'PASANDO_OBSTACULO'
+        elif self.estado == GIRAR_ESQUINA:
+            self.accion = 'GIRANDO'
+        elif self.estado == EMERGENCIA:
+            self.accion = 'SEGURIDAD'
+        elif abs(cmd.angular.z) > 0.08 and cmd.linear.x > 0.01:
+            self.accion = 'CORRIGIENDO_DERECHA'
+        elif abs(cmd.angular.z) > 0.08:
+            self.accion = 'GIRANDO'
+        elif cmd.linear.x > 0.01:
+            self.accion = 'AVANZANDO'
+        else:
+            self.accion = 'DETENIDO'
         self.pub_cmd.publish(cmd)
         s = String()
         s.data = self.estado
@@ -294,7 +313,8 @@ class Guardian(Node):
     def loop(self):
         d = self.d_frente
 
-        if (self.punto_fp is not None and d < self.d_parada
+        if (self.punto_fp is not None and d < self.d_emerg
+                and self.clase_frente not in (pc.PARED, pc.ESQUINA)
                 and self.estado != EMERGENCIA):
             self._cambiar(EMERGENCIA)
 
@@ -306,7 +326,7 @@ class Guardian(Node):
             elif (self.clase_frente in (pc.PARED, pc.ESQUINA)
                   and d < self.d_esquina and not en_cd):
                 self._cambiar(GIRAR_ESQUINA)
-            elif d < self.d_parada:
+            elif d < self.d_parada and self.clase_frente not in (pc.PARED, pc.ESQUINA):
                 # bloqueo sin clase clara → tratar como caja (lo más seguro:
                 # detenerse ≥15 cm nunca tumba nada)
                 self._pub(0.0, 0.0)
@@ -317,7 +337,9 @@ class Guardian(Node):
                 self._pub(self._vel_adaptativa(), self._w_pared())
 
         elif self.estado == CAJA_DETECTADA:
-            if d <= self.d_parada:
+            if self.clase_frente in (pc.PARED, pc.ESQUINA):
+                self._cambiar(CRUCERO)
+            elif d <= self.d_parada:
                 self._pub(0.0, 0.0)
                 m = Float32(); m.data = float(d)
                 self.pub_parada.publish(m)
@@ -340,7 +362,9 @@ class Guardian(Node):
             self._rodear()
 
         elif self.estado == GIRAR_ESQUINA:
-            if self._giro_ok(math.pi / 2):
+            if self.punto_trasero is not None:
+                self._pub(0.0, 0.0)
+            elif self._giro_ok(math.pi / 2):
                 self._pub(0.0, 0.0)
                 self.t_fin_esquina = self.get_clock().now()
                 self._w_prev = 0.0
@@ -349,7 +373,8 @@ class Guardian(Node):
                 self._pub(0.0, self.w_giro)     # 90° IZQUIERDA (lazo CCW)
 
         elif self.estado == EMERGENCIA:
-            if self.punto_fp is None or self.d_frente >= self.d_parada:
+            if (self.punto_fp is None or self.d_frente >= self.d_emerg
+                    or self.clase_frente in (pc.PARED, pc.ESQUINA)):
                 self._cambiar(CRUCERO)
             elif self._t() > 4.0:
                 self._cambiar(PARAR)            # persistente → tratar como caja
@@ -383,6 +408,9 @@ class Guardian(Node):
     # ── Rodeo por la izquierda ───────────────────────────────────────────────
     def _rodear(self):
         # guardia de colisión en las fases de avance
+        if self.fase in (0, 2) and self.punto_trasero is not None:
+            self._pub(0.0, 0.0)
+            return
         if self.fase in (1, 3) and self.d_frente < self.d_parada:
             self._pub(0.0, 0.0)
             self._cambiar(PARAR)                 # replanifica: espera y rodea de nuevo
@@ -419,6 +447,7 @@ class Guardian(Node):
                              'lon': round(s['lon'], 3), 'clase': cl['clase']})
         data = {
             'estado': self.estado, 'fase': self.fase,
+            'accion': self.accion,
             'd_frente': None if not math.isfinite(self.d_frente)
                         else round(self.d_frente, 3),
             'clase_frente': self.clase_frente,

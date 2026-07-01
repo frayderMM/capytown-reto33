@@ -178,11 +178,15 @@ def main():
                 clase_txt = dbg.get('clase_frente') or '--'
                 pared_txt = '--' if pd_ is None else f"{pd_['d']:.2f} m"
                 ref_txt = '' if pd_ is None else f" [{pd_.get('tipo', 'PARED')}]"
+                accion_txt = dbg.get('accion', '---')
                 axL.text(0.02, 0.02,
                          f"FSM: {dbg['estado']}[{dbg['fase']}]   "
                          f"frente: {frente_txt} ({clase_txt})   "
                          f"pared der: {pared_txt}{ref_txt}",
                          transform=axL.transAxes, color='#ffd54f', fontsize=9)
+                axL.text(0.02, 0.96, f"ACCION: {accion_txt}",
+                         transform=axL.transAxes, color='#80ffea',
+                         fontsize=11, fontweight='bold', va='top')
 
                 trail = dbg.get('trail', [])
                 if trail:

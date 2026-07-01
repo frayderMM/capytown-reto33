@@ -284,40 +284,34 @@ def _mediana_cercanos(vals, n=6):
 
 def camino_derecho(pts_idx, off_lado: float):
     """
-    Borde derecho por puntos crudos del LiDAR: compara una ventana delantera
-    y una ventana trasera/lateral. Prioriza avanzar recto si ambas ven el
-    borde a distancia parecida.
+    Borde derecho por puntos frontales del LiDAR. La decision de avance y
+    correccion usa solo lo que el robot ve hacia adelante; la parte trasera se
+    reserva para seguridad anti-choque en frente_y_lados().
     """
     front = []
-    rear = []
     center = []
     for p in pts_idx:
         x, y = p[1], p[2]
-        if y >= -(off_lado + 0.015) or y < -1.20:
+        if y >= -(off_lado + 0.015) or y < -0.55:
             continue
         d = -y
-        if 0.08 <= x <= 0.48:
+        if 0.12 <= x <= 0.65:
             front.append(d)
-        elif -0.28 <= x <= 0.04:
-            rear.append(d)
-        elif -0.05 <= x <= 0.28:
+        elif 0.00 <= x <= 0.30:
             center.append(d)
 
     df = _mediana_cercanos(front)
-    dr = _mediana_cercanos(rear)
     dc = _mediana_cercanos(center)
 
-    if df is not None and dr is not None:
-        d = 0.5 * (df + dr)
-        alpha = math.atan2(dr - df, 0.38)
-        return {'d': d, 'alpha': alpha, 'lon': 0.38, 'tipo': 'CAMINO_DER',
-                'd_front': df, 'd_rear': dr}
-    if dc is not None:
-        return {'d': dc, 'alpha': 0.0, 'lon': 0.20, 'tipo': 'CAMINO_DER'}
     if df is not None:
-        return {'d': df, 'alpha': 0.0, 'lon': 0.20, 'tipo': 'CAMINO_DER'}
-    if dr is not None:
-        return {'d': dr, 'alpha': 0.0, 'lon': 0.20, 'tipo': 'CAMINO_DER'}
+        alpha = 0.0 if dc is None else math.atan2(dc - df, 0.30)
+        return {'d': df, 'alpha': alpha, 'lon': 0.35,
+                'tipo': 'CAMINO_DER_FRENTE',
+                'd_front': df, 'd_center': dc}
+    if dc is not None:
+        return {'d': dc, 'alpha': 0.0, 'lon': 0.20,
+                'tipo': 'CAMINO_DER_FRENTE',
+                'd_front': dc, 'd_center': dc}
     return None
 
 
@@ -359,7 +353,8 @@ def frente_y_lados(pts_idx, clusters, off_frente, off_lado,
                  colisión (ancho real del robot + margen)
       clase_frente : clase del cluster dueño del punto más cercano al frente
       d_izq / d_der : espacio libre lateral (franja a la altura del robot)
-      punto_footprint : punto que invade el footprint inflado, o None
+      punto_footprint : punto frontal que invade el footprint, o None
+      punto_trasero : punto trasero/costado posterior demasiado cerca, o None
     """
     semi = off_lado + margen_lateral
     d_min, clase_f = float('inf'), None
@@ -372,6 +367,7 @@ def frente_y_lados(pts_idx, clusters, off_frente, off_lado,
 
     d_izq = d_der = float('inf')
     punto_fp = None
+    punto_trasero = None
     for p in pts_idx:
         x, y = p[1], p[2]
         # franja lateral a la altura del cuerpo del robot
@@ -386,4 +382,7 @@ def frente_y_lados(pts_idx, clusters, off_frente, off_lado,
         if punto_fp is None and (0.02 <= x <= off_frente + 0.04
                                  and abs(y) <= off_lado * 0.80):
             punto_fp = (x, y)
-    return d_frente, clase_f, d_izq, d_der, punto_fp
+        if punto_trasero is None and (-0.16 <= x <= -0.02
+                                      and abs(y) <= off_lado + 0.035):
+            punto_trasero = (x, y)
+    return d_frente, clase_f, d_izq, d_der, punto_fp, punto_trasero

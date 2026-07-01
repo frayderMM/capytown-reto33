@@ -42,11 +42,11 @@ behavior_fsm:
     vel_giro_arco: 0.04         # m/s para que el rodeo no pivote tan cerrado
     dist_alerta: 0.35           # m entra a CAJA_DETECTADA
     dist_parada: 0.17           # m se detiene frente a la caja (reto: >= 0.15)
-    dist_esquina: 0.20          # m borde -> pared frontal para girar 90° izq
+    dist_esquina: 0.08          # m borde -> pared frontal para girar 90° izq
                                 # (tras el giro la pared queda a ~0.20+0.15=0.35
                                 #  del LiDAR y el PD converge a 0.23)
     dist_emergencia: 0.04
-    espera_seg: 3.0
+    espera_seg: 10.0
     ang_rodeo_deg: 50.0
     avance_diag: 0.42           # m diagonal: abre el rodeo antes de pasar
     avance_paralelo: 0.65       # m recto para pasar la caja (20 cm + robot + margen)
