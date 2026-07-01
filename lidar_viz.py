@@ -40,6 +40,17 @@ OFF_FRENTE, OFF_ATRAS, OFF_LADO = 0.15, 0.10, 0.08
 BG, PANEL = '#1a1a2e', '#0f0e17'
 COLORES = {'PARED': '#42a5f5', 'ESQUINA': '#ab47bc',
            'CAJA': '#ffa726', 'RUIDO': '#78909c'}
+COLOR_RECORRIDO_REAL = '#26c6da'
+COLOR_POSE = '#ffffff'
+
+
+def etiqueta_segmento(ax, s, color):
+    mx = 0.5 * (s['x1'] + s['x2'])
+    my = 0.5 * (s['y1'] + s['y2'])
+    ax.annotate(
+        s['clase'], (mx, my), color='white', fontsize=7,
+        ha='center', va='center', zorder=6,
+        bbox=dict(boxstyle='round,pad=0.18', fc=color, ec='none', alpha=0.82))
 
 
 class VizNode(Node):
@@ -153,37 +164,51 @@ def main():
                     c = COLORES.get(s['clase'], '#888')
                     lbl = s['clase'] if s['clase'] not in vistos else None
                     vistos.add(s['clase'])
+                    ancho = 4.0 if s['clase'] == 'CAJA' else 2.6
                     axL.plot([s['x1'], s['x2']], [s['y1'], s['y2']],
-                             color=c, linewidth=2.6, zorder=4, label=lbl)
+                             color=c, linewidth=ancho, zorder=4, label=lbl)
+                    if s['clase'] in ('CAJA', 'ESQUINA', 'PARED'):
+                        etiqueta_segmento(axL, s, c)
                 if vistos:
                     axL.legend(loc='upper right', facecolor=BG,
                                edgecolor='#444', labelcolor='white', fontsize=8)
 
                 df, pd_ = dbg.get('d_frente'), dbg.get('pared_der')
+                frente_txt = '--' if df is None else f'{df:.2f} m'
+                clase_txt = dbg.get('clase_frente') or '--'
+                pared_txt = '--' if pd_ is None else f"{pd_['d']:.2f} m"
                 axL.text(0.02, 0.02,
                          f"FSM: {dbg['estado']}[{dbg['fase']}]   "
-                         f"frente: {'—' if df is None else f'{df:.2f} m'} "
-                         f"({dbg.get('clase_frente') or '—'})   "
-                         f"pared der: "
-                         f"{'—' if pd_ is None else f'{pd_['d']:.2f} m'}",
+                         f"frente: {frente_txt} ({clase_txt})   "
+                         f"pared der: {pared_txt}",
                          transform=axL.transAxes, color='#ffd54f', fontsize=9)
 
                 trail = dbg.get('trail', [])
                 if trail:
                     axR.plot([q[0] for q in trail], [q[1] for q in trail],
-                             color='#26c6da', linewidth=1.6, alpha=0.9, zorder=3)
+                             color=COLOR_RECORRIDO_REAL, linewidth=2.2,
+                             alpha=0.95, zorder=3, label='recorrido real')
                 pose = dbg.get('pose')
                 if pose:
                     x, y, yaw = pose
                     axR.plot(x, y, marker=(3, 0, math.degrees(yaw) - 90),
-                             markersize=13, color='white', zorder=5)
+                             markersize=13, color=COLOR_POSE, zorder=5,
+                             label='carrito')
                 censo = dbg.get('censo', [])
                 for i, (bx, by) in enumerate(censo):
                     axR.add_patch(mpatches.Rectangle(
                         (bx - 0.10, by - 0.10), 0.20, 0.20,
                         facecolor='#ffa726', alpha=0.85, zorder=4))
-                    axR.annotate(str(i + 1), (bx, by), color='black',
-                                 ha='center', va='center', fontsize=8, zorder=5)
+                    axR.annotate(f'CAJA {i + 1}', (bx, by), color='black',
+                                 ha='center', va='center', fontsize=7,
+                                 fontweight='bold', zorder=5)
+                if trail or pose or censo:
+                    handles, labels = axR.get_legend_handles_labels()
+                    if censo:
+                        handles.append(mpatches.Patch(color='#ffa726',
+                                                      label='caja censada'))
+                    axR.legend(handles=handles, loc='upper right', facecolor=BG,
+                               edgecolor='#444', labelcolor='white', fontsize=8)
                 axR.set_title(f'Recorrido + censo — {len(censo)} cajas',
                               color='white', fontsize=10)
                 todos = trail + censo + ([pose[:2]] if pose else [])

@@ -4,7 +4,13 @@
       "Bash(python -m py_compile behavior_fsm/behavior_fsm/behavior_fsm.py)",
       "Bash(git add *)",
       "Bash(git commit -m ' *)",
-      "Bash(git push *)"
+      "Bash(git push *)",
+      "Bash(python -m py_compile behavior_fsm/behavior_fsm/behavior_fsm.py behavior_fsm/behavior_fsm/wall_follower.py)",
+      "Bash(python -c \"import yaml; yaml.safe_load\\(open\\('behavior_fsm/config/params.yaml', encoding='utf-8'\\)\\); print\\('YAML OK'\\)\")",
+      "Bash(python3 -)",
+      "Bash(python \"C:\\\\Users\\\\andre\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\c--web-capytown-reto33\\\\d98e13f9-812c-4340-9407-8837cfade500\\\\scratchpad\\\\corner_trace.py\")",
+      "Bash(git revert *)",
+      "Bash(python -m py_compile behavior_fsm/behavior_fsm/wall_follower.py)"
     ]
   }
 }
