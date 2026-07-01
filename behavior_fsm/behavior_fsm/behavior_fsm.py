@@ -84,6 +84,11 @@ class BehaviorFSM(Node):
                                                         # izquierda en una esquina real antes
                                                         # de reevaluar -- evita oscilar/dar
                                                         # vueltas de mas en la esquina
+        self.declare_parameter('t_evasion_min', 0.3)  # s  compromiso minimo en evasion
+                                                        # (caja o esquina) antes de poder volver
+                                                        # a AVANCE -- evita pegarse de nuevo a
+                                                        # la derecha con el obstaculo apenas
+                                                        # despejado del frente pero aun al lado
 
         self.front_rad = math.radians(self.get_parameter('lidar_front_deg').value)
         self.sector    = math.radians(self.get_parameter('sector_frontal_deg').value)
@@ -107,6 +112,7 @@ class BehaviorFSM(Node):
         self.salto_cluster = self.get_parameter('salto_cluster').value
         self.ancho_max_caja = self.get_parameter('ancho_max_caja').value
         self.t_esquina_min = self.get_parameter('t_esquina_min').value
+        self.t_evasion_min = self.get_parameter('t_evasion_min').value
 
         # ── Sensores ──────────────────────────────────────────────────────
         self.dist_frente = float('inf')  # cono ancho frontal
@@ -129,6 +135,7 @@ class BehaviorFSM(Node):
         self._en_evasion = False  # para publicar /parada_dist solo al entrar a la zona de evasion
         self._en_esquina = False  # compromiso minimo en una esquina real (evita oscilar)
         self._t_esquina_inicio = self.get_clock().now()
+        self._t_evasion_inicio = self.get_clock().now()
 
         self.get_logger().info('BehaviorFSM listo — evasion omnidireccional continua')
 
@@ -267,7 +274,14 @@ class BehaviorFSM(Node):
         # este bloqueado): casi sin margen ahi, se modula hasta casi 0.
         w = 0.0
         estado = 'AVANCE'
-        if c_frente < self.d_alerta:
+        t_desde_evasion = (self.get_clock().now() - self._t_evasion_inicio).nanoseconds * 1e-9
+        # Compromiso minimo en evasion: si el frente se despeja muy rapido
+        # (el obstaculo ya no esta al frente pero puede seguir al lado),
+        # no volver de inmediato a pegarse a la derecha -- se mantiene la
+        # evasion hasta pasarlo por completo (t_evasion_min) para no
+        # acercarse al obstaculo que todavia esta al costado.
+        forzar_evasion = self._en_evasion and t_desde_evasion < self.t_evasion_min
+        if c_frente < self.d_alerta or forzar_evasion:
             ratio = max(0.0, min(1.0, (self.d_alerta - c_frente) / (self.d_alerta - self.d_obst)))
 
             es_esquina_ahora = (self.ancho_obstruccion is None
@@ -299,6 +313,7 @@ class BehaviorFSM(Node):
 
             if not self._en_evasion:
                 self._en_evasion = True
+                self._t_evasion_inicio = self.get_clock().now()
                 d_msg = Float32(); d_msg.data = float(c_frente)
                 self.pub_parada.publish(d_msg)
         else:
