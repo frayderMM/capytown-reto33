@@ -245,8 +245,14 @@ class Guardian(Node):
         cmd.angular.z = float(w)
         if self.estado == ESPERAR_3S:
             self.accion = 'ESPERANDO_10S'
-        elif self.estado == RODEAR:
-            self.accion = 'PASANDO_OBSTACULO'
+        elif self.estado == RODEAR and self.fase == 0:
+            self.accion = 'GIRO_IZQUIERDA_BORDEO'
+        elif self.estado == RODEAR and self.fase == 1:
+            self.accion = 'BORDEANDO_OBSTACULO'
+        elif self.estado == RODEAR and self.fase == 2:
+            self.accion = 'CALIBRANDO_DERECHA'
+        elif self.estado == RODEAR and self.fase == 3:
+            self.accion = 'REINCORPORANDO_CARRIL'
         elif self.estado == GIRAR_ESQUINA:
             self.accion = 'GIRANDO'
         elif abs(cmd.angular.z) > 0.08 and cmd.linear.x > 0.01:

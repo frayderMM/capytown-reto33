@@ -186,18 +186,37 @@ def _bbox(grupo: List[Point]):
     return min(xs), max(xs), min(ys), max(ys)
 
 
-def es_caja_compacta(grupo: List[Point], segs, lado_caja_max: float) -> bool:
-    if not segs or len(grupo) < 6:
-        return False
+def _cluster_mayor_que_caja(grupo: List[Point], lado_caja_max: float) -> bool:
+    """True si el cluster ya no cabe en el tamaño de una caja real (20 cm)."""
     min_x, max_x, min_y, max_y = _bbox(grupo)
     span_x = max_x - min_x
     span_y = max_y - min_y
     diag = math.hypot(span_x, span_y)
+    return (span_x > lado_caja_max * 1.25 or span_y > lado_caja_max * 1.25
+            or diag > lado_caja_max * 1.55)
+
+
+def _esquina_por_perpendicularidad(segs) -> bool:
+    """Dos segmentos casi perpendiculares entre sí, sin exigirles una
+    longitud mínima — el tamaño ya se filtró afuera (_cluster_mayor_que_caja):
+    si el cluster completo es más grande que una caja, dos lados en L bastan
+    para reconocer una esquina, aunque cada lado individual sea corto."""
+    candidatos = [s for s in segs if s['lon'] >= 0.06]
+    for i in range(len(candidatos)):
+        for j in range(i + 1, len(candidatos)):
+            d = abs(candidatos[i]['ang'] - candidatos[j]['ang']) % math.pi
+            d = min(d, math.pi - d)
+            if abs(d - math.pi / 2) < math.radians(25):
+                return True
+    return False
+
+
+def es_caja_compacta(grupo: List[Point], segs, lado_caja_max: float) -> bool:
+    if not segs or len(grupo) < 6:
+        return False
+    if _cluster_mayor_que_caja(grupo, lado_caja_max):
+        return False
     lados = [s['lon'] for s in segs]
-    if span_x > lado_caja_max * 1.25 or span_y > lado_caja_max * 1.25:
-        return False
-    if diag > lado_caja_max * 1.55:
-        return False
     return all(0.06 <= l <= lado_caja_max for l in lados)
 
 
@@ -237,6 +256,10 @@ def clasificar_cluster(grupo, segs, lado_caja_max: float,
         return PARED
     if _linea_costado_derecho(segs, lado_caja_max, cos_lateral_min):
         return PARED
+    if _cluster_mayor_que_caja(grupo, lado_caja_max):
+        # más grande que cualquier caja real (>~20 cm): si tiene dos lados
+        # en L es esquina, aunque cada lado sea más corto que min_long_pared
+        return ESQUINA if _esquina_por_perpendicularidad(segs) else RUIDO
     if es_caja_compacta(grupo, segs, lado_caja_max):
         return CAJA
     return RUIDO
