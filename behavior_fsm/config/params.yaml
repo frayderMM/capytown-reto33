@@ -1,61 +1,49 @@
-# Parametros Guardian v2 — CRUCERO / GIRO
+# Guardian v3 — CRUCERO / GIRO / RODEO
 #
-# Control:
-#   w = w_der * factor + w_front + w_izq
-#   factor: 1.0 cuando frente libre, baja a 0.0 en d_giro (evita que w_der pelee con w_front)
-#
-# Zonas frente:
-#   > 0.45m  → tracking pared derecha puro
-#   0.30-0.45m → tracking atenuado + correccion frontal gradual
-#   < 0.30m  → GIRO (w_der=0, solo giro izq)
-#   < 0.08m  → PARADA absoluta
-#
-# Zonas izquierda:
-#   > 0.15m  → sin repulsion
-#   < 0.15m  → repulsion proporcional
-#   < 0.08m  → PARADA absoluta
+# Flujo: CRUCERO → GIRO (gira izq) → RODEO (recto, w=0) → CRUCERO
+# El RODEO crea separacion del obstaculo antes de retomar tracking.
 
 behavior_fsm:
   ros__parameters:
 
-    # LiDAR
     lidar_front_deg:    180.0
     sector_frontal_deg:  30.0
     sector_lateral_lo:   60.0
     sector_lateral_hi:  120.0
 
     # Parada absoluta
-    d_stop_front:   0.14   # m  para si frente < 14 cm
-    d_stop_lateral: 0.06   # m  para si izq < 6 cm
+    d_stop_front:   0.14   # m  14 cm frente
+    d_stop_lateral: 0.06   # m  6 cm costado
 
-    # Umbrales de accion frontal
+    # Umbrales frontales
     d_giro:         0.30   # m  trigger GIRO
-    d_front_inicio: 0.40   # m  inicio correccion frontal (45cm causaba w_front en recuperacion)
+    d_front_inicio: 0.40   # m  inicio evasion frontal
 
-    # Control pared derecha
-    target_der: 0.13        # m  objetivo (rango ideal 10-16 cm)
-    Kder:       4.0         # ganancia
+    # Tracking pared derecha
+    # target_der 17cm: robot consistente a 17-20cm, 13cm generaba overcorreccion
+    # Kder 2.0: radio giro = v/w = 0.10/(2.0*0.04) = 1.25m (amplio, no espiral)
+    target_der: 0.17
+    Kder:       2.0
 
     # Repulsion pared izquierda
-    d_izq_min: 0.15         # m  inicio repulsion
+    d_izq_min: 0.15
     Kizq:      4.0
 
-    # Correccion frontal gradual
-    Kfront: 2.0             # antes 1.2, aumentado para superar w_der mas rapido
+    # Evasion frontal
+    Kfront: 2.0
 
     # Velocidad
-    vel_crucero:      0.10  # m/s
-    vel_giro_gradual: 0.50  # rad/s  giro en GIRO
-    max_w:            0.60  # rad/s  cap angular
+    vel_crucero:      0.10
+    vel_giro_gradual: 0.50
+    max_w:            0.60
 
     # Temporizacion
-    t_giro_min:      0.8    # s  reducido (antes 1.2s = 34deg, ahora 0.8s = 23deg)
-    t_giro_max:      4.0    # s
-    t_cooldown:      2.0    # s
-    t_recuperacion:  1.5    # s  suprime w_front tras GIRO
-
-    # Salida anticipada de GIRO por pared izquierda
-    d_izq_salida_giro: 0.20  # m  sale de GIRO si pared izq < 20 cm
+    t_giro_min:        0.8   # s  giro minimo (~23 deg)
+    t_giro_max:        4.0   # s  salvavidas
+    d_izq_salida_giro: 0.20  # m  sale de GIRO si izq < 20cm
+    t_rodeo:           1.0   # s  avance recto tras GIRO (10 cm separacion)
+    t_cooldown:        2.0   # s  cooldown post-RODEO
+    t_recuperacion:    1.5   # s  suprime w_front tras RODEO
 
 wall_follower:
   ros__parameters:

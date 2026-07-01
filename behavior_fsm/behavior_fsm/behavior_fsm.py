@@ -1,16 +1,20 @@
 #!/usr/bin/env python3
 """
-behavior_fsm.py  —  Guardian v2 con debug topics y live param tuning
+behavior_fsm.py  —  Guardian v3
 
-Topicos publicados para monitoreo:
-  /dist_frente  /dist_izq  /dist_der       (Float32, metros)
-  /dbg/w_front  /dbg/w_der  /dbg/w_izq  /dbg/w_total  (Float32, rad/s)
+Estados: CRUCERO → GIRO → RODEO → CRUCERO
 
-Parametros ajustables en caliente (sin reiniciar):
-  ros2 param set /behavior_fsm Kder 5.0
-  ros2 param set /behavior_fsm target_der 0.10
-  ros2 param set /behavior_fsm Kfront 1.5
-  ... (todos los parametros declarados)
+CRUCERO:  sigue pared derecha.
+          f >= d_front_ini → solo w_der (tracking pared)
+          f <  d_front_ini → solo w_front (evasion frontal, w_der=0)
+          f <= d_giro      → pasa a GIRO
+GIRO:     gira izquierda fijo.
+          Sale si: izq<d_izq_salida | frente despeja tras t_giro_min | max t_giro_max
+RODEO:    avanza RECTO (w=0) durante t_rodeo segundos.
+          Crea separacion fisica del obstaculo antes de retomar tracking.
+CRUCERO(recovery): durante t_recuperacion, solo w_der sin w_front.
+
+Topicos debug: /dist_frente /dist_izq /dist_der /dbg/w_front /dbg/w_der /dbg/w_izq /dbg/w_total
 """
 
 import math
@@ -27,6 +31,7 @@ from std_msgs.msg import Float32, String
 
 CRUCERO = 'CRUCERO'
 GIRO    = 'GIRO'
+RODEO   = 'RODEO'
 
 
 class BehaviorFSM(Node):
@@ -39,35 +44,34 @@ class BehaviorFSM(Node):
         self.declare_parameter('sector_lateral_lo',   60.0)
         self.declare_parameter('sector_lateral_hi',  120.0)
 
-        self.declare_parameter('d_stop_front',   0.14)  # 14 cm frente
-        self.declare_parameter('d_stop_lateral', 0.06)  # 6 cm costado
-        self.declare_parameter('d_giro',         0.22)
+        self.declare_parameter('d_stop_front',   0.14)
+        self.declare_parameter('d_stop_lateral', 0.06)
+        self.declare_parameter('d_giro',         0.30)
         self.declare_parameter('d_front_inicio', 0.40)
 
-        self.declare_parameter('target_der', 0.13)
-        self.declare_parameter('Kder',        4.0)
+        self.declare_parameter('target_der', 0.17)   # robot consistente a 17-20cm
+        self.declare_parameter('Kder',        2.0)   # suave: radio giro = 0.10/0.14 ≈ 70cm
         self.declare_parameter('d_izq_min',  0.15)
         self.declare_parameter('Kizq',        4.0)
-        self.declare_parameter('Kfront',      1.2)
+        self.declare_parameter('Kfront',      2.0)
 
         self.declare_parameter('vel_crucero',      0.10)
         self.declare_parameter('vel_giro_gradual', 0.50)
         self.declare_parameter('max_w',            0.60)
 
-        self.declare_parameter('t_giro_min', 0.8)
-        self.declare_parameter('t_giro_max', 4.0)
-        self.declare_parameter('t_cooldown', 2.0)
-        self.declare_parameter('t_recuperacion', 1.5)
-        self.declare_parameter('d_izq_salida_giro', 0.20)  # m  sale de GIRO si izq < esto
+        self.declare_parameter('t_giro_min',        0.8)
+        self.declare_parameter('t_giro_max',        4.0)
+        self.declare_parameter('d_izq_salida_giro', 0.20)
+        self.declare_parameter('t_rodeo',           1.0)   # recto tras GIRO
+        self.declare_parameter('t_cooldown',        2.0)
+        self.declare_parameter('t_recuperacion',    1.5)
 
         # ── Cargar ────────────────────────────────────────────────────────
-        self.front_rad    = math.radians(self.get_parameter('lidar_front_deg').value)
-        self.sector       = math.radians(self.get_parameter('sector_frontal_deg').value)
-        self.lat_lo       = math.radians(self.get_parameter('sector_lateral_lo').value)
-        self.lat_hi       = math.radians(self.get_parameter('sector_lateral_hi').value)
+        self.front_rad = math.radians(self.get_parameter('lidar_front_deg').value)
+        self.sector    = math.radians(self.get_parameter('sector_frontal_deg').value)
+        self.lat_lo    = math.radians(self.get_parameter('sector_lateral_lo').value)
+        self.lat_hi    = math.radians(self.get_parameter('sector_lateral_hi').value)
         self._reload_params()
-
-        # ── Live tuning callback ───────────────────────────────────────────
         self.add_on_set_parameters_callback(self._on_params)
 
         # ── Estado ────────────────────────────────────────────────────────
@@ -87,7 +91,6 @@ class BehaviorFSM(Node):
         self.pub_cmd    = self.create_publisher(Twist,  '/cmd_vel',   10)
         self.pub_estado = self.create_publisher(String, '/fsm_state', 10)
 
-        # Debug publishers
         self.pub_df  = self.create_publisher(Float32, '/dist_frente',  10)
         self.pub_dl  = self.create_publisher(Float32, '/dist_izq',     10)
         self.pub_dr  = self.create_publisher(Float32, '/dist_der',     10)
@@ -96,39 +99,38 @@ class BehaviorFSM(Node):
         self.pub_wi  = self.create_publisher(Float32, '/dbg/w_izq',    10)
         self.pub_wt  = self.create_publisher(Float32, '/dbg/w_total',  10)
 
-        self.create_timer(0.05, self.loop_control)  # 20 Hz
+        self.create_timer(0.05, self.loop_control)
 
         self.get_logger().info(
-            f'Guardian v2  stop_f<{self.d_stop_front}m  giro<{self.d_giro}m'
-            f'  front_ini={self.d_front_ini}m  target_der={self.target_der}m')
+            f'Guardian v3  giro<{self.d_giro}m  front_ini={self.d_front_ini}m'
+            f'  target_der={self.target_der}m  Kder={self.Kder}'
+            f'  t_rodeo={self.t_rodeo}s')
 
-    # ── Reload params (llamado al init y en cada set_parameters) ──────────
     def _reload_params(self):
-        self.d_stop_front = self.get_parameter('d_stop_front').value
-        self.d_stop_lat   = self.get_parameter('d_stop_lateral').value
-        self.d_giro       = self.get_parameter('d_giro').value
-        self.d_front_ini  = self.get_parameter('d_front_inicio').value
-        self.target_der   = self.get_parameter('target_der').value
-        self.Kder         = self.get_parameter('Kder').value
-        self.d_izq_min    = self.get_parameter('d_izq_min').value
-        self.Kizq         = self.get_parameter('Kizq').value
-        self.Kfront       = self.get_parameter('Kfront').value
-        self.v_cruise     = self.get_parameter('vel_crucero').value
-        self.w_giro       = self.get_parameter('vel_giro_gradual').value
-        self.max_w        = self.get_parameter('max_w').value
+        self.d_stop_front      = self.get_parameter('d_stop_front').value
+        self.d_stop_lat        = self.get_parameter('d_stop_lateral').value
+        self.d_giro            = self.get_parameter('d_giro').value
+        self.d_front_ini       = self.get_parameter('d_front_inicio').value
+        self.target_der        = self.get_parameter('target_der').value
+        self.Kder              = self.get_parameter('Kder').value
+        self.d_izq_min         = self.get_parameter('d_izq_min').value
+        self.Kizq              = self.get_parameter('Kizq').value
+        self.Kfront            = self.get_parameter('Kfront').value
+        self.v_cruise          = self.get_parameter('vel_crucero').value
+        self.w_giro            = self.get_parameter('vel_giro_gradual').value
+        self.max_w             = self.get_parameter('max_w').value
         self.t_giro_min        = self.get_parameter('t_giro_min').value
         self.t_giro_max        = self.get_parameter('t_giro_max').value
+        self.d_izq_salida_giro = self.get_parameter('d_izq_salida_giro').value
+        self.t_rodeo           = self.get_parameter('t_rodeo').value
         self.t_cooldown        = self.get_parameter('t_cooldown').value
         self.t_recuperacion    = self.get_parameter('t_recuperacion').value
-        self.d_izq_salida_giro = self.get_parameter('d_izq_salida_giro').value
 
     def _on_params(self, params):
         self._reload_params()
-        names = [p.name for p in params]
-        self.get_logger().info(f'Params actualizados: {names}')
+        self.get_logger().info(f'Params: {[p.name for p in params]}')
         return SetParametersResult(successful=True)
 
-    # ── Scan ──────────────────────────────────────────────────────────────
     def cb_scan(self, msg: LaserScan):
         d_f = d_l = d_r = float('inf')
         for i, r in enumerate(msg.ranges):
@@ -149,7 +151,6 @@ class BehaviorFSM(Node):
         self.dist_izq    = d_l
         self.dist_der    = d_r
 
-    # ── Helpers ───────────────────────────────────────────────────────────
     def _pub(self, v: float, w: float):
         cmd = Twist()
         cmd.linear.x  = float(v)
@@ -158,7 +159,7 @@ class BehaviorFSM(Node):
         s = String(); s.data = self.estado
         self.pub_estado.publish(s)
 
-    def _pub_dbg(self, w_front, w_der, w_izq, w_total):
+    def _pub_dbg(self, wf, wd, wi, wt):
         def f32(x):
             m = Float32()
             m.data = float(x) if math.isfinite(x) else -999.0
@@ -166,10 +167,10 @@ class BehaviorFSM(Node):
         self.pub_df.publish(f32(self.dist_frente))
         self.pub_dl.publish(f32(self.dist_izq))
         self.pub_dr.publish(f32(self.dist_der))
-        self.pub_wf.publish(f32(w_front))
-        self.pub_wd.publish(f32(w_der))
-        self.pub_wi.publish(f32(w_izq))
-        self.pub_wt.publish(f32(w_total))
+        self.pub_wf.publish(f32(wf))
+        self.pub_wd.publish(f32(wd))
+        self.pub_wi.publish(f32(wi))
+        self.pub_wt.publish(f32(wt))
 
     def _t_estado(self) -> float:
         return (self.get_clock().now() - self.t_inicio).nanoseconds * 1e-9
@@ -177,16 +178,16 @@ class BehaviorFSM(Node):
     def _cambiar(self, nuevo: str):
         self.get_logger().info(
             f'{self.estado}→{nuevo}  '
-            f'f={self.dist_frente:.3f}  l={self.dist_izq:.3f}  r={self.dist_der:.3f}')
-        if self.estado == GIRO and nuevo == CRUCERO:
+            f'f={self.dist_frente:.2f}  l={self.dist_izq:.2f}  r={self.dist_der:.2f}')
+        # Marca cooldown al salir de GIRO o RODEO hacia CRUCERO
+        if self.estado in (GIRO, RODEO) and nuevo == CRUCERO:
             self.t_ultimo_giro = self.get_clock().now().nanoseconds * 1e-9
         self.estado   = nuevo
         self.t_inicio = self.get_clock().now()
 
-    # ── FSM ───────────────────────────────────────────────────────────────
     def loop_control(self):
 
-        # PRIORIDAD 1: crash zone
+        # ── PRIORIDAD 1: STOP absoluto ────────────────────────────────────
         if self.dist_frente < self.d_stop_front:
             self._pub(0.0, 0.0)
             self._pub_dbg(0, 0, 0, 0)
@@ -200,36 +201,34 @@ class BehaviorFSM(Node):
                 f'PARA izq={self.dist_izq:.3f}m', throttle_duration_sec=0.4)
             return
 
-        # CRUCERO
+        # ── CRUCERO ───────────────────────────────────────────────────────
         if self.estado == CRUCERO:
             ahora = self.get_clock().now().nanoseconds * 1e-9
-            t_post_giro = ahora - self.t_ultimo_giro
-            cooldown_ok = t_post_giro >= self.t_cooldown
+            t_post = ahora - self.t_ultimo_giro
+            cooldown_ok = t_post >= self.t_cooldown
 
             if cooldown_ok and self.dist_frente <= self.d_giro:
                 self._cambiar(GIRO)
                 self._pub_dbg(0, 0, 0, 0)
                 return
 
-            recuperando = t_post_giro < self.t_recuperacion
-
-            # Sistema de prioridad exclusivo (sin competencia):
-            #   recuperando        → solo w_der (alinear con pared der post-GIRO)
-            #   f < d_front_ini   → solo w_front (evasion frontal pura, w_der=0)
-            #   f >= d_front_ini  → solo w_der   (tracking pared derecha normal)
-            # Esto elimina la orbita estable donde w_front y w_der se cancelan.
+            recuperando = t_post < self.t_recuperacion
             w_front = 0.0
             w_der   = 0.0
+
             if recuperando:
+                # Solo tracking pared derecha — permite alinearse tras RODEO
                 if math.isfinite(self.dist_der):
                     w_der = -self.Kder * (self.dist_der - self.target_der)
             elif self.dist_frente < self.d_front_ini:
+                # Evasion frontal pura — sin competencia con w_der
                 w_front = self.Kfront * (self.d_front_ini - self.dist_frente)
             else:
+                # Tracking normal pared derecha
                 if math.isfinite(self.dist_der):
                     w_der = -self.Kder * (self.dist_der - self.target_der)
 
-            # Repulsion pared izquierda
+            # Repulsion izquierda (siempre activa)
             w_izq = 0.0
             if math.isfinite(self.dist_izq) and self.dist_izq < self.d_izq_min:
                 w_izq = -self.Kizq * (self.d_izq_min - self.dist_izq)
@@ -238,25 +237,28 @@ class BehaviorFSM(Node):
             self._pub_dbg(w_front, w_der, w_izq, w)
             self._pub(self.v_cruise, w)
 
-        # GIRO
+        # ── GIRO ──────────────────────────────────────────────────────────
         elif self.estado == GIRO:
-            # Salida 1: salvavidas tiempo
             if self._t_estado() > self.t_giro_max:
-                self._cambiar(CRUCERO)
+                self._cambiar(RODEO)
                 return
-            # Salida 2: pared izq demasiado cerca → para de girar antes de chocar
             if math.isfinite(self.dist_izq) and self.dist_izq < self.d_izq_salida_giro:
-                self.get_logger().warn(
-                    f'GIRO→CRUCERO por pared izq={self.dist_izq:.2f}m',
-                    throttle_duration_sec=0.3)
-                self._cambiar(CRUCERO)
+                self.get_logger().warn(f'GIRO→RODEO izq={self.dist_izq:.2f}m')
+                self._cambiar(RODEO)
                 return
-            # Salida 3: frente despejado tras t_giro_min
             if self._t_estado() >= self.t_giro_min and self.dist_frente > self.d_giro:
-                self._cambiar(CRUCERO)
+                self._cambiar(RODEO)
                 return
             self._pub_dbg(self.w_giro, 0, 0, self.w_giro)
             self._pub(self.v_cruise, self.w_giro)
+
+        # ── RODEO: avance recto para separarse del obstaculo ──────────────
+        elif self.estado == RODEO:
+            if self._t_estado() >= self.t_rodeo:
+                self._cambiar(CRUCERO)
+                return
+            self._pub_dbg(0, 0, 0, 0)
+            self._pub(self.v_cruise, 0.0)   # w=0: absolutamente recto
 
 
 def main(args=None):
