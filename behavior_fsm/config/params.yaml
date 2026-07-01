@@ -34,8 +34,8 @@ behavior_fsm:
                                  # (bajado de 0.45: zona de frenado mas angosta,
                                  # asi pasa mas tiempo a velocidad crucero completa)
     dist_obstaculo:      0.30    # m  giro a maxima intensidad
-    dist_emergencia:    0.06    # m  margen real minimo antes del stop total
-                                 # (subido 1cm: reacciona un poco antes)
+    dist_emergencia:    0.09    # m  margen real minimo antes del stop total
+                                 # (mas margen: los umbrales anteriores dejaban rozar)
 
     # --- Velocidades ---
     vel_crucero:  0.22     # m/s  velocidad en zona libre (subida de 0.18)
@@ -49,6 +49,8 @@ behavior_fsm:
     salto_cluster:           0.15  # m  salto de rango que separa un cluster de otro
     ancho_max_caja:          0.35  # m  bajo esto es caja (evade); sobre esto es esquina
                                     # real del circuito (gira fijo a la izquierda)
+    t_esquina_min:           0.4   # s  compromiso minimo girando la esquina real antes
+                                    # de reevaluar (evita oscilar/dar vueltas de mas)
 
 wall_follower:
   ros__parameters:

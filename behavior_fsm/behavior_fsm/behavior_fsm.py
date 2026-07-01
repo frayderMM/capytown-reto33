@@ -63,8 +63,9 @@ class BehaviorFSM(Node):
         # --- Distancias de reaccion (ya en espacio libre real, post-offset) ---
         self.declare_parameter('dist_alerta',     0.38)  # m  empieza a frenar y a anticipar el giro
         self.declare_parameter('dist_obstaculo',  0.30)  # m  giro a maxima intensidad
-        self.declare_parameter('dist_emergencia', 0.06)  # m  margen real minimo antes del stop total
-                                                           # (subido 1cm: reacciona un poco antes)
+        self.declare_parameter('dist_emergencia', 0.09)  # m  margen real minimo antes del stop total
+                                                           # (mas margen: los umbrales anteriores
+                                                           # dejaban rozar el obstaculo)
 
         # --- Velocidades ---
         self.declare_parameter('vel_crucero', 0.22)
@@ -81,6 +82,10 @@ class BehaviorFSM(Node):
                                                                   # una pared/esquina real (gira
                                                                   # fijo a la izquierda, mismo
                                                                   # sentido que sigue el circuito)
+        self.declare_parameter('t_esquina_min', 0.4)  # s  compromiso minimo girando a la
+                                                        # izquierda en una esquina real antes
+                                                        # de reevaluar -- evita oscilar/dar
+                                                        # vueltas de mas en la esquina
 
         self.front_rad = math.radians(self.get_parameter('lidar_front_deg').value)
         self.sector    = math.radians(self.get_parameter('sector_frontal_deg').value)
@@ -103,6 +108,7 @@ class BehaviorFSM(Node):
         self.cono_clas     = math.radians(self.get_parameter('cono_clasificacion_deg').value)
         self.salto_cluster = self.get_parameter('salto_cluster').value
         self.ancho_max_caja = self.get_parameter('ancho_max_caja').value
+        self.t_esquina_min = self.get_parameter('t_esquina_min').value
 
         # ── Sensores ──────────────────────────────────────────────────────
         self.dist_frente = float('inf')  # cono ancho frontal
@@ -123,6 +129,8 @@ class BehaviorFSM(Node):
         self.create_timer(0.1, self.loop_control)
 
         self._en_evasion = False  # para publicar /parada_dist solo al entrar a la zona de evasion
+        self._en_esquina = False  # compromiso minimo en una esquina real (evita oscilar)
+        self._t_esquina_inicio = self.get_clock().now()
 
         self.get_logger().info('BehaviorFSM listo — evasion omnidireccional continua')
 
@@ -264,8 +272,22 @@ class BehaviorFSM(Node):
         if c_frente < self.d_alerta:
             ratio = max(0.0, min(1.0, (self.d_alerta - c_frente) / (self.d_alerta - self.d_obst)))
 
-            es_esquina = (self.ancho_obstruccion is None
-                          or self.ancho_obstruccion >= self.ancho_max_caja)
+            es_esquina_ahora = (self.ancho_obstruccion is None
+                                 or self.ancho_obstruccion >= self.ancho_max_caja)
+            t_en_esquina = (self.get_clock().now() - self._t_esquina_inicio).nanoseconds * 1e-9
+
+            if self._en_esquina and t_en_esquina < self.t_esquina_min:
+                # Compromiso minimo: ya se empezo a girar la esquina real,
+                # no reevaluar lado a lado hasta completar el giro -- evita
+                # que un vistazo momentaneo a espacio libre a mitad de giro
+                # lo saque y lo vuelva a meter, dando vueltas de mas.
+                es_esquina = True
+            else:
+                es_esquina = es_esquina_ahora
+                if es_esquina and not self._en_esquina:
+                    self._t_esquina_inicio = self.get_clock().now()
+                self._en_esquina = es_esquina
+
             if es_esquina:
                 lado = 1.0  # izquierda fija, sigue el sentido del circuito
                 estado = 'ESQUINA'
@@ -285,6 +307,7 @@ class BehaviorFSM(Node):
             # Frente libre, sin obstaculo que evadir: seguir la pared
             # derecha para recorrer el circuito.
             self._en_evasion = False
+            self._en_esquina = False
             w = self._w_lateral
 
         self.get_logger().info(
