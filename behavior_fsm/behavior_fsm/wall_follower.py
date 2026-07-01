@@ -52,6 +52,11 @@ class WallFollower(Node):
         self.declare_parameter('salto_dist',     0.35)   # m  – salto euclidiano para cortar grupo
         self.declare_parameter('salto_idx',      5)      # N  – huecos de indice para cortar grupo
         self.declare_parameter('max_correccion', 0.40)   # rad/s – saturacion de la salida
+        self.declare_parameter('max_delta_w',    0.12)   # rad/s por ciclo – limita cuanto
+                                                           # puede cambiar w de un ciclo a otro
+                                                           # (evita el salto de -max a +max
+                                                           # cuando la referencia de pared
+                                                           # cambia bruscamente)
         self.declare_parameter('cos_lateral_min', 0.55)  # coseno minimo con eje x para "pared lateral"
         self.declare_parameter('remove_min_deg', float('nan'))  # zona angular ignorada (inicio)
         self.declare_parameter('remove_max_deg', float('nan'))  # zona angular ignorada (fin)
@@ -67,6 +72,7 @@ class WallFollower(Node):
         self._s_dist   = self.get_parameter('salto_dist').value
         self._s_idx    = int(self.get_parameter('salto_idx').value)
         self._max_w    = self.get_parameter('max_correccion').value
+        self._max_dw   = self.get_parameter('max_delta_w').value
         self._cos_lat  = self.get_parameter('cos_lateral_min').value
 
         rm_min = self.get_parameter('remove_min_deg').value
@@ -77,6 +83,7 @@ class WallFollower(Node):
         # ── Estado PD ─────────────────────────────────────────────────────
         self._err_prev = 0.0
         self._t_prev   = self.get_clock().now()
+        self._w_prev   = 0.0  # para el limitador de tasa de cambio
 
         # ── ROS I/O ───────────────────────────────────────────────────────
         _qos_scan = QoSProfile(depth=10)
@@ -257,6 +264,7 @@ class WallFollower(Node):
             out = Float32(); out.data = 0.0
             self._pub.publish(out)
             self._err_prev = 0.0   # resetear derivada para evitar spike al reaparecer
+            self._w_prev   = 0.0   # tambien resetea el limitador de tasa de cambio
             self.get_logger().info(
                 'sin referencia lateral (ninguna pared >= min_long_pared)',
                 throttle_duration_sec=1.0)
@@ -268,6 +276,13 @@ class WallFollower(Node):
         d_err = (error - self._err_prev) / dt
         w   = self._Kp * error + self._Kd * d_err
         w   = max(-self._max_w, min(self._max_w, w))
+
+        # Limitador de tasa de cambio: evita el salto de -max a +max de un
+        # ciclo a otro cuando la referencia de pared cambia bruscamente
+        # (ej. cambia de "ref=izq" a "ref=der", o el segmento detectado
+        # salta) -- ese salto instantaneo es lo que produce giros erraticos.
+        w = max(self._w_prev - self._max_dw, min(self._w_prev + self._max_dw, w))
+        self._w_prev = w
 
         self._err_prev = error
         self._t_prev   = now

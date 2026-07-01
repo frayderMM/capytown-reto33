@@ -60,6 +60,8 @@ wall_follower:
     Kp:             0.80        # ganancia proporcional
     Kd:             0.10        # ganancia derivativa
     max_correccion: 0.40        # rad/s  saturación de salida
+    max_delta_w:    0.12        # rad/s por ciclo  limita el cambio de w entre ciclos
+                                 # (evita el salto de -max a +max de golpe)
 
     # --- Clasificación de segmentos ---
     min_long_pared: 0.35        # m  longitud mínima para considerar un segmento pared
