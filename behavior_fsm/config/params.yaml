@@ -1,7 +1,8 @@
 # Guardian v4 — CRUCERO / GIRO / RODEO
 #
-# Flujo: CRUCERO → GIRO (elige lado por RANSAC izq/der) → RODEO (recto,
-# sale por sensor cuando el frente despeja) → CRUCERO.
+# Flujo: CRUCERO → GIRO (elige lado por RANSAC izq/der; distingue caja de
+# esquina real por la confianza RANSAC) → CRUCERO directo si fue esquina,
+# o RODEO (recto, sale por sensor) → CRUCERO si fue caja.
 # dist_izq / dist_der ya NO se calculan aqui: los publica wall_follower
 # (RANSAC sobre las paredes laterales) en /dist_izq y /dist_der.
 
@@ -59,6 +60,13 @@ behavior_fsm:
                               # cuanto se puede ir en diagonal antes de volver a CRUCERO
     t_cooldown:         2.0   # s  cooldown post-RODEO
     t_recuperacion:     1.5   # s  suprime w_front tras RODEO
+
+    # Caja vs esquina real (pistas tipo circuito con esquinas de 90°, no
+    # solo el jiron recto con cajas). Una caja no baja la confianza RANSAC
+    # de ninguna pared (se descarta como outlier a proposito); una esquina
+    # de 90° si, porque la pared deja de ser recta justo donde se ajusta.
+    conf_esquina_umbral: 0.25  # confianza minima para considerar "pared recta de nuevo"
+    t_giro_esquina_max:  3.0   # s  salvavidas del giro de esquina (mas largo que una caja)
 
 # wall_follower — paredes laterales por RANSAC (reemplaza Split-and-Merge).
 # Publica /dist_izq y /dist_der; behavior_fsm los consume, no los recalcula.

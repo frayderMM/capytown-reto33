@@ -19,9 +19,19 @@ CRUCERO:  sigue pared derecha.
           f <= d_giro      → pasa a GIRO, eligiendo lado y guardando el
                              ancho de jiron disponible en ese instante.
 GIRO:     gira hacia el lado con MAS espacio (compara dist_izq vs dist_der
-          al momento de entrar), con magnitud proporcional a que tan cerca
-          esta el obstaculo (mas cerca → giro mas cerrado).
-          Sale si: izq<d_izq_salida | frente despeja tras t_giro_min | max t_giro_max
+          al momento de entrar). Distingue caja de esquina real con la
+          confianza RANSAC de las paredes (conf_izq/conf_der): una caja no
+          la afecta (se descarta como outlier), una esquina de 90° si (la
+          pared deja de ser recta justo donde se ajusta).
+            - Caja:    magnitud proporcional a la urgencia (mas cerca →
+                       giro mas cerrado); sale cuando el frente despeja →
+                       pasa a RODEO (crea separacion, recto).
+            - Esquina: giro fuerte y sostenido (max_w); sale solo cuando el
+                       frente despeja Y se re-adquiere la pared derecha
+                       (conf_der recuperada) → pasa directo a CRUCERO, sin
+                       RODEO (no hay nada de que "separarse").
+          Salvavidas de tiempo/proximidad (t_giro_max/t_giro_esquina_max,
+          d_lado_salida_giro) siempre pasan por RODEO, sea caja o esquina.
 RODEO:    avanza RECTO (w=0) hasta que el frente vuelve a despejarse
           (sensor, no temporizador), con un minimo y un maximo de seguridad.
 CRUCERO(recovery): durante t_recuperacion, solo w_der sin w_front.
@@ -87,6 +97,15 @@ class BehaviorFSM(Node):
         self.declare_parameter('t_cooldown',        2.0)
         self.declare_parameter('t_recuperacion',    1.5)
 
+        # Distincion caja vs esquina real. Una caja NUNCA baja la confianza
+        # RANSAC de las paredes (se descarta como outlier a proposito); una
+        # esquina de 90° si, porque la pared deja de ser recta justo donde
+        # se ajusta la recta. Si cualquiera de las dos confianzas cae por
+        # debajo del umbral al disparar GIRO, se trata como esquina: giro
+        # mas fuerte y sostenido, sin el RODEO recto (pensado para cajas).
+        self.declare_parameter('conf_esquina_umbral', 0.25)
+        self.declare_parameter('t_giro_esquina_max',  3.0)   # s  salvavidas del giro de esquina
+
         # ── Cargar ────────────────────────────────────────────────────────
         self.front_rad = math.radians(self.get_parameter('lidar_front_deg').value)
         self.sector    = math.radians(self.get_parameter('sector_frontal_deg').value)
@@ -100,6 +119,7 @@ class BehaviorFSM(Node):
         self.t_ultimo_giro = -float('inf')
         self.dir_giro      = 1.0   # +1 = izquierda (w>0), -1 = derecha (w<0)
         self.w_giro_efectivo = 0.0  # magnitud del giro, congelada al entrar a GIRO
+        self.es_esquina    = False  # True = esquina real (girar sostenido), False = caja (giro corto + RODEO)
 
         # ── PD tracking pared derecha ────────────────────────────────────
         self._err_der_prev = 0.0
@@ -117,6 +137,11 @@ class BehaviorFSM(Node):
         self.dist_der    = float('inf')
         self.dist_izq_raw = float('inf')
         self.dist_der_raw = float('inf')
+        # Confianza RANSAC de cada pared (ratio de inliers): 0 = fallback/sin
+        # pared. Se usa para distinguir caja (no la afecta) de esquina real
+        # (la baja, porque la pared deja de ser recta ahi mismo).
+        self.conf_izq = 0.0
+        self.conf_der = 0.0
 
         # ── ROS I/O ───────────────────────────────────────────────────────
         _qos = QoSProfile(depth=10)
@@ -124,6 +149,8 @@ class BehaviorFSM(Node):
         self.create_subscription(LaserScan, '/scan', self.cb_scan, _qos)
         self.create_subscription(Float32, '/dist_izq', self._cb_dist_izq, _qos)
         self.create_subscription(Float32, '/dist_der', self._cb_dist_der, _qos)
+        self.create_subscription(Float32, '/dbg/confianza_izq', self._cb_conf_izq, _qos)
+        self.create_subscription(Float32, '/dbg/confianza_der', self._cb_conf_der, _qos)
         self.pub_cmd    = self.create_publisher(Twist,  '/cmd_vel',   10)
         self.pub_estado = self.create_publisher(String, '/fsm_state', 10)
 
@@ -168,6 +195,8 @@ class BehaviorFSM(Node):
         self.t_rodeo_max       = self.get_parameter('t_rodeo_max').value
         self.t_cooldown        = self.get_parameter('t_cooldown').value
         self.t_recuperacion    = self.get_parameter('t_recuperacion').value
+        self.conf_esquina_umbral = self.get_parameter('conf_esquina_umbral').value
+        self.t_giro_esquina_max  = self.get_parameter('t_giro_esquina_max').value
 
     def _on_params(self, params):
         self._reload_params()
@@ -203,6 +232,12 @@ class BehaviorFSM(Node):
 
     def _cb_dist_der(self, msg: Float32):
         self.dist_der = msg.data
+
+    def _cb_conf_izq(self, msg: Float32):
+        self.conf_izq = msg.data
+
+    def _cb_conf_der(self, msg: Float32):
+        self.conf_der = msg.data
 
     def _pub(self, v: float, w: float):
         cmd = Twist()
@@ -299,19 +334,33 @@ class BehaviorFSM(Node):
                     self.dir_giro = -1.0
                 else:
                     self.dir_giro = 1.0
-                # Magnitud del giro: se calcula UNA vez aqui, con las
-                # lecturas de este instante, y queda fija durante todo el
-                # GIRO. Recalcularla en cada ciclo con dist_frente en vivo
-                # (como antes) la hacia erratica: dist_frente cambia rapido
-                # y de forma poco representativa mientras el robot rota,
-                # asi que el giro salia a veces corto, a veces excesivo.
-                urgencia = max(0.0, self.d_giro - self.dist_frente) / max(self.d_giro, 1e-6)
-                self.w_giro_efectivo = max(-self.max_w, min(self.max_w,
-                    self.dir_giro * self.w_giro * (1.0 + self.k_urgencia_giro * urgencia)))
+
+                # Caja vs esquina real: una caja no baja la confianza RANSAC
+                # de ninguna pared (se descarta como outlier); una esquina
+                # de 90° si, porque la pared deja de ser recta justo donde
+                # se ajusta la recta.
+                self.es_esquina = (self.conf_izq < self.conf_esquina_umbral
+                                   or self.conf_der < self.conf_esquina_umbral)
+
+                if self.es_esquina:
+                    # Esquina: giro fuerte y sostenido (no el calculo suave
+                    # pensado para rodear una caja de 20cm).
+                    self.w_giro_efectivo = self.dir_giro * self.max_w
+                else:
+                    # Caja: magnitud proporcional a la urgencia, calculada
+                    # UNA vez aqui (no en cada ciclo de GIRO, que la hacia
+                    # erratica porque dist_frente cambia rapido y de forma
+                    # poco representativa mientras el robot rota).
+                    urgencia = max(0.0, self.d_giro - self.dist_frente) / max(self.d_giro, 1e-6)
+                    self.w_giro_efectivo = max(-self.max_w, min(self.max_w,
+                        self.dir_giro * self.w_giro * (1.0 + self.k_urgencia_giro * urgencia)))
+
                 self._cambiar(GIRO)
                 self.get_logger().info(
-                    f'GIRO dir={"izq" if self.dir_giro > 0 else "der"}'
-                    f'  izq={self.dist_izq:.2f}  der={self.dist_der:.2f}'
+                    f'GIRO {"ESQUINA" if self.es_esquina else "caja"}'
+                    f'  dir={"izq" if self.dir_giro > 0 else "der"}'
+                    f'  izq={self.dist_izq:.2f} (conf={self.conf_izq:.2f})'
+                    f'  der={self.dist_der:.2f} (conf={self.conf_der:.2f})'
                     f'  w_giro={self.w_giro_efectivo:.2f}')
                 self._pub_dbg(0, 0, 0, 0)
                 return
@@ -346,8 +395,11 @@ class BehaviorFSM(Node):
             # d_lado: distancia del lado HACIA EL QUE SE GIRA (criterio de
             # salida por acercamiento excesivo a esa pared).
             d_lado = self.dist_izq if self.dir_giro > 0 else self.dist_der
+            t_max_este_giro = self.t_giro_esquina_max if self.es_esquina else self.t_giro_max
 
-            if self._t_estado() > self.t_giro_max:
+            # Salvavidas de tiempo/proximidad: siempre pasan por RODEO
+            # (crean separacion) sea caja o esquina.
+            if self._t_estado() > t_max_este_giro:
                 self._cambiar(RODEO)
                 return
             if math.isfinite(d_lado) and d_lado < self.d_lado_salida_giro:
@@ -355,9 +407,23 @@ class BehaviorFSM(Node):
                     f'GIRO→RODEO lado={"izq" if self.dir_giro > 0 else "der"}={d_lado:.2f}m')
                 self._cambiar(RODEO)
                 return
+
             if self._t_estado() >= self.t_giro_min and self.dist_frente > self.d_giro:
-                self._cambiar(RODEO)
-                return
+                if self.es_esquina:
+                    # Esquina: no basta con que el frente despeje - hay que
+                    # haber re-adquirido la pared derecha (recta otra vez).
+                    # Si no, seguimos girando: pudo ser solo que el LiDAR
+                    # dejo de ver la pared un instante mientras rota, no que
+                    # ya se completo el giro. Al completar, se salta RODEO
+                    # (su avance recto ciego no tiene sentido en una
+                    # esquina: ya estamos alineados, hay que seguir
+                    # cruceando, no separarse de nada).
+                    if self.conf_der >= self.conf_esquina_umbral:
+                        self._cambiar(CRUCERO)
+                        return
+                else:
+                    self._cambiar(RODEO)
+                    return
 
             # Magnitud congelada al entrar a GIRO (ver comentario en CRUCERO).
             # v_maniobra (mas lenta que crucero): menos distancia recorrida
