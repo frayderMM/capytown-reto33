@@ -30,9 +30,10 @@ behavior_fsm:
     offset_lados:  0.08          # m  LiDAR -> borde lateral
 
     # --- Distancias de reaccion (en espacio libre real, post-offset) ---
-    dist_alerta:        0.38    # m  empieza a frenar y a anticipar el giro
-                                 # (bajado de 0.45: zona de frenado mas angosta,
-                                 # asi pasa mas tiempo a velocidad crucero completa)
+    dist_alerta:        0.33    # m  empieza a frenar y a anticipar el giro
+                                 # (cerca de dist_obstaculo: sigue pegado a la
+                                 # derecha mas tiempo, decide el giro solo cuando
+                                 # el obstaculo ya esta cerca, no mucho antes)
     dist_obstaculo:      0.30    # m  giro a maxima intensidad
     dist_emergencia:    0.04    # m  margen real minimo antes del stop total
 
