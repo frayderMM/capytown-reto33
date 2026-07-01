@@ -1,21 +1,26 @@
 #!/usr/bin/env python3
 """
-behavior_fsm.py  —  Guardian v5
+behavior_fsm.py  —  Guardian v6
 
 Estados: CRUCERO → AVISO → GIRO → CRUCERO
+
+Convencion de control: angular.z > 0 gira IZQUIERDA (CCW), < 0 gira
+DERECHA (CW).
 
 dist_frente y dist_izq_raw/dist_der_raw (minimo crudo, sin filtrar) se
 miden localmente sobre /scan: son la base del STOP de seguridad y deben
 ver CUALQUIER objeto cercano. dist_izq / dist_der llegan del nodo
-wall_follower (RANSAC sobre las paredes laterales, via /dist_izq y
-/dist_der) y se usan solo para el tracking de crucero y la eleccion de
-lado en GIRO.
+wall_follower (RANSAC sobre las paredes laterales, usando practicamente
+todo el barrido del LiDAR para ambos lados) y se usan para el tracking
+de crucero y la eleccion de lado en GIRO.
 
-CRUCERO:  sigue pared derecha.
-          f >= d_front_ini → solo w_der (tracking pared)
-          f <  d_front_ini → solo w_front (evasion frontal, w_der=0)
+CRUCERO:  sigue la pared IZQUIERDA (cambio de diseño: antes derecha).
+          f >= d_front_ini → solo w_izq (tracking pared izquierda)
+          f <  d_front_ini → solo w_front (evasion frontal, w_izq=0)
           f <= d_giro      → pasa a AVISO, eligiendo ya el lado hacia el
                              que va a girar (el que tenga mas espacio).
+          Repulsion de la pared DERECHA (antes izquierda) siempre activa
+          como respaldo, para no pegarse al otro lado del jiron.
 AVISO:    se detiene por completo (v=0, w=0) durante t_aviso segundos y
           anuncia "CAJA" (log + intento de /beep). Le da tiempo al equipo
           de ver/oir que detecto algo antes de moverse.
@@ -24,8 +29,8 @@ GIRO:     avanza girando (v_maniobra + w fijo hacia el lado elegido)
           el sensor frontal durante esa ventana — asi no se re-dispara
           AVISO por seguir viendo la caja/pared de cerca mientras gira
           alrededor de ella. Al terminar, vuelve a CRUCERO (recalibra
-          contra la pared derecha).
-CRUCERO(recovery): durante t_recuperacion tras salir de GIRO, solo w_der
+          contra la pared izquierda).
+CRUCERO(recovery): durante t_recuperacion tras salir de GIRO, solo w_izq
           sin w_front, para recalibrarse contra la pared sin que la
           evasion frontal compita.
 
@@ -70,11 +75,20 @@ class BehaviorFSM(Node):
         self.declare_parameter('d_giro',         0.30)
         self.declare_parameter('d_front_inicio', 0.40)
 
-        self.declare_parameter('target_der', 0.17)   # robot consistente a 17-20cm
-        self.declare_parameter('Kder',        2.6)   # ganancia proporcional
-        self.declare_parameter('Kd_der',      0.3)   # derivativo: amortigua overshoot
-        self.declare_parameter('d_izq_min',  0.15)
-        self.declare_parameter('Kizq',        4.0)
+        # Tracking pared IZQUIERDA (antes derecha). error = dist_izq -
+        # target_izq; w = +K*error (lejos de la pared izq → gira izq, w>0,
+        # para acercarse). Mismo signo invertido respecto al viejo diseño
+        # de pared derecha (w = -K*error).
+        self.declare_parameter('target_izq', 0.17)   # robot consistente a 17-20cm
+        self.declare_parameter('Kizq',        2.6)   # ganancia proporcional
+        self.declare_parameter('Kd_izq',      0.3)   # derivativo: amortigua overshoot
+
+        # Repulsion de la pared DERECHA (antes izquierda, como respaldo).
+        # Si dist_der < d_der_min → w = +Krep*(d_der_min-dist_der) (aleja
+        # de la derecha, gira izq, w>0).
+        self.declare_parameter('d_der_min', 0.15)
+        self.declare_parameter('Kder',       4.0)
+
         self.declare_parameter('Kfront',      2.0)
 
         self.declare_parameter('vel_crucero',      0.10)
@@ -100,9 +114,9 @@ class BehaviorFSM(Node):
         self.t_ultimo_giro = -float('inf')
         self.dir_giro      = 1.0   # +1 = izquierda (w>0), -1 = derecha (w<0)
 
-        # ── PD tracking pared derecha ────────────────────────────────────
-        self._err_der_prev = 0.0
-        self._t_der_prev   = self.get_clock().now()
+        # ── PD tracking pared izquierda ──────────────────────────────────
+        self._err_izq_prev = 0.0
+        self._t_izq_prev   = self.get_clock().now()
 
         # ── Sensores ──────────────────────────────────────────────────────
         self.dist_frente = float('inf')
@@ -145,29 +159,30 @@ class BehaviorFSM(Node):
         self.create_timer(0.05, self.loop_control)
 
         self.get_logger().info(
-            f'Guardian v5  giro<{self.d_giro}m  front_ini={self.d_front_ini}m'
-            f'  target_der={self.target_der}m  Kder={self.Kder}'
+            f'Guardian v6 (sigue IZQUIERDA)  giro<{self.d_giro}m'
+            f'  front_ini={self.d_front_ini}m'
+            f'  target_izq={self.target_izq}m  Kizq={self.Kizq}'
             f'  t_aviso={self.t_aviso}s  t_giro_fijo={self.t_giro_fijo}s')
 
     def _reload_params(self):
         self.d_stop_front      = self.get_parameter('d_stop_front').value
         self.d_stop_lat        = self.get_parameter('d_stop_lateral').value
         self.d_giro            = self.get_parameter('d_giro').value
-        self.d_front_ini       = self.get_parameter('d_front_inicio').value
-        self.target_der        = self.get_parameter('target_der').value
-        self.Kder               = self.get_parameter('Kder').value
-        self.Kd_der             = self.get_parameter('Kd_der').value
-        self.d_izq_min         = self.get_parameter('d_izq_min').value
-        self.Kizq              = self.get_parameter('Kizq').value
-        self.Kfront            = self.get_parameter('Kfront').value
-        self.v_cruise          = self.get_parameter('vel_crucero').value
-        self.v_maniobra        = self.get_parameter('vel_maniobra').value
-        self.w_giro            = self.get_parameter('vel_giro_gradual').value
-        self.max_w             = self.get_parameter('max_w').value
-        self.t_aviso           = self.get_parameter('t_aviso').value
-        self.t_giro_fijo       = self.get_parameter('t_giro_fijo').value
-        self.t_cooldown        = self.get_parameter('t_cooldown').value
-        self.t_recuperacion    = self.get_parameter('t_recuperacion').value
+        self.d_front_ini   = self.get_parameter('d_front_inicio').value
+        self.target_izq    = self.get_parameter('target_izq').value
+        self.Kizq          = self.get_parameter('Kizq').value
+        self.Kd_izq        = self.get_parameter('Kd_izq').value
+        self.d_der_min     = self.get_parameter('d_der_min').value
+        self.Kder          = self.get_parameter('Kder').value
+        self.Kfront        = self.get_parameter('Kfront').value
+        self.v_cruise      = self.get_parameter('vel_crucero').value
+        self.v_maniobra    = self.get_parameter('vel_maniobra').value
+        self.w_giro        = self.get_parameter('vel_giro_gradual').value
+        self.max_w         = self.get_parameter('max_w').value
+        self.t_aviso       = self.get_parameter('t_aviso').value
+        self.t_giro_fijo   = self.get_parameter('t_giro_fijo').value
+        self.t_cooldown    = self.get_parameter('t_cooldown').value
+        self.t_recuperacion = self.get_parameter('t_recuperacion').value
 
     def _on_params(self, params):
         self._reload_params()
@@ -228,16 +243,18 @@ class BehaviorFSM(Node):
     def _t_estado(self) -> float:
         return (self.get_clock().now() - self.t_inicio).nanoseconds * 1e-9
 
-    def _w_der_pd(self) -> float:
-        """PD de tracking a la pared derecha. El termino derivativo amortigua
-        el overshoot que trae subir Kder para pegarse mas rapido al target."""
-        error = self.dist_der - self.target_der
+    def _w_izq_pd(self) -> float:
+        """PD de tracking a la pared izquierda. Signo POSITIVO (a
+        diferencia del viejo _w_der_pd, que era negativo): si dist_izq >
+        target_izq (lejos de la pared izq) hay que girar IZQUIERDA (w>0)
+        para acercarse. El termino derivativo amortigua el overshoot."""
+        error = self.dist_izq - self.target_izq
         now   = self.get_clock().now()
-        dt    = max((now - self._t_der_prev).nanoseconds * 1e-9, 0.01)
-        d_err = (error - self._err_der_prev) / dt
-        self._err_der_prev = error
-        self._t_der_prev   = now
-        return -(self.Kder * error + self.Kd_der * d_err)
+        dt    = max((now - self._t_izq_prev).nanoseconds * 1e-9, 0.01)
+        d_err = (error - self._err_izq_prev) / dt
+        self._err_izq_prev = error
+        self._t_izq_prev   = now
+        return +(self.Kizq * error + self.Kd_izq * d_err)
 
     def _cambiar(self, nuevo: str):
         self.get_logger().info(
@@ -248,9 +265,9 @@ class BehaviorFSM(Node):
         # salto acumulado durante todo AVISO+GIRO: spike falso).
         if self.estado == GIRO and nuevo == CRUCERO:
             self.t_ultimo_giro = self.get_clock().now().nanoseconds * 1e-9
-            if math.isfinite(self.dist_der):
-                self._err_der_prev = self.dist_der - self.target_der
-            self._t_der_prev = self.get_clock().now()
+            if math.isfinite(self.dist_izq):
+                self._err_izq_prev = self.dist_izq - self.target_izq
+            self._t_izq_prev = self.get_clock().now()
         self.estado   = nuevo
         self.t_inicio = self.get_clock().now()
 
@@ -308,26 +325,26 @@ class BehaviorFSM(Node):
 
             recuperando = t_post < self.t_recuperacion
             w_front = 0.0
-            w_der   = 0.0
+            w_izq   = 0.0
 
             if recuperando:
-                # Solo tracking pared derecha — permite alinearse tras GIRO
-                if math.isfinite(self.dist_der):
-                    w_der = self._w_der_pd()
+                # Solo tracking pared izquierda — permite alinearse tras GIRO
+                if math.isfinite(self.dist_izq):
+                    w_izq = self._w_izq_pd()
             elif self.dist_frente < self.d_front_ini:
-                # Evasion frontal pura — sin competencia con w_der
+                # Evasion frontal pura — sin competencia con w_izq
                 w_front = self.Kfront * (self.d_front_ini - self.dist_frente)
             else:
-                # Tracking normal pared derecha
-                if math.isfinite(self.dist_der):
-                    w_der = self._w_der_pd()
+                # Tracking normal pared izquierda
+                if math.isfinite(self.dist_izq):
+                    w_izq = self._w_izq_pd()
 
-            # Repulsion izquierda (siempre activa)
-            w_izq = 0.0
-            if math.isfinite(self.dist_izq) and self.dist_izq < self.d_izq_min:
-                w_izq = -self.Kizq * (self.d_izq_min - self.dist_izq)
+            # Repulsion de la pared derecha (siempre activa, como respaldo)
+            w_der = 0.0
+            if math.isfinite(self.dist_der) and self.dist_der < self.d_der_min:
+                w_der = self.Kder * (self.d_der_min - self.dist_der)
 
-            w = max(-self.max_w, min(self.max_w, w_front + w_der + w_izq))
+            w = max(-self.max_w, min(self.max_w, w_front + w_izq + w_der))
             self._pub_dbg(w_front, w_der, w_izq, w)
             self._pub(self.v_cruise, w)
 

@@ -1,10 +1,12 @@
-# Guardian v5 — CRUCERO / AVISO / GIRO
+# Guardian v6 — CRUCERO / AVISO / GIRO — sigue la pared IZQUIERDA
 #
 # Flujo: CRUCERO → AVISO (detenido t_aviso segundos, anuncia "CAJA") →
 # GIRO (avanza girando una duracion FIJA t_giro_fijo, sordo a nueva
-# deteccion durante esa ventana) → CRUCERO (recalibra contra la pared).
+# deteccion durante esa ventana) → CRUCERO (recalibra contra la pared
+# izquierda).
 # dist_izq / dist_der ya NO se calculan aqui: los publica wall_follower
-# (RANSAC sobre las paredes laterales) en /dist_izq y /dist_der.
+# (RANSAC sobre las paredes laterales, con casi todo el barrido del
+# LiDAR, simetrico para ambos lados) en /dist_izq y /dist_der.
 
 behavior_fsm:
   ros__parameters:
@@ -21,17 +23,16 @@ behavior_fsm:
     d_giro:         0.30   # m  trigger GIRO
     d_front_inicio: 0.40   # m  inicio evasion frontal
 
-    # Tracking pared derecha
-    # target_der 17cm: robot consistente a 17-20cm, 13cm generaba overcorreccion
-    # Kder subido de 2.0 a 2.6 (no se pegaba lo suficiente al target desde 25cm);
-    # Kd_der amortigua el overshoot que trae el Kder mas alto.
-    target_der: 0.17
-    Kder:       2.6
-    Kd_der:     0.3
+    # Tracking pared IZQUIERDA (cambio de diseño: antes era la derecha)
+    # target_izq 17cm: mismo valor que tenia target_der, ya probado.
+    # Kizq/Kd_izq: mismos valores que tenia Kder/Kd_der (ganancia probada).
+    target_izq: 0.17
+    Kizq:       2.6
+    Kd_izq:     0.3
 
-    # Repulsion pared izquierda
-    d_izq_min: 0.15
-    Kizq:      4.0
+    # Repulsion pared DERECHA (antes izquierda), como respaldo
+    d_der_min: 0.15
+    Kder:      4.0
 
     # Evasion frontal
     Kfront: 2.0
@@ -49,7 +50,7 @@ behavior_fsm:
                        # re-dispare AVISO por seguir viendo la caja/pared
                        # de cerca mientras gira alrededor de ella)
     t_cooldown:      2.0   # s  cooldown post-GIRO antes de poder disparar otro AVISO
-    t_recuperacion:  1.5   # s  suprime w_front tras GIRO, solo w_der (recalibra)
+    t_recuperacion:  1.5   # s  suprime w_front tras GIRO, solo w_izq (recalibra)
 
 # wall_follower — paredes laterales por RANSAC (reemplaza Split-and-Merge).
 # Publica /dist_izq y /dist_der; behavior_fsm los consume, no los recalcula.
