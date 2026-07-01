@@ -165,12 +165,17 @@ class BehaviorFSM(Node):
         # Avanzar depende SOLO del frente -- los costados nunca lo frenan.
         v = self._vel_adaptativa(c_frente)
 
-        # Emergencia de frente: ahi si no hay forma de "girar para evitarlo"
-        # sin parar primero (seguir de frente lo choca de lleno).
+        # Emergencia de frente: no se puede seguir avanzando (chocaria de
+        # lleno), pero girar EN EL SITIO (v=0, sin avanzar hacia el
+        # obstaculo) hacia el lado con mas espacio no lo empeora y le da
+        # una salida -- quedarse en (0,0) para siempre lo dejaba pegado
+        # en el mismo lugar indefinidamente.
         if c_frente < self.d_emerg:
+            lado = 1.0 if c_izq >= c_der else -1.0
             self.get_logger().warn(
-                f'EMERGENCIA frente={c_frente:.2f}m — stop total', throttle_duration_sec=1.0)
-            self._pub(0.0, 0.0, 'EMERGENCIA')
+                f'EMERGENCIA frente={c_frente:.2f}m — girando en el sitio para salir',
+                throttle_duration_sec=1.0)
+            self._pub(0.0, lado * self.w_giro_max, 'EMERGENCIA')
             self._en_evasion = False
             return
 
