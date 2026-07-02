@@ -143,15 +143,17 @@ class Guardian(Node):
         self.dist_izq_raw = float('inf')
         self.dist_der_raw = float('inf')
 
-        # ── Percepción / clasificación (solo para el panel) ───────────────
+        # ── Percepción / clasificación (colisión + panel) ─────────────────
         self.clusters = []
         self.clase_frente = None
+        self.punto_fp = None    # punto que invade el footprint real (15/8 cm)
         self.accion = 'AVANZANDO'
 
         # ── Odometría / censo (para el panel derecho) ─────────────────────
         self.pose = None
         self.trail = []
         self.cajas_vivas = []
+        self.mapa_pared = []    # segmentos de PARED acumulados en marco odom
 
         # ── ROS I/O ───────────────────────────────────────────────────────
         _qos = QoSProfile(depth=10)
@@ -244,6 +246,78 @@ class Guardian(Node):
             vivas.append(odom)
         self.cajas_vivas = vivas[-6:]
 
+    def _actualizar_mapa_pared(self, clusters):
+        """Mapa FIJO de la pista en marco odom: cada segmento clasificado
+        como PARED se transforma con la pose actual (self.pose, la más
+        reciente de /odom_raw) y se funde con lo ya mapeado. A diferencia
+        de 'segs' (que se recalcula cada scan en el marco del robot), este
+        mapa persiste — lo que ya se detectó una vez de la pared queda
+        fijo, no desaparece cuando el robot gira o se aleja.
+
+        Dos cuidados para que la posición sea la correcta y no se dupliquen
+        ni se corran las paredes:
+          · NO se mapea durante GIRO — ahí la orientación cambia rápido y
+            un error de yaw se amplifica en la transformación a odom
+            (más en los puntos lejanos del segmento); solo se mapea con el
+            robot en CRUCERO/RODEO, cuando la pose es más estable.
+          · Un segmento nuevo que caiga cerca de uno ya mapeado (mismo
+            punto medio Y misma orientación, no solo posición) NO se
+            agrega como entrada aparte: se PROMEDIA con la existente
+            (running average), así el mapa converge a la posición real en
+            vez de acumular copias corridas por el ruido de cada barrido.
+        """
+        if self.pose is None or self.estado == GIRO:
+            return
+        for cl in clusters:
+            if cl['clase'] != pc.PARED:
+                continue
+            for s in cl['segs']:
+                p1 = self._a_odom(*s['p1'])
+                p2 = self._a_odom(*s['p2'])
+                if p1 is None or p2 is None:
+                    continue
+                ang = math.atan2(p2[1] - p1[1], p2[0] - p1[0])
+                mx, my = 0.5 * (p1[0] + p2[0]), 0.5 * (p1[1] + p2[1])
+
+                mejor = None
+                for entrada in self.mapa_pared:
+                    if math.hypot(mx - entrada['mx'], my - entrada['my']) >= 0.06:
+                        continue
+                    dang = abs(math.atan2(math.sin(ang - entrada['ang']),
+                                          math.cos(ang - entrada['ang'])))
+                    dang = min(dang, math.pi - dang)  # una recta es igual a 180° de sí misma
+                    if dang <= math.radians(20):
+                        mejor = entrada
+                        break
+
+                if mejor is None:
+                    self.mapa_pared.append({'p1': p1, 'p2': p2, 'mx': mx, 'my': my,
+                                            'ang': ang, 'n': 1})
+                    continue
+
+                # Empareja p1↔p1/p2↔p2 o p1↔p2/p2↔p1, lo que quede más
+                # cerca — el mismo segmento físico puede verse "al revés"
+                # si el robot lo cruza desde el otro lado en otra vuelta.
+                d_directo = (math.hypot(p1[0] - mejor['p1'][0], p1[1] - mejor['p1'][1]) +
+                            math.hypot(p2[0] - mejor['p2'][0], p2[1] - mejor['p2'][1]))
+                d_cruzado = (math.hypot(p1[0] - mejor['p2'][0], p1[1] - mejor['p2'][1]) +
+                            math.hypot(p2[0] - mejor['p1'][0], p2[1] - mejor['p1'][1]))
+                if d_cruzado < d_directo:
+                    p1, p2 = p2, p1
+
+                n = mejor['n']
+                mejor['p1'] = ((mejor['p1'][0] * n + p1[0]) / (n + 1),
+                              (mejor['p1'][1] * n + p1[1]) / (n + 1))
+                mejor['p2'] = ((mejor['p2'][0] * n + p2[0]) / (n + 1),
+                              (mejor['p2'][1] * n + p2[1]) / (n + 1))
+                mejor['mx'] = 0.5 * (mejor['p1'][0] + mejor['p2'][0])
+                mejor['my'] = 0.5 * (mejor['p1'][1] + mejor['p2'][1])
+                mejor['ang'] = math.atan2(mejor['p2'][1] - mejor['p1'][1],
+                                          mejor['p2'][0] - mejor['p1'][0])
+                mejor['n'] = n + 1
+        if len(self.mapa_pared) > 4000:
+            self.mapa_pared = self.mapa_pared[-4000:]
+
     def cb_scan(self, msg: LaserScan):
         # Frente + mínimo crudo lateral: se miden aquí mismo, sin depender de
         # otro nodo ni de RANSAC, porque son la base del STOP de seguridad y
@@ -277,10 +351,12 @@ class Guardian(Node):
         self.clusters = pc.analizar_scan(pts, self.salto_dist, self.salto_idx,
                                          self.umbral_split, self.min_puntos,
                                          self.lado_caja)
-        _, clase_f, _, _, _, _ = pc.frente_y_lados(
+        _, clase_f, _, _, punto_fp, _ = pc.frente_y_lados(
             pts, self.clusters, self.off_f, self.off_l)
         self.clase_frente = clase_f
+        self.punto_fp = punto_fp
         self._actualizar_cajas_desde_scan(self.clusters)
+        self._actualizar_mapa_pared(self.clusters)
 
         self._publicar_debug()
 
@@ -354,6 +430,18 @@ class Guardian(Node):
         self.t_inicio = self.get_clock().now()
 
     def loop_control(self):
+
+        # ── PRIORIDAD 0: colisión por footprint real (percepcion.py) ──────
+        # punto_fp usa la forma real del chasis (15 cm frente / 8 cm lados,
+        # no un cono de ±30° con radio fijo como el STOP de abajo) — más
+        # preciso para saber si algo va a golpear el cuerpo del robot.
+        if self.punto_fp is not None:
+            self._pub(0.0, 0.0)
+            self._pub_dbg(0, 0, 0, 0)
+            self.get_logger().warn(
+                f'PARA footprint x={self.punto_fp[0]:.3f} y={self.punto_fp[1]:.3f}'
+                f' (clase={self.clase_frente})', throttle_duration_sec=0.4)
+            return
 
         # ── PRIORIDAD 1: STOP absoluto ────────────────────────────────────
         if self.dist_frente < self.d_stop_front:
@@ -510,6 +598,9 @@ class Guardian(Node):
             'cajas_vivas': [[round(x, 3), round(y, 3)]
                             for x, y in self.cajas_vivas],
             'cajas_fijas': [],
+            'mapa_pared': [[round(e['p1'][0], 3), round(e['p1'][1], 3),
+                            round(e['p2'][0], 3), round(e['p2'][1], 3)]
+                           for e in self.mapa_pared],
             'segs': segs,
         }
         m = String()

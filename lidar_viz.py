@@ -13,6 +13,8 @@ Panel IZQUIERDO (marco del robot, frente hacia +x):
 Panel DERECHO (marco odom):
     · recorrido del robot + pose actual
     · cajas censadas por box_detector, numeradas
+    · mapa FIJO de la pista: segmentos de pared ya detectados alguna vez,
+      acumulados en marco odom (no desaparecen al girar/alejarse)
 
 Consume /scan y /guardian/debug (JSON del guardián). Correr aparte (VNC):
 
@@ -184,6 +186,12 @@ def main():
                          transform=axL.transAxes, color='#80ffea',
                          fontsize=11, fontweight='bold', va='top')
 
+                mapa_pared = dbg.get('mapa_pared', [])
+                for i, (x1, y1, x2, y2) in enumerate(mapa_pared):
+                    axR.plot([x1, x2], [y1, y2], color=COLORES['PARED'],
+                             linewidth=2.0, alpha=0.7, zorder=2,
+                             label='mapa pista' if i == 0 else None)
+
                 trail = dbg.get('trail', [])
                 if trail:
                     axR.plot([q[0] for q in trail], [q[1] for q in trail],
@@ -204,7 +212,7 @@ def main():
                     axR.annotate(f'VIVA {i + 1}', (bx, by), color='#ffa726',
                                  ha='center', va='center', fontsize=7,
                                  fontweight='bold', zorder=5)
-                if trail or pose or cajas_vivas:
+                if trail or pose or cajas_vivas or mapa_pared:
                     handles, labels = axR.get_legend_handles_labels()
                     if cajas_vivas:
                         handles.append(mpatches.Patch(
@@ -215,7 +223,9 @@ def main():
                 axR.set_title(
                     f"Recorrido + cajas vivas — {len(cajas_vivas)} visibles",
                               color='white', fontsize=10)
-                todos = trail + cajas_vivas + ([pose[:2]] if pose else [])
+                puntos_mapa = [(x1, y1) for x1, y1, x2, y2 in mapa_pared] + \
+                              [(x2, y2) for x1, y1, x2, y2 in mapa_pared]
+                todos = trail + cajas_vivas + puntos_mapa + ([pose[:2]] if pose else [])
                 if todos:
                     xs, ys = [q[0] for q in todos], [q[1] for q in todos]
                     cx, cy = (max(xs) + min(xs)) / 2, (max(ys) + min(ys)) / 2
