@@ -84,7 +84,7 @@ class Guardian(Node):
         self.declare_parameter('d_stop_front',   0.14)
         self.declare_parameter('d_stop_lateral', 0.07)
         self.declare_parameter('d_stop_caja', 0.18)  # m frente a una CAJA (reto exige >=0.15)
-        self.declare_parameter('w_escape', 0.4)  # rad/s al girar para zafar de un STOP
+        self.declare_parameter('w_alinear', 0.25)    # rad/s: giro lento al alinearse en el STOP
         self.declare_parameter('d_giro',         0.30)
         self.declare_parameter('d_front_inicio', 0.40)
 
@@ -206,7 +206,7 @@ class Guardian(Node):
         self.d_stop_front      = self.get_parameter('d_stop_front').value
         self.d_stop_lat        = self.get_parameter('d_stop_lateral').value
         self.d_stop_caja       = self.get_parameter('d_stop_caja').value
-        self.w_escape          = self.get_parameter('w_escape').value
+        self.w_alinear         = self.get_parameter('w_alinear').value
         self.d_giro            = self.get_parameter('d_giro').value
         self.d_front_ini       = self.get_parameter('d_front_inicio').value
         self.target_der        = self.get_parameter('target_der').value
@@ -474,23 +474,36 @@ class Guardian(Node):
         self.estado   = nuevo
         self.t_inicio = self.get_clock().now()
 
-    def _w_escape(self):
-        """Al disparar un STOP no hay que quedarse congelado sin remedio:
-        gira (sin avanzar) hacia el lado CONTRARIO al que indica el error,
-        para que el robot intente zafar solo en vez de esperar a que el
-        obstáculo se mueva. Prioridad: punto_fp (lado exacto por el signo
-        de y) > comparar los crudos izq/der > el único lado que sí ve algo
-        cerca > por defecto, izquierda."""
-        if self.punto_fp is not None:
-            _, y = self.punto_fp
-            return self.w_escape if y < 0 else -self.w_escape   # aleja del lado invadido
-        if math.isfinite(self.dist_izq_raw) and math.isfinite(self.dist_der_raw):
-            return -self.w_escape if self.dist_izq_raw < self.dist_der_raw else self.w_escape
-        if math.isfinite(self.dist_der_raw):
-            return self.w_escape    # cerca a la derecha -> gira izquierda
-        if math.isfinite(self.dist_izq_raw):
-            return -self.w_escape   # cerca a la izquierda -> gira derecha
-        return self.w_escape
+    def _w_alinear(self):
+        """En vez de quedarse congelado en el STOP: gira EN EL SITIO (sin
+        avanzar) hacia el lado donde percepcion.py sí detecta una pared
+        (línea larga) — al alinearse con ella deja de estar de frente al
+        obstáculo y el STOP se libera solo en el siguiente ciclo. Gira
+        lento a propósito: a esta distancia tan corta un giro brusco puede
+        golpear con el COSTADO del chasis aunque el frente esté libre. Si
+        no hay ninguna línea detectada a ningún lado, no gira a ciegas —
+        se queda quieto (evitar chocar pesa más que intentar avanzar)."""
+        seg_izq = seg_der = None
+        for cl in self.clusters:
+            if cl['clase'] != pc.PARED:
+                continue
+            for s in cl['segs']:
+                if s['mean_y'] > 0.05:
+                    seg_izq = s
+                elif s['mean_y'] < -0.05:
+                    seg_der = s
+
+        if seg_izq is not None and seg_der is None:
+            return self.w_alinear     # línea solo a la izquierda -> gira hacia allá
+        if seg_der is not None and seg_izq is None:
+            return -self.w_alinear    # línea solo a la derecha -> gira hacia allá
+        if seg_izq is not None and seg_der is not None:
+            # línea a ambos lados: gira hacia el que tenga más espacio crudo
+            if math.isfinite(self.dist_izq_raw) and math.isfinite(self.dist_der_raw):
+                return (self.w_alinear if self.dist_izq_raw >= self.dist_der_raw
+                       else -self.w_alinear)
+            return self.w_alinear
+        return 0.0   # ninguna línea detectada: mejor quieto que girar a ciegas
 
     def loop_control(self):
 
@@ -499,11 +512,11 @@ class Guardian(Node):
         # no un cono de ±30° con radio fijo como el STOP de abajo) — más
         # preciso para saber si algo va a golpear el cuerpo del robot.
         if self.punto_fp is not None:
-            self._pub(0.0, self._w_escape())
+            self._pub(0.0, self._w_alinear())
             self._pub_dbg(0, 0, 0, 0)
             self.get_logger().warn(
                 f'PARA footprint x={self.punto_fp[0]:.3f} y={self.punto_fp[1]:.3f}'
-                f' (clase={self.clase_frente}) — zafando', throttle_duration_sec=0.4)
+                f' (clase={self.clase_frente}) — alineando', throttle_duration_sec=0.4)
             return
 
         # ── PRIORIDAD 0.5: margen del reto frente a una CAJA (≥15 cm) ─────
@@ -511,37 +524,37 @@ class Guardian(Node):
         # del cono genérico de d_stop_front — así el margen exigido para
         # cajas se respeta aunque el objeto no caiga en el sector ±30°.
         if self.dist_caja < self.d_stop_caja:
-            self._pub(0.0, self._w_escape())
+            self._pub(0.0, self._w_alinear())
             self._pub_dbg(0, 0, 0, 0)
             self.get_logger().warn(
-                f'PARA caja={self.dist_caja:.3f}m — zafando', throttle_duration_sec=0.4)
+                f'PARA caja={self.dist_caja:.3f}m — alineando', throttle_duration_sec=0.4)
             return
 
         # ── PRIORIDAD 1: STOP absoluto ────────────────────────────────────
         if self.dist_frente < self.d_stop_front:
-            self._pub(0.0, self._w_escape())
+            self._pub(0.0, self._w_alinear())
             self._pub_dbg(0, 0, 0, 0)
             self.get_logger().warn(
-                f'PARA frente={self.dist_frente:.3f}m — zafando', throttle_duration_sec=0.4)
+                f'PARA frente={self.dist_frente:.3f}m — alineando', throttle_duration_sec=0.4)
             return
         # Usa el mínimo crudo (dist_izq_raw/dist_der_raw), NO el de RANSAC:
         # RANSAC descarta a propósito objetos que no son pared (p.ej. una
         # caja pegada al costado) como outliers, y ese es justo el caso que
         # este STOP tiene que detectar.
         if math.isfinite(self.dist_izq_raw) and self.dist_izq_raw < self.d_stop_lat:
-            self._pub(0.0, self._w_escape())
+            self._pub(0.0, self._w_alinear())
             self._pub_dbg(0, 0, 0, 0)
             self.get_logger().warn(
-                f'PARA izq={self.dist_izq_raw:.3f}m — zafando', throttle_duration_sec=0.4)
+                f'PARA izq={self.dist_izq_raw:.3f}m — alineando', throttle_duration_sec=0.4)
             return
         if math.isfinite(self.dist_der_raw) and self.dist_der_raw < self.d_stop_lat:
             # El GIRO puede ir hacia cualquier lado (no solo izquierda), así
             # que el riesgo de colisión lateral también puede venir del
             # lado derecho.
-            self._pub(0.0, self._w_escape())
+            self._pub(0.0, self._w_alinear())
             self._pub_dbg(0, 0, 0, 0)
             self.get_logger().warn(
-                f'PARA der={self.dist_der_raw:.3f}m — zafando', throttle_duration_sec=0.4)
+                f'PARA der={self.dist_der_raw:.3f}m — alineando', throttle_duration_sec=0.4)
             return
 
         # ── CRUCERO ───────────────────────────────────────────────────────
