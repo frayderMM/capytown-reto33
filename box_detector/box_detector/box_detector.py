@@ -24,6 +24,7 @@ from sensor_msgs.msg import LaserScan
 from nav_msgs.msg import Odometry
 from geometry_msgs.msg import PoseArray, Pose
 from visualization_msgs.msg import Marker, MarkerArray
+from std_msgs.msg import Bool
 
 from box_detector import lidar_utils as lu
 
@@ -65,6 +66,11 @@ class BoxDetector(Node):
         self.create_subscription(Odometry, self.topic_odom, self.cb_odom, _qos_odom)
         self.pub_cajas = self.create_publisher(PoseArray, '/cajas_avistadas', 10)
         self.pub_markers = self.create_publisher(MarkerArray, '/cajas_markers', 10)
+        # Pitido al censar una caja nueva. Tipo std_msgs/Bool sin confirmar
+        # contra el driver real del buzzer: si espera otro tipo, esto
+        # simplemente no suena, no rompe nada.
+        self.pub_beep = self.create_publisher(Bool, '/beep', 10)
+        self._timer_apagar_beep = None
 
         self.get_logger().info('box_detector iniciado. Esperando /scan y /odom...')
 
@@ -118,9 +124,27 @@ class BoxDetector(Node):
         if nuevas:
             self.get_logger().info(
                 f'Nuevas cajas: {nuevas}  |  Censo total: {len(self.cajas_censo)}')
+            self._pitar()
 
         # 5) Publicar resultados.
         self._publicar(msg.header)
+
+    # ------------------------------------------------------------------
+    def _pitar(self):
+        """Pulso corto en /beep al censar una caja nueva: True ahora,
+        False a los 0.3s (por si el driver real trata Bool como
+        encendido/apagado en vez de disparo puntual)."""
+        b = Bool(); b.data = True
+        self.pub_beep.publish(b)
+        if self._timer_apagar_beep is not None:
+            self._timer_apagar_beep.cancel()
+        self._timer_apagar_beep = self.create_timer(0.3, self._apagar_beep)
+
+    def _apagar_beep(self):
+        b = Bool(); b.data = False
+        self.pub_beep.publish(b)
+        self._timer_apagar_beep.cancel()
+        self._timer_apagar_beep = None
 
     # ------------------------------------------------------------------
     def _ya_censada(self, punto):
