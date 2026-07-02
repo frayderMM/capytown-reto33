@@ -73,7 +73,7 @@ class WallFollower(Node):
                               self.front_rad, self.rango_max, self.atras_rad)
         cls = pc.analizar_scan(pts, self.salto_dist, self.salto_idx,
                                self.umbral_split, self.min_puntos,
-                               self.lado_caja, self.min_pared)
+                               self.lado_caja)
         pared = pc.pared_derecha(cls, self.min_pared, self.cos_lat)
 
         if pared is None:

@@ -196,21 +196,6 @@ def _cluster_mayor_que_caja(grupo: List[Point], lado_caja_max: float) -> bool:
             or diag > lado_caja_max * 1.55)
 
 
-def _esquina_por_perpendicularidad(segs) -> bool:
-    """Dos segmentos casi perpendiculares entre sí, sin exigirles una
-    longitud mínima — el tamaño ya se filtró afuera (_cluster_mayor_que_caja):
-    si el cluster completo es más grande que una caja, dos lados en L bastan
-    para reconocer una esquina, aunque cada lado individual sea corto."""
-    candidatos = [s for s in segs if s['lon'] >= 0.06]
-    for i in range(len(candidatos)):
-        for j in range(i + 1, len(candidatos)):
-            d = abs(candidatos[i]['ang'] - candidatos[j]['ang']) % math.pi
-            d = min(d, math.pi - d)
-            if abs(d - math.pi / 2) < math.radians(25):
-                return True
-    return False
-
-
 def es_caja_compacta(grupo: List[Point], segs, lado_caja_max: float) -> bool:
     if not segs or len(grupo) < 6:
         return False
@@ -220,54 +205,25 @@ def es_caja_compacta(grupo: List[Point], segs, lado_caja_max: float) -> bool:
     return all(0.06 <= l <= lado_caja_max for l in lados)
 
 
-def _linea_costado_derecho(segs, lado_caja_max: float,
-                           cos_lateral_min: float) -> bool:
+def clasificar_cluster(grupo, segs, lado_caja_max: float) -> str:
     """
-    True si hay un segmento a la DERECHA (mean_y < 0) más largo que el lado
-    máximo de una caja real y mayormente paralelo al avance. Una caja de
-    verdad nunca mide más que lado_caja_max, así que ese segmento no puede
-    ser un lado de caja fragmentado — es pared corta (borde de mesa, tramo
-    entre esquinas, etc.) aunque no llegue a min_long_pared.
+    Regla única por tamaño: el cluster completo cabe en una caja real
+    (~20 cm, con tolerancia) -> CAJA; si es más grande -> PARED. No importa
+    si está al frente o al costado ni si forma una L (esquina) — el FSM ya
+    trata PARED y ESQUINA igual, así que separarlas solo agregaba ruido de
+    clasificación cerca del umbral.
     """
-    for s in segs:
-        if s['lon'] <= lado_caja_max or s['mean_y'] >= -0.05:
-            continue
-        dx = abs(s['p2'][0] - s['p1'][0])
-        if dx / s['lon'] >= cos_lateral_min:
-            return True
-    return False
-
-
-def clasificar_cluster(grupo, segs, lado_caja_max: float,
-                       min_long_pared: float,
-                       cos_lateral_min: float = 0.55) -> str:
     if not segs:
         return RUIDO
-    largos = [s for s in segs if s['lon'] >= min_long_pared]
-    if len(largos) >= 2:
-        for i in range(len(largos)):
-            for j in range(i + 1, len(largos)):
-                d = abs(largos[i]['ang'] - largos[j]['ang']) % math.pi
-                d = min(d, math.pi - d)
-                if abs(d - math.pi / 2) < math.radians(25):
-                    return ESQUINA
-        return PARED
-    if len(largos) == 1:
-        return PARED
-    if _linea_costado_derecho(segs, lado_caja_max, cos_lateral_min):
-        return PARED
     if _cluster_mayor_que_caja(grupo, lado_caja_max):
-        # más grande que cualquier caja real (>~20 cm): si tiene dos lados
-        # en L es esquina, aunque cada lado sea más corto que min_long_pared
-        return ESQUINA if _esquina_por_perpendicularidad(segs) else RUIDO
+        return PARED
     if es_caja_compacta(grupo, segs, lado_caja_max):
         return CAJA
     return RUIDO
 
 
 def analizar_scan(pts_idx, salto_dist, salto_idx, umbral_split,
-                  min_puntos, lado_caja_max, min_long_pared,
-                  cos_lateral_min: float = 0.55):
+                  min_puntos, lado_caja_max):
     """
     Pipeline completo por barrido. Devuelve lista de clusters:
         {'pts', 'segs', 'clase', 'c': centroide (x, y)}
@@ -277,8 +233,7 @@ def analizar_scan(pts_idx, salto_dist, salto_idx, umbral_split,
         if len(grupo) < min_puntos:
             continue
         segs = segmentos_de(grupo, umbral_split, min_puntos)
-        clase = clasificar_cluster(grupo, segs, lado_caja_max, min_long_pared,
-                                   cos_lateral_min)
+        clase = clasificar_cluster(grupo, segs, lado_caja_max)
         cx = sum(p[0] for p in grupo) / len(grupo)
         cy = sum(p[1] for p in grupo) / len(grupo)
         clusters.append({'pts': grupo, 'segs': segs, 'clase': clase,
