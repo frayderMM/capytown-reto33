@@ -278,10 +278,10 @@ def main():
                 if todos:
                     xs, ys = [q[0] for q in todos], [q[1] for q in todos]
                     cx, cy = (max(xs) + min(xs)) / 2, (max(ys) + min(ys)) / 2
-                    R = max(max(xs) - min(xs), max(ys) - min(ys)) / 2 + 1.0
-                    R = max(R, 2.2)  # la pista completa es ~3.0x1.8 m: no
+                    R = (max(max(xs) - min(xs), max(ys) - min(ys)) / 2 + 1.0) * 1.5
+                    R = max(R, 3.3)  # la pista completa es ~3.0x1.8 m: no
                                      # arrancar "pegado" al robot, dejar
-                                     # margen para verla entera desde ya
+                                     # margen de sobra para verla entera
                     axR.set_xlim(cx - R, cx + R)
                     axR.set_ylim(cy - R, cy + R)
             else:

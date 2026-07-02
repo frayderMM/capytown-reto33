@@ -135,9 +135,13 @@ class Guardian(Node):
         # completos entre pasadas es frágil (casi nunca comparten extremos
         # exactos), unir cada punto a la celda más cercana es simple y
         # converge solo con el uso.
-        self.declare_parameter('mapa_rango_max', 1.5)  # m  no mapear detecciones
+        self.declare_parameter('mapa_rango_max', 0.55)  # m  no mapear detecciones
                                                           # lejanas: el error de yaw
-                                                          # se amplifica con el rango
+                                                          # de la odometría se amplifica
+                                                          # con el rango (a 1.5m, 20° de
+                                                          # error de yaw ya desplaza el
+                                                          # punto 0.5m — de ahí salía el
+                                                          # mapa "en espiral")
         self.declare_parameter('mapa_celda', 0.04)      # m  lado de la celda de fusión
         self.declare_parameter('mapa_max_puntos', 6000)  # tope de celdas distintas
 

@@ -84,8 +84,10 @@ behavior_fsm:
                                 # que una línea es un lado real, no el bbox
 
     # --- Mapa fijo de pared (nube de puntos en marco odom, solo panel) ---
-    mapa_rango_max:  1.5        # m no mapear detecciones lejanas (el error
-                                 # de yaw se amplifica con el rango)
+    mapa_rango_max:  0.55       # m no mapear detecciones lejanas (el error
+                                 # de yaw de la odometria se amplifica con
+                                 # el rango: a 1.5m, 20 grados de error ya
+                                 # desplaza el punto 0.5m -> mapa "espiral")
     mapa_celda:      0.04       # m lado de celda de fusión (grilla)
     mapa_max_puntos: 6000       # tope de celdas distintas
 
