@@ -264,9 +264,14 @@ class Guardian(Node):
                 d_l_raw = min(d_l_raw, r)
             else:
                 d_r_raw = min(d_r_raw, r)
-        self.dist_frente   = d_f
-        self.dist_izq_raw  = d_l_raw
-        self.dist_der_raw  = d_r_raw
+        # d_f/d_l_raw/d_r_raw son crudas desde el LiDAR; el borde físico del
+        # robot está más adelante/afuera del sensor (offset_frente=15cm,
+        # offset_lados=8cm). Sin restarlo, "predecir" el choque con
+        # d_stop_front=0.14 en realidad dispara cuando el borde YA está a
+        # -1cm (pasado) — no es predicción, es reacción tardía.
+        self.dist_frente   = d_f - self.off_f
+        self.dist_izq_raw  = d_l_raw - self.off_l
+        self.dist_der_raw  = d_r_raw - self.off_l
 
         # Clasificación caja/pared (percepcion.py) — solo para el panel de
         # diagnóstico; NO decide el movimiento (eso lo hace loop_control con
@@ -353,34 +358,45 @@ class Guardian(Node):
         self.estado   = nuevo
         self.t_inicio = self.get_clock().now()
 
+    def _calibrar_tras_stop(self):
+        """Calibración tras el STOP: en vez de quedarse congelado hasta que
+        el obstáculo se mueva solo, arranca un GIRO fresco de una vez —
+        misma elección de lado que el disparo normal de GIRO (más espacio
+        disponible). Esto es la ÚNICA diferencia con la lógica de avance
+        original (CRUCERO/GIRO/RODEO intactos); el STOP ya no es un
+        callejón sin salida."""
+        if math.isfinite(self.dist_izq) and math.isfinite(self.dist_der):
+            self.dir_giro = 1.0 if self.dist_izq >= self.dist_der else -1.0
+        elif math.isfinite(self.dist_der):
+            self.dir_giro = -1.0
+        else:
+            self.dir_giro = 1.0
+        self.w_giro_efectivo = max(-self.max_w, min(self.max_w,
+            self.dir_giro * self.w_giro))
+        self._cambiar(GIRO)
+
     def loop_control(self):
 
         # ── PRIORIDAD 1: STOP absoluto ────────────────────────────────────
         if self.dist_frente < self.d_stop_front:
-            self._pub(0.0, 0.0)
-            self._pub_dbg(0, 0, 0, 0)
             self.get_logger().warn(
-                f'PARA frente={self.dist_frente:.3f}m', throttle_duration_sec=0.4)
-            return
+                f'PARA frente={self.dist_frente:.3f}m — calibrando', throttle_duration_sec=0.4)
+            self._calibrar_tras_stop()
         # Usa el mínimo crudo (dist_izq_raw/dist_der_raw), NO el de RANSAC:
         # RANSAC descarta a propósito objetos que no son pared (p.ej. una
         # caja pegada al costado) como outliers, y ese es justo el caso que
         # este STOP tiene que detectar.
-        if math.isfinite(self.dist_izq_raw) and self.dist_izq_raw < self.d_stop_lat:
-            self._pub(0.0, 0.0)
-            self._pub_dbg(0, 0, 0, 0)
+        elif math.isfinite(self.dist_izq_raw) and self.dist_izq_raw < self.d_stop_lat:
             self.get_logger().warn(
-                f'PARA izq={self.dist_izq_raw:.3f}m', throttle_duration_sec=0.4)
-            return
-        if math.isfinite(self.dist_der_raw) and self.dist_der_raw < self.d_stop_lat:
+                f'PARA izq={self.dist_izq_raw:.3f}m — calibrando', throttle_duration_sec=0.4)
+            self._calibrar_tras_stop()
+        elif math.isfinite(self.dist_der_raw) and self.dist_der_raw < self.d_stop_lat:
             # El GIRO puede ir hacia cualquier lado (no solo izquierda), así
             # que el riesgo de colisión lateral también puede venir del
             # lado derecho.
-            self._pub(0.0, 0.0)
-            self._pub_dbg(0, 0, 0, 0)
             self.get_logger().warn(
-                f'PARA der={self.dist_der_raw:.3f}m', throttle_duration_sec=0.4)
-            return
+                f'PARA der={self.dist_der_raw:.3f}m — calibrando', throttle_duration_sec=0.4)
+            self._calibrar_tras_stop()
 
         # ── CRUCERO ───────────────────────────────────────────────────────
         if self.estado == CRUCERO:
