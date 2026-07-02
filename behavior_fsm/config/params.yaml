@@ -37,9 +37,8 @@ behavior_fsm:
 
     # Velocidad
     vel_crucero:      0.10
-    vel_maniobra:     0.05   # lineal en GIRO/RODEO: bajada de 0.07 -> 0.05, el
-                             # robot pasaba bien pero avanzaba mas de lo necesario
-                             # haciendo el giro/rodeo
+    vel_maniobra:     0.035  # lineal en GIRO/RODEO: 0.07 -> 0.05 -> 0.035, para
+                             # reducir la distancia recorrida durante el giro
     vel_giro_gradual: 0.40   # bajado de 0.55 -> 0.45 -> 0.40: reducir un
                              # poco mas el grado de giro en GIRO
     max_w:            0.60

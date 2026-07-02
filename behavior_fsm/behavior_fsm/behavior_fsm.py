@@ -81,10 +81,9 @@ class BehaviorFSM(Node):
         self.declare_parameter('Kfront',      2.0)
 
         self.declare_parameter('vel_crucero',      0.10)
-        self.declare_parameter('vel_maniobra',     0.05)   # lineal en GIRO/RODEO: bajado de
-                                                            # 0.07 -> 0.05, el robot pasaba bien
-                                                            # pero avanzaba mas de lo necesario
-                                                            # haciendo el giro/rodeo
+        self.declare_parameter('vel_maniobra',     0.035)  # lineal en GIRO/RODEO: 0.07 -> 0.05
+                                                            # -> 0.035, para reducir la distancia
+                                                            # recorrida durante el giro
         self.declare_parameter('vel_giro_gradual', 0.40)
         self.declare_parameter('max_w',            0.60)
         self.declare_parameter('beep_ms',           300)  # ms, pitido al entrar a GIRO (una vez por caja)
