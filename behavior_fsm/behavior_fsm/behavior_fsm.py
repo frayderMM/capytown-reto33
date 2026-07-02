@@ -8,9 +8,9 @@ ni siquiera rotaba lidar_front_deg — y se coordinaban por /lateral_correction
 con carreras de tiempo; esa inconsistencia de marcos era la causa de los
 giros erráticos).
 
-FSM exigida por el reto:
+FSM:
 
-  CRUCERO ── caja al frente ──▶ CAJA_DETECTADA ─▶ PARAR ─▶ ESPERAR_3S ─▶ RODEAR ─▶ CRUCERO
+  CRUCERO ── caja al frente ──▶ CAJA_DETECTADA ─▶ PARAR (espera `espera_seg`) ─▶ RODEAR ─▶ CRUCERO
       │
       └── pared/esquina al frente ──▶ GIRAR_ESQUINA (90° izq) ──▶ CRUCERO
 
@@ -57,7 +57,6 @@ from behavior_fsm import percepcion as pc
 CRUCERO        = 'CRUCERO'
 CAJA_DETECTADA = 'CAJA_DETECTADA'
 PARAR          = 'PARAR'
-ESPERAR_3S     = 'ESPERAR_3S'
 RODEAR         = 'RODEAR'
 GIRAR_ESQUINA  = 'GIRAR_ESQUINA'
 
@@ -83,6 +82,11 @@ class Guardian(Node):
         self.declare_parameter('umbral_split', 0.04)
         self.declare_parameter('min_puntos', 4)
         self.declare_parameter('lado_caja_max', 0.32)
+        self.declare_parameter('lado_caja_linea', 0.22)  # corte por LÍNEA
+        # (lado_caja_max ya trae tolerancia de diagonal para el bbox del
+        # cluster completo; una LÍNEA individual es un lado real de la
+        # caja, no la diagonal, así que en diagonal hay que tomarla con un
+        # corte más ajustado a los 20 cm reales, no el mismo de 32 cm)
         self.declare_parameter('min_long_pared', 0.45)
         self.declare_parameter('cos_lateral_min', 0.55)
         self.declare_parameter('votos_clase', 5)       # barridos para el voto por mayoría
@@ -124,6 +128,7 @@ class Guardian(Node):
         self.umbral_split = g('umbral_split')
         self.min_puntos   = int(g('min_puntos'))
         self.lado_caja    = g('lado_caja_max')
+        self.lado_caja_linea = g('lado_caja_linea')
         self.min_pared    = g('min_long_pared')
         self.cos_lat      = g('cos_lateral_min')
         self.n_votos      = int(g('votos_clase'))
@@ -243,7 +248,7 @@ class Guardian(Node):
         cmd = Twist()
         cmd.linear.x = float(max(0.0, v))   # NUNCA retrocede
         cmd.angular.z = float(w)
-        if self.estado == ESPERAR_3S:
+        if self.estado == PARAR:
             self.accion = 'ESPERANDO_10S'
         elif self.estado == RODEAR and self.fase == 0:
             self.accion = 'GIRO_IZQUIERDA_BORDEO'
@@ -318,12 +323,12 @@ class Guardian(Node):
         d = self.d_frente
 
         # Clamp de seguridad: si algo invade el footprint, frena este ciclo
-        # sin cambiar de estado. PARAR/ESPERAR_3S/RODEAR ya se manejan solos
-        # a esta distancia (o incluso más conservador) — dejarlos fuera evita
-        # que el clamp los interrumpa justo cuando van a progresar (el bug
-        # del log: EMERGENCIA↔PARAR en bucle sin llegar nunca a RODEAR).
+        # sin cambiar de estado. PARAR/RODEAR ya se manejan solos a esta
+        # distancia (o incluso más conservador) — dejarlos fuera evita que
+        # el clamp los interrumpa justo cuando van a progresar (el bug del
+        # log: EMERGENCIA↔PARAR en bucle sin llegar nunca a RODEAR).
         if (self.punto_fp is not None and d < self.d_emerg
-                and self.estado not in (PARAR, ESPERAR_3S, RODEAR)):
+                and self.estado not in (PARAR, RODEAR)):
             self._pub(0.0, 0.0)
             return
 
@@ -359,10 +364,6 @@ class Guardian(Node):
                 self._pub(self.v_min, 0.0)      # acercamiento recto y lento
 
         elif self.estado == PARAR:
-            self._pub(0.0, 0.0)
-            self._cambiar(ESPERAR_3S)
-
-        elif self.estado == ESPERAR_3S:
             self._pub(0.0, 0.0)
             if self._t() >= self.espera:
                 self._cambiar(RODEAR, 0)
@@ -441,9 +442,15 @@ class Guardian(Node):
         segs = []
         for cl in self.clusters:
             for s in cl['segs']:
+                # color por LÍNEA, no por cluster: cada segmento se pinta
+                # naranja (caja) o azul (pared) según su propio largo, así
+                # una esquina en L con un lado corto y otro largo muestra
+                # cada lado con su clase real en vez de heredar la del
+                # cluster completo.
+                clase_seg = pc.CAJA if s['lon'] <= self.lado_caja_linea else pc.PARED
                 segs.append({'x1': round(s['p1'][0], 3), 'y1': round(s['p1'][1], 3),
                              'x2': round(s['p2'][0], 3), 'y2': round(s['p2'][1], 3),
-                             'lon': round(s['lon'], 3), 'clase': cl['clase']})
+                             'lon': round(s['lon'], 3), 'clase': clase_seg})
         data = {
             'estado': self.estado, 'fase': self.fase,
             'accion': self.accion,

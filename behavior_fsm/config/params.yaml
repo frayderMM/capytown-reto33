@@ -22,6 +22,10 @@ behavior_fsm:
     umbral_split: 0.04          # m tolerancia de rectitud (S&M)
     min_puntos: 4
     lado_caja_max: 0.32         # m lado máx de caja (20 cm + tol; diag 28 cm)
+    lado_caja_linea: 0.22       # m corte por LÍNEA individual (viz): ≤esto
+                                # naranja (caja), mayor azul (pared) — sin la
+                                # tolerancia de diagonal de lado_caja_max, ya
+                                # que una línea es un lado real, no el bbox
     min_long_pared: 0.45        # m lado mínimo de pared
     cos_lateral_min: 0.55
     votos_clase: 5              # barridos del voto por mayoría (anti-ruido)

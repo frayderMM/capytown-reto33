@@ -26,12 +26,14 @@ CORRECCIONES clave respecto a la versión anterior:
    esquina": la esquina se veía como un solo lado. Corregido, la
    clasificación caja/esquina vuelve a ser viable y defendible.
 
-3. CLASIFICACIÓN GEOMÉTRICA POR LADOS (regla del reto):
-       CAJA    → todos los lados visibles ≤ lado_caja_max (~20 cm + tol;
-                 la diagonal máxima de una caja de 20×20 es 28 cm)
-       ESQUINA → dos lados ≥ min_long_pared y ~perpendiculares (90°±25°)
-       PARED   → al menos un lado ≥ min_long_pared
-       RUIDO   → resto
+3. CLASIFICACIÓN POR TAMAÑO (regla del reto, simplificada):
+       CAJA  → el cluster completo cabe en el tamaño de una caja real
+               (lados ≤ lado_caja_max, ~20 cm + tol; diagonal máx. 28 cm)
+       PARED → el cluster es más grande que eso (sea pared recta o
+               esquina en L — el FSM trata ambas igual, así que no se
+               distinguen para evitar ruido de clasificación cerca del
+               umbral)
+       RUIDO → cluster sin segmentos válidos
 """
 
 import math
