@@ -68,6 +68,9 @@ class Guardian(Node):
 
         self.declare_parameter('d_stop_front',   0.14)
         self.declare_parameter('d_stop_lateral', 0.06)
+        self.declare_parameter('d_emergencia_front', 0.06)  # m ya casi tocando: intenta
+        self.declare_parameter('d_emergencia_lateral', 0.03)  # salir aunque esté en GIRO/RODEO
+        self.declare_parameter('w_salir_choque', 0.3)  # rad/s al girar para salir del choque
         self.declare_parameter('d_giro',         0.30)
         self.declare_parameter('d_front_inicio', 0.40)
 
@@ -185,6 +188,9 @@ class Guardian(Node):
     def _reload_params(self):
         self.d_stop_front      = self.get_parameter('d_stop_front').value
         self.d_stop_lat        = self.get_parameter('d_stop_lateral').value
+        self.d_emerg_front     = self.get_parameter('d_emergencia_front').value
+        self.d_emerg_lat       = self.get_parameter('d_emergencia_lateral').value
+        self.w_salir_choque    = self.get_parameter('w_salir_choque').value
         self.d_giro            = self.get_parameter('d_giro').value
         self.d_front_ini       = self.get_parameter('d_front_inicio').value
         self.target_der        = self.get_parameter('target_der').value
@@ -353,10 +359,46 @@ class Guardian(Node):
         self.estado   = nuevo
         self.t_inicio = self.get_clock().now()
 
+    def _w_salir_choque(self):
+        """Emergencia real (ya casi tocando algo): gira EN EL SITIO (v=0)
+        sin importar en qué estado esté el FSM — a esta distancia seguir
+        el guion de GIRO/RODEO tal cual ya no es seguro, hay que intentar
+        salir del choque activamente en vez de solo frenar o continuar
+        ciego. Prioriza volver a la DERECHA (el robot ya viaja pegado a
+        esa pared por diseño — target_der — así que es el lado "natural"
+        para reincorporarse): gira a la derecha si ese lado tiene margen
+        real (>= d_stop_lat, no solo el umbral de emergencia); si la
+        derecha también está apretada, gira a la izquierda."""
+        d_der = self.dist_der_raw if math.isfinite(self.dist_der_raw) else float('inf')
+        if d_der >= self.d_stop_lat:
+            return -self.w_salir_choque   # derecha tiene margen -> gira hacia allá
+        return self.w_salir_choque        # derecha también apretada -> gira a la izquierda
+
     def loop_control(self):
 
+        # ── PRIORIDAD 0: emergencia real — ya casi tocando algo ───────────
+        # Umbral mucho más cerrado que el STOP normal y NO se exceptúa en
+        # GIRO/RODEO: a esta distancia seguir el guion de la maniobra ya no
+        # es seguro, hay que intentar salir del choque.
+        if (self.dist_frente < self.d_emerg_front
+                or (math.isfinite(self.dist_izq_raw) and self.dist_izq_raw < self.d_emerg_lat)
+                or (math.isfinite(self.dist_der_raw) and self.dist_der_raw < self.d_emerg_lat)):
+            self._pub(0.0, self._w_salir_choque())
+            self._pub_dbg(0, 0, 0, 0)
+            self.get_logger().warn(
+                f'CHOQUE f={self.dist_frente:.3f} l={self.dist_izq_raw:.3f}'
+                f' r={self.dist_der_raw:.3f} — saliendo', throttle_duration_sec=0.4)
+            return
+
         # ── PRIORIDAD 1: STOP absoluto ────────────────────────────────────
-        if self.dist_frente < self.d_stop_front:
+        # No aplica mientras el FSM ya está en GIRO/RODEO: son maniobras
+        # deliberadas que pasan cerca de la caja/pared a propósito y ya
+        # tienen sus propios límites de seguridad (t_giro_max/
+        # d_lado_salida_giro en GIRO; t_rodeo_max en RODEO) — el STOP
+        # genérico las congelaba a mitad de camino por 1cm de margen,
+        # dejando al robot pegado sin terminar de pasar el obstáculo.
+        en_maniobra = self.estado in (GIRO, RODEO)
+        if not en_maniobra and self.dist_frente < self.d_stop_front:
             self._pub(0.0, 0.0)
             self._pub_dbg(0, 0, 0, 0)
             self.get_logger().warn(
@@ -366,13 +408,13 @@ class Guardian(Node):
         # RANSAC descarta a propósito objetos que no son pared (p.ej. una
         # caja pegada al costado) como outliers, y ese es justo el caso que
         # este STOP tiene que detectar.
-        if math.isfinite(self.dist_izq_raw) and self.dist_izq_raw < self.d_stop_lat:
+        if not en_maniobra and math.isfinite(self.dist_izq_raw) and self.dist_izq_raw < self.d_stop_lat:
             self._pub(0.0, 0.0)
             self._pub_dbg(0, 0, 0, 0)
             self.get_logger().warn(
                 f'PARA izq={self.dist_izq_raw:.3f}m', throttle_duration_sec=0.4)
             return
-        if math.isfinite(self.dist_der_raw) and self.dist_der_raw < self.d_stop_lat:
+        if not en_maniobra and math.isfinite(self.dist_der_raw) and self.dist_der_raw < self.d_stop_lat:
             # El GIRO puede ir hacia cualquier lado (no solo izquierda), así
             # que el riesgo de colisión lateral también puede venir del
             # lado derecho.

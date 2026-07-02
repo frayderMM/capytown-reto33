@@ -17,6 +17,12 @@ behavior_fsm:
     # Parada absoluta
     d_stop_front:   0.14   # m  14 cm frente
     d_stop_lateral: 0.06   # m  6 cm costado (aplica a izq y a der por igual)
+    # No aplica durante GIRO/RODEO (maniobra deliberada, ya tiene sus
+    # propios límites). Debajo de esto sí es choque real y aplica siempre:
+    d_emergencia_front:   0.06  # m
+    d_emergencia_lateral: 0.03  # m
+    w_salir_choque:       0.3   # rad/s: gira en el sitio hacia el lado con
+                                # más espacio crudo para salir del choque
 
     # Umbrales frontales
     d_giro:         0.30   # m  trigger GIRO
