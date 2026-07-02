@@ -37,9 +37,9 @@ behavior_fsm:
 
     # Velocidad
     vel_crucero:      0.10
-    vel_maniobra:     0.07   # lineal en GIRO/RODEO: mas lento que crucero para
-                             # recorrer menos distancia "a ciegas" si el rumbo
-                             # queda torcido tras el giro (problema de la diagonal)
+    vel_maniobra:     0.05   # lineal en GIRO/RODEO: bajada de 0.07 -> 0.05, el
+                             # robot pasaba bien pero avanzaba mas de lo necesario
+                             # haciendo el giro/rodeo
     vel_giro_gradual: 0.55   # subido de 0.50 (a veces el giro se quedaba corto)
     max_w:            0.60
 
@@ -54,9 +54,9 @@ behavior_fsm:
     d_lado_salida_giro: 0.20  # m  sale de GIRO si el lado hacia el que gira < 20cm
     k_urgencia_giro:    1.7   # amplifica el giro si el obstaculo esta muy cerca de d_giro
     t_rodeo_min:        0.4   # s  minimo recto tras GIRO antes de evaluar salida
-    t_rodeo_max:        1.2   # s  salvavidas — RODEO es ciego (w=0, no corrige rumbo);
-                              # si GIRO no dejo el robot bien alineado, acotar esto limita
-                              # cuanto se puede ir en diagonal antes de volver a CRUCERO
+    t_rodeo_max:        1.0   # s  salvavidas — RODEO es ciego (w=0, no corrige rumbo);
+                              # bajado de 1.2 -> 1.0 junto con vel_maniobra, para
+                              # recorrer menos distancia total en la maniobra
     t_cooldown:         2.0   # s  cooldown post-RODEO
     t_recuperacion:     1.5   # s  suprime w_front tras RODEO
 
