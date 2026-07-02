@@ -21,7 +21,14 @@ CRUCERO:  sigue pared derecha.
 GIRO:     gira hacia el lado con MAS espacio (compara dist_izq vs dist_der
           al momento de entrar), con magnitud proporcional a que tan cerca
           esta el obstaculo (mas cerca → giro mas cerrado).
-          Sale si: izq<d_izq_salida | frente despeja tras t_giro_min | max t_giro_max
+          Zona complicada (dos obstaculos pegados, p.ej. caja justo en una
+          esquina junto a la pared de la isla): si este GIRO se dispara a
+          menos de t_ventana_escalada del anterior, se considera "giro
+          consecutivo" y se responde con giro a max_w sostenido por
+          t_giro_min_escalado, en vez del calculo normal — para salir de
+          una vez de la zona en vez de corregir de a poquitos y volver a
+          chocar con el siguiente obstaculo.
+          Sale si: izq<d_izq_salida | frente despeja tras t_giro_min(_actual) | max t_giro_max
 RODEO:    avanza RECTO (w=0) hasta que el frente vuelve a despejarse
           (sensor, no temporizador), con un minimo y un maximo de seguridad.
 CRUCERO(recovery): durante t_recuperacion, solo w_der sin w_front.
@@ -87,6 +94,16 @@ class BehaviorFSM(Node):
         self.declare_parameter('t_cooldown',        2.0)
         self.declare_parameter('t_recuperacion',    1.5)
 
+        # Zonas complicadas (dos obstaculos pegados, p.ej. una caja justo en
+        # una esquina junto a la pared de la isla): un giro moderado termina
+        # apuntando al SEGUNDO obstaculo casi de inmediato, encadenando mas
+        # giros hasta enredarse. Si un nuevo GIRO se dispara poco despues del
+        # anterior, se cuenta como "giro consecutivo" y se responde con un
+        # giro mas fuerte y sostenido para salir de una vez, en vez de
+        # corregir de a poquitos y volver a chocar con lo siguiente.
+        self.declare_parameter('t_ventana_escalada',    6.0)  # s  disparo dentro de esta ventana desde el ultimo GIRO = zona complicada
+        self.declare_parameter('t_giro_min_escalado',   1.4)  # s  giro minimo mas largo en zona complicada (vs t_giro_min normal)
+
         # ── Cargar ────────────────────────────────────────────────────────
         self.front_rad = math.radians(self.get_parameter('lidar_front_deg').value)
         self.sector    = math.radians(self.get_parameter('sector_frontal_deg').value)
@@ -100,6 +117,8 @@ class BehaviorFSM(Node):
         self.t_ultimo_giro = -float('inf')
         self.dir_giro      = 1.0   # +1 = izquierda (w>0), -1 = derecha (w<0)
         self.w_giro_efectivo = 0.0  # magnitud del giro, congelada al entrar a GIRO
+        self.giros_consecutivos = 0  # cuantos GIRO seguidos dentro de t_ventana_escalada
+        self.t_giro_min_actual  = 0.0  # t_giro_min de este GIRO, congelado al entrar (normal o escalado)
 
         # ── PD tracking pared derecha ────────────────────────────────────
         self._err_der_prev = 0.0
@@ -168,6 +187,8 @@ class BehaviorFSM(Node):
         self.t_rodeo_max       = self.get_parameter('t_rodeo_max').value
         self.t_cooldown        = self.get_parameter('t_cooldown').value
         self.t_recuperacion    = self.get_parameter('t_recuperacion').value
+        self.t_ventana_escalada  = self.get_parameter('t_ventana_escalada').value
+        self.t_giro_min_escalado = self.get_parameter('t_giro_min_escalado').value
 
     def _on_params(self, params):
         self._reload_params()
@@ -299,15 +320,36 @@ class BehaviorFSM(Node):
                     self.dir_giro = -1.0
                 else:
                     self.dir_giro = 1.0
-                # Magnitud del giro: se calcula UNA vez aqui, con las
-                # lecturas de este instante, y queda fija durante todo el
-                # GIRO. Recalcularla en cada ciclo con dist_frente en vivo
-                # (como antes) la hacia erratica: dist_frente cambia rapido
-                # y de forma poco representativa mientras el robot rota,
-                # asi que el giro salia a veces corto, a veces excesivo.
-                urgencia = max(0.0, self.d_giro - self.dist_frente) / max(self.d_giro, 1e-6)
-                self.w_giro_efectivo = max(-self.max_w, min(self.max_w,
-                    self.dir_giro * self.w_giro * (1.0 + self.k_urgencia_giro * urgencia)))
+                # Zona complicada (dos obstaculos pegados, p.ej. caja justo
+                # en una esquina): si este GIRO se dispara poco despues de
+                # que termino el anterior, es señal de que un giro moderado
+                # no alcanzo a sacar al robot del lio -- se responde con un
+                # giro mas fuerte y sostenido en vez de seguir corrigiendo
+                # de a poquitos.
+                if t_post < self.t_ventana_escalada:
+                    self.giros_consecutivos += 1
+                else:
+                    self.giros_consecutivos = 0
+
+                if self.giros_consecutivos >= 1:
+                    self.w_giro_efectivo   = self.dir_giro * self.max_w
+                    self.t_giro_min_actual = self.t_giro_min_escalado
+                    self.get_logger().warn(
+                        f'Zona complicada (giro consecutivo #{self.giros_consecutivos + 1})'
+                        f' — giro reforzado')
+                else:
+                    # Magnitud del giro: se calcula UNA vez aqui, con las
+                    # lecturas de este instante, y queda fija durante todo
+                    # el GIRO. Recalcularla en cada ciclo con dist_frente en
+                    # vivo (como antes) la hacia erratica: dist_frente
+                    # cambia rapido y de forma poco representativa mientras
+                    # el robot rota, asi que el giro salia a veces corto, a
+                    # veces excesivo.
+                    urgencia = max(0.0, self.d_giro - self.dist_frente) / max(self.d_giro, 1e-6)
+                    self.w_giro_efectivo = max(-self.max_w, min(self.max_w,
+                        self.dir_giro * self.w_giro * (1.0 + self.k_urgencia_giro * urgencia)))
+                    self.t_giro_min_actual = self.t_giro_min
+
                 self._cambiar(GIRO)
                 self.get_logger().info(
                     f'GIRO dir={"izq" if self.dir_giro > 0 else "der"}'
@@ -355,7 +397,7 @@ class BehaviorFSM(Node):
                     f'GIRO→RODEO lado={"izq" if self.dir_giro > 0 else "der"}={d_lado:.2f}m')
                 self._cambiar(RODEO)
                 return
-            if self._t_estado() >= self.t_giro_min and self.dist_frente > self.d_giro:
+            if self._t_estado() >= self.t_giro_min_actual and self.dist_frente > self.d_giro:
                 self._cambiar(RODEO)
                 return
 
