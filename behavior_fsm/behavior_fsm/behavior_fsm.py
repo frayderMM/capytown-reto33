@@ -97,17 +97,18 @@ class Guardian(Node):
                                                             # de seguir girando/avanzando
         self.declare_parameter('d_lado_salida_giro', 0.20)
         self.declare_parameter('k_urgencia_giro',   1.2)
+        self.declare_parameter('d_lado_max_creible', 1.0)  # m  por encima de esto,
+                                                            # una lectura RANSAC no es
+                                                            # "espacio libre" sino "sin
+                                                            # pared real que ajustar"
         self.declare_parameter('t_rodeo_min',       0.4)
         self.declare_parameter('t_rodeo_max',       1.0)
         self.declare_parameter('t_cooldown',        2.0)
         self.declare_parameter('t_recuperacion',    1.5)
 
-        # Retroceso tras un choque (STOP absoluto)
+        # Retroceso tras un choque (STOP absoluto) — línea recta, sin girar
         self.declare_parameter('dist_retroceso', 0.15)  # m  retrocede esto tras un choque
         self.declare_parameter('vel_retroceso',  0.08)  # m/s magnitud (t_retroceso = dist/vel)
-        self.declare_parameter('w_retroceso',    0.42)  # rad/s giro de corrección durante el
-                                                          # retroceso, hacia el lado con más
-                                                          # espacio (crudo, igual criterio que GIRO)
 
         # Tracking de pared derecha con heading (además de distancia): usa el
         # segmento PARED ya clasificado por percepcion.py (borde exterior del
@@ -182,7 +183,6 @@ class Guardian(Node):
         self.t_ultimo_giro = -float('inf')
         self.dir_giro      = 1.0   # +1 = izquierda (w>0), -1 = derecha (w<0)
         self.w_giro_efectivo = 0.0  # magnitud del giro, congelada al entrar a GIRO
-        self.w_retroceso_efectivo = 0.0  # giro de corrección en RETROCESO, congelado al entrar
 
         # ── PD tracking pared derecha ─────────────────────────────────────
         self._err_der_prev = 0.0
@@ -257,6 +257,7 @@ class Guardian(Node):
         self.t_giro_max        = self.get_parameter('t_giro_max').value
         self.d_lado_salida_giro = self.get_parameter('d_lado_salida_giro').value
         self.k_urgencia_giro   = self.get_parameter('k_urgencia_giro').value
+        self.d_lado_max_creible = self.get_parameter('d_lado_max_creible').value
         self.t_rodeo_min       = self.get_parameter('t_rodeo_min').value
         self.t_rodeo_max       = self.get_parameter('t_rodeo_max').value
         self.t_cooldown        = self.get_parameter('t_cooldown').value
@@ -264,7 +265,6 @@ class Guardian(Node):
         self.dist_retroceso    = self.get_parameter('dist_retroceso').value
         self.vel_retroceso     = self.get_parameter('vel_retroceso').value
         self.t_retroceso       = self.dist_retroceso / max(self.vel_retroceso, 1e-6)
-        self.w_retroceso       = self.get_parameter('w_retroceso').value
         self.K_alpha           = self.get_parameter('K_alpha').value
         self.min_long_pared_pd = self.get_parameter('min_long_pared_pd').value
         self.cos_lat_pd        = self.get_parameter('cos_lateral_min_pd').value
@@ -531,28 +531,19 @@ class Guardian(Node):
         self.t_inicio = self.get_clock().now()
 
     def _iniciar_retroceso(self, motivo: str):
-        """Gira hacia el lado con MÁS espacio (crudo, no RANSAC: justo aquí
-        es donde RANSAC es menos confiable, pegado a un obstáculo) mientras
-        retrocede, para quedar ya encarado hacia el lado libre y no repetir
-        el mismo problema al reintentar. Mismo criterio de "más espacio"
-        que GIRO. Compartido por el STOP (choque real) y por GIRO cuando se
-        queda sin resolver (espacio muy chico para completar el giro)."""
-        if math.isfinite(self.dist_izq_raw) and math.isfinite(self.dist_der_raw):
-            dir_retroceso = 1.0 if self.dist_izq_raw >= self.dist_der_raw else -1.0
-        elif math.isfinite(self.dist_der_raw):
-            dir_retroceso = 1.0
-        elif math.isfinite(self.dist_izq_raw):
-            dir_retroceso = -1.0
-        else:
-            dir_retroceso = 1.0
-        self.w_retroceso_efectivo = dir_retroceso * self.w_retroceso
+        """Retrocede en línea RECTA (sin girar) una distancia fija. Girar
+        mientras se retrocede (versión anterior) podía barrer el costado
+        del robot hacia otro obstáculo cercano en vez de alejarlo, y
+        terminaba en un vaivén choca→retrocede→choca sin escapar nunca
+        (visto en pruebas reales, varias veces seguidas). En línea recta
+        el retroceso solo aumenta la distancia al punto de choque, sin
+        arriesgar un golpe lateral nuevo por el giro."""
         self.get_logger().warn(
-            f'{motivo} → retrocede {self.dist_retroceso:.2f}m'
-            f' girando hacia {"izq" if dir_retroceso > 0 else "der"}',
+            f'{motivo} → retrocede {self.dist_retroceso:.2f}m recto',
             throttle_duration_sec=0.4)
         self._cambiar(RETROCESO)
         self._pub_dbg(0, 0, 0, 0)
-        self._pub(-self.vel_retroceso, self.w_retroceso_efectivo)
+        self._pub(-self.vel_retroceso, 0.0)
 
     def loop_control(self):
 
@@ -578,14 +569,13 @@ class Guardian(Node):
                 self._iniciar_retroceso(f'CHOQUE {choque}')
                 return
 
-        # ── RETROCESO: recto hacia atrás + giro de corrección (congelado al
-        # entrar) hacia el lado con más espacio, tiempo fijo, ciego a propósito
+        # ── RETROCESO: recto hacia atrás, sin girar, tiempo fijo ───────────
         if self.estado == RETROCESO:
             if self._t_estado() >= self.t_retroceso:
                 self._cambiar(CRUCERO)
                 return
             self._pub_dbg(0, 0, 0, 0)
-            self._pub(-self.vel_retroceso, self.w_retroceso_efectivo)
+            self._pub(-self.vel_retroceso, 0.0)
             return
 
         # ── CRUCERO ───────────────────────────────────────────────────────
@@ -595,15 +585,27 @@ class Guardian(Node):
             cooldown_ok = t_post >= self.t_cooldown
 
             if cooldown_ok and self.dist_frente <= self.d_giro:
-                # Girar hacia el lado con MÁS espacio disponible en este
-                # instante (no siempre izquierda). Sin referencia de ningún
-                # lado, izquierda por defecto.
-                if math.isfinite(self.dist_izq) and math.isfinite(self.dist_der):
-                    self.dir_giro = 1.0 if self.dist_izq >= self.dist_der else -1.0
-                elif math.isfinite(self.dist_der):
-                    self.dir_giro = -1.0
-                else:
+                # Girar hacia el lado con MÁS espacio CREÍBLE. Una lectura
+                # RANSAC por encima de d_lado_max_creible no es "espacio
+                # libre" — el corredor real es mucho más angosto que eso,
+                # así que es RANSAC sin pared izquierda/derecha real que
+                # ajustar (cayó en un punto lejano/ruido). Tratarla como
+                # "espacio abierto" mandaba al robot a girar bien lejos de
+                # su carril de referencia y no lograba volver (visto en
+                # pruebas reales: izq=2.5-2.9m junto a una caja pegada al
+                # frente-derecha). Por defecto, y si ninguna lectura es
+                # creíble, se prefiere el lado DERECHO — es el que el
+                # robot sigue durante todo el crucero.
+                iz = self.dist_izq if (math.isfinite(self.dist_izq)
+                                       and self.dist_izq <= self.d_lado_max_creible) else None
+                de = self.dist_der if (math.isfinite(self.dist_der)
+                                       and self.dist_der <= self.d_lado_max_creible) else None
+                if iz is not None and de is not None:
+                    self.dir_giro = 1.0 if iz >= de else -1.0
+                elif iz is not None:
                     self.dir_giro = 1.0
+                else:
+                    self.dir_giro = -1.0
                 # Magnitud del giro: se calcula UNA vez aquí, con las
                 # lecturas de este instante, y queda fija durante todo el
                 # GIRO. Recalcularla en cada ciclo con dist_frente en vivo

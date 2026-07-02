@@ -53,18 +53,19 @@ behavior_fsm:
     d_lado_salida_giro: 0.20  # m  sale de GIRO si el lado hacia el que gira < 20cm
                               # (medido crudo/sin RANSAC, ver behavior_fsm.py)
     k_urgencia_giro:    1.2   # amplifica el giro si el obstáculo está muy cerca de d_giro
+    d_lado_max_creible: 1.0   # m  por encima de esto, una lectura RANSAC no es
+                              # "espacio libre" sino "sin pared real que ajustar";
+                              # se ignora al elegir el lado del giro (por defecto,
+                              # y si ninguna lectura es creible, se prefiere DERECHA)
     t_rodeo_min:        0.4   # s  mínimo recto tras GIRO antes de evaluar salida
     t_rodeo_max:        1.0   # s  salvavidas — RODEO es ciego (w=0)
-    t_cooldown:         2.0   # s  cooldown post-RODEO
+    t_cooldown:         2.0   # s  cooldown post-RODEO (solo tras GIRO/RODEO normal,
+                              # no tras RETROCESO)
     t_recuperacion:     1.5   # s  suprime evasión frontal tras RODEO
 
-    # Retroceso tras un choque (STOP absoluto)
+    # Retroceso tras un choque (STOP absoluto) — linea recta, sin girar
     dist_retroceso: 0.15      # m  retrocede esto tras un choque
     vel_retroceso:  0.08      # m/s magnitud del retroceso (t_retroceso = dist/vel)
-    w_retroceso:    0.42      # rad/s giro de corrección durante el retroceso,
-                              # hacia el lado con más espacio (crudo, igual
-                              # criterio que GIRO) para quedar ya encarado
-                              # hacia el lado libre al reintentar
 
     topic_odom: '/odom_raw'   # odometría del yahboom_driver (trail + censo vivo del panel)
 
