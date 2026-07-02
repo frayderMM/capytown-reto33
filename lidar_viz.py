@@ -221,10 +221,10 @@ def main():
                          fontsize=11, fontweight='bold', va='top')
 
                 mapa_pared = dbg.get('mapa_pared', [])
-                for i, (x1, y1, x2, y2) in enumerate(mapa_pared):
-                    axR.plot([x1, x2], [y1, y2], color=COLORES['PARED'],
-                             linewidth=2.0, alpha=0.7, zorder=2,
-                             label='mapa pista' if i == 0 else None)
+                if mapa_pared:
+                    axR.scatter([p[0] for p in mapa_pared], [p[1] for p in mapa_pared],
+                                s=3, color=COLORES['PARED'], alpha=0.6, zorder=2,
+                                label='mapa pista')
 
                 trail = dbg.get('trail', [])
                 if trail:
@@ -246,7 +246,17 @@ def main():
                     axR.annotate(f'VIVA {i + 1}', (bx, by), color='#ffa726',
                                  ha='center', va='center', fontsize=7,
                                  fontweight='bold', zorder=5)
-                if trail or pose or cajas_vivas or mapa_pared:
+                cajas_fijas = dbg.get('cajas_fijas', [])
+                for i, (bx, by) in enumerate(cajas_fijas):
+                    axR.add_patch(mpatches.Rectangle(
+                        (bx - 0.10, by - 0.10), 0.20, 0.20,
+                        facecolor='#ffa726', alpha=0.55, edgecolor='#ffa726',
+                        linewidth=2.0, zorder=4,
+                        label='caja censada (der)' if i == 0 else None))
+                    axR.annotate(f'{i + 1}', (bx, by), color='#1a1a2e',
+                                 ha='center', va='center', fontsize=8,
+                                 fontweight='bold', zorder=5)
+                if trail or pose or cajas_vivas or cajas_fijas or mapa_pared:
                     handles, labels = axR.get_legend_handles_labels()
                     if cajas_vivas:
                         handles.append(mpatches.Patch(
@@ -257,13 +267,21 @@ def main():
                 axR.set_title(
                     f"Recorrido + cajas vivas — {len(cajas_vivas)} visibles",
                               color='white', fontsize=10)
-                puntos_mapa = [(x1, y1) for x1, y1, x2, y2 in mapa_pared] + \
-                              [(x2, y2) for x1, y1, x2, y2 in mapa_pared]
-                todos = trail + cajas_vivas + puntos_mapa + ([pose[:2]] if pose else [])
+                axR.text(0.02, 0.02,
+                         f'Cajas censadas (lado derecho): {len(cajas_fijas)}',
+                         transform=axR.transAxes, color='#ffa726', fontsize=9,
+                         fontweight='bold',
+                         bbox=dict(boxstyle='round,pad=0.25', fc=PANEL,
+                                   ec='#ffa726', linewidth=0.6, alpha=0.85))
+                todos = trail + cajas_vivas + cajas_fijas + mapa_pared + \
+                        ([pose[:2]] if pose else [])
                 if todos:
                     xs, ys = [q[0] for q in todos], [q[1] for q in todos]
                     cx, cy = (max(xs) + min(xs)) / 2, (max(ys) + min(ys)) / 2
-                    R = max(max(xs) - min(xs), max(ys) - min(ys)) / 2 + 0.5
+                    R = max(max(xs) - min(xs), max(ys) - min(ys)) / 2 + 1.0
+                    R = max(R, 2.2)  # la pista completa es ~3.0x1.8 m: no
+                                     # arrancar "pegado" al robot, dejar
+                                     # margen para verla entera desde ya
                     axR.set_xlim(cx - R, cx + R)
                     axR.set_ylim(cy - R, cy + R)
             else:

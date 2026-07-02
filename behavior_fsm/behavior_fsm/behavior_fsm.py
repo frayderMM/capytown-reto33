@@ -63,21 +63,6 @@ RODEO     = 'RODEO'
 RETROCESO = 'RETROCESO'
 
 
-def _snap_ortogonal(p1, p2):
-    """Fuerza un segmento a quedar perfectamente horizontal o vertical (el
-    eje más cercano a su orientación actual), preservando su punto medio y
-    largo. La pista es un rectángulo con isla rectangular: toda pared real
-    ES horizontal o vertical, así que cualquier desvío es error de yaw de
-    la odometría, no geometría — enderezarlo evita que el mapa fijo se vea
-    "girado" tras cada giro del robot."""
-    mx, my = 0.5 * (p1[0] + p2[0]), 0.5 * (p1[1] + p2[1])
-    semi_largo = 0.5 * math.hypot(p2[0] - p1[0], p2[1] - p1[1])
-    ang = math.atan2(p2[1] - p1[1], p2[0] - p1[0])
-    ang_eje = round(ang / (math.pi / 2)) * (math.pi / 2)
-    dx, dy = math.cos(ang_eje) * semi_largo, math.sin(ang_eje) * semi_largo
-    return (mx - dx, my - dy), (mx + dx, my + dy)
-
-
 class Guardian(Node):
     def __init__(self):
         super().__init__('behavior_fsm')
@@ -145,6 +130,22 @@ class Guardian(Node):
         self.declare_parameter('offset_lados', 0.08)
         self.declare_parameter('topic_odom', '/odom_raw')
 
+        # ── Mapa fijo de pared (marco odom, solo panel) ────────────────────
+        # Nube de PUNTOS fundidos por grilla (no líneas): unir segmentos
+        # completos entre pasadas es frágil (casi nunca comparten extremos
+        # exactos), unir cada punto a la celda más cercana es simple y
+        # converge solo con el uso.
+        self.declare_parameter('mapa_rango_max', 1.5)  # m  no mapear detecciones
+                                                          # lejanas: el error de yaw
+                                                          # se amplifica con el rango
+        self.declare_parameter('mapa_celda', 0.04)      # m  lado de la celda de fusión
+        self.declare_parameter('mapa_max_puntos', 6000)  # tope de celdas distintas
+
+        # ── Censo lado derecho (marco odom, solo panel) ─────────────────────
+        self.declare_parameter('censo_dist_dup', 0.30)     # m  radio de deduplicado
+        self.declare_parameter('censo_confirmaciones', 3)  # hits para confirmar
+        self.declare_parameter('censo_max', 8)             # tope de cajas censadas
+
         # ── Cargar movimiento ─────────────────────────────────────────────
         self.front_rad = math.radians(self.get_parameter('lidar_front_deg').value)
         self.sector    = math.radians(self.get_parameter('sector_frontal_deg').value)
@@ -164,6 +165,12 @@ class Guardian(Node):
         self.lado_caja_linea = g('lado_caja_linea')
         self.off_f = g('offset_frente')
         self.off_l = g('offset_lados')
+        self.mapa_rango_max = g('mapa_rango_max')
+        self.mapa_celda     = g('mapa_celda')
+        self.mapa_max_puntos = int(g('mapa_max_puntos'))
+        self.censo_dist_dup = g('censo_dist_dup')
+        self.censo_confirmaciones = int(g('censo_confirmaciones'))
+        self.censo_max      = int(g('censo_max'))
 
         # ── Estado FSM (RC3) ──────────────────────────────────────────────
         self.estado        = CRUCERO
@@ -194,7 +201,9 @@ class Guardian(Node):
         self.pose = None
         self.trail = []
         self.cajas_vivas = []
-        self.mapa_pared = []    # segmentos de PARED acumulados en marco odom
+        self.cajas_fijas = []       # censo confirmado, solo lado derecho (el que se sigue)
+        self.cajas_pendientes = []  # candidatas a confirmar (hits/miss), ver _actualizar_censo_derecha
+        self.mapa_pared = {}    # {(celda_x,celda_y): {'x','y','n'}} nube de puntos en marco odom
 
         # ── ROS I/O ───────────────────────────────────────────────────────
         _qos = QoSProfile(depth=10)
@@ -282,6 +291,7 @@ class Guardian(Node):
 
     def _actualizar_cajas_desde_scan(self, clusters):
         vivas = []
+        vistas_der = []
         for cl in clusters:
             if cl['clase'] != pc.CAJA:
                 continue
@@ -292,87 +302,90 @@ class Guardian(Node):
             if odom is None:
                 continue
             vivas.append(odom)
+            if cy < -0.05:      # solo el lado que el robot sigue (derecha)
+                vistas_der.append(odom)
         self.cajas_vivas = vivas[-6:]
+        self._actualizar_censo_derecha(vistas_der)
+
+    def _actualizar_censo_derecha(self, vistas):
+        """Censo confirmado de cajas SOLO del lado derecho (el que el
+        robot sigue pegado a la pared) — cada caja real debe aparecer ahí
+        al pasarla, así que filtrar por lado descarta clusters CAJA
+        espurios que se vean de refilón hacia la izquierda (isla). Misma
+        lógica de confirmación por hits/miss que box_detector.py (Parte
+        A), pero local a este panel — no reemplaza el censo oficial."""
+        for p in self.cajas_pendientes:
+            p['miss'] += 1
+        for ox, oy in vistas:
+            if any(math.hypot(ox - fx, oy - fy) < self.censo_dist_dup
+                   for fx, fy in self.cajas_fijas):
+                continue
+            mejor = None
+            for p in self.cajas_pendientes:
+                d = math.hypot(ox - p['x'], oy - p['y'])
+                if d < self.censo_dist_dup and (mejor is None or d < mejor[0]):
+                    mejor = (d, p)
+            if mejor is None:
+                self.cajas_pendientes.append({'x': ox, 'y': oy, 'hits': 1, 'miss': 0})
+                continue
+            p = mejor[1]
+            h = p['hits']
+            p['x'] = (p['x'] * h + ox) / (h + 1)
+            p['y'] = (p['y'] * h + oy) / (h + 1)
+            p['hits'] = h + 1
+            p['miss'] = 0
+            if p['hits'] >= self.censo_confirmaciones and len(self.cajas_fijas) < self.censo_max:
+                self.cajas_fijas.append((p['x'], p['y']))
+        self.cajas_pendientes = [p for p in self.cajas_pendientes
+                                 if p['miss'] <= 8 and p['hits'] < self.censo_confirmaciones]
 
     def _actualizar_mapa_pared(self, clusters):
-        """Mapa FIJO de la pista en marco odom: cada segmento clasificado
-        como PARED se transforma con la pose actual (self.pose, la más
-        reciente de /odom_raw) y se funde con lo ya mapeado. A diferencia
-        de 'segs' (que se recalcula cada scan en el marco del robot), este
-        mapa persiste — lo que ya se detectó una vez de la pared queda
-        fijo, no desaparece cuando el robot gira o se aleja.
+        """Mapa FIJO de la pista en marco odom: nube de PUNTOS (no líneas).
+        Cada punto crudo de un cluster PARED se transforma a odom con la
+        pose actual y se funde con lo ya mapeado por cercanía de grilla —
+        unir SEGMENTOS completos entre pasadas es frágil (casi nunca
+        comparten extremos exactos: el mismo tramo de pared se ve con
+        largos y cortes distintos según el ángulo y qué tanto lo tapó una
+        caja), unir PUNTO a PUNTO es simple y converge solo con el uso.
 
-        Tres cuidados para que la posición sea la correcta y no se
-        dupliquen ni se corran las paredes al girar:
-          · NO se mapea durante GIRO ni RETROCESO — en ambos la
-            orientación cambia mientras el robot se mueve, y un error de
-            yaw se amplifica en la transformación a odom (más en los
-            puntos lejanos del segmento); solo se mapea en CRUCERO/RODEO,
-            cuando la pose es más estable.
-          · Cada segmento se "endereza" al eje más cercano (horizontal o
-            vertical, ver _snap_ortogonal): la pista es un rectángulo con
-            isla rectangular, toda pared real ES horizontal o vertical, así
-            que si el yaw de la odometría quedó con un pequeño error tras
-            un giro, esto evita que el mapa se vea "rotado" o desalineado
-            respecto a lo ya mapeado antes.
-          · Un segmento nuevo que caiga cerca de uno ya mapeado (mismo
-            punto medio Y misma orientación, no solo posición) NO se
-            agrega como entrada aparte: se PROMEDIA con la existente
-            (running average), así el mapa converge a la posición real en
-            vez de acumular copias corridas por el ruido de cada barrido.
+        Filtros para que el punto sea confiable:
+          · NO se mapea durante GIRO/RETROCESO, ni en el primer tramo de
+            CRUCERO/RODEO tras uno (self.t_recuperacion) — la orientación
+            recién salida de un giro es la menos confiable, y un error de
+            yaw se amplifica con la distancia al transformar a odom.
+          · Se descarta cualquier punto a más de mapa_rango_max — mismo
+            motivo, el error crece con el rango.
+          · Cada punto cae en una celda de mapa_celda metros; si la celda
+            ya tiene un punto, se promedia (running average) en vez de
+            agregar uno nuevo — así el mapa no crece sin límite ni se ve
+            "peludo" de puntos casi duplicados.
         """
         if self.pose is None or self.estado in (GIRO, RETROCESO):
             return
+        ahora = self.get_clock().now().nanoseconds * 1e-9
+        if ahora - self.t_ultimo_giro < self.t_recuperacion:
+            return
+        celda = self.mapa_celda
         for cl in clusters:
             if cl['clase'] != pc.PARED:
                 continue
-            for s in cl['segs']:
-                p1 = self._a_odom(*s['p1'])
-                p2 = self._a_odom(*s['p2'])
-                if p1 is None or p2 is None:
+            for (px, py) in cl['pts']:
+                if math.hypot(px, py) > self.mapa_rango_max:
                     continue
-                p1, p2 = _snap_ortogonal(p1, p2)
-                ang = math.atan2(p2[1] - p1[1], p2[0] - p1[0])
-                mx, my = 0.5 * (p1[0] + p2[0]), 0.5 * (p1[1] + p2[1])
-
-                mejor = None
-                for entrada in self.mapa_pared:
-                    if math.hypot(mx - entrada['mx'], my - entrada['my']) >= 0.06:
-                        continue
-                    dang = abs(math.atan2(math.sin(ang - entrada['ang']),
-                                          math.cos(ang - entrada['ang'])))
-                    dang = min(dang, math.pi - dang)  # una recta es igual a 180° de sí misma
-                    if dang <= math.radians(20):
-                        mejor = entrada
-                        break
-
-                if mejor is None:
-                    self.mapa_pared.append({'p1': p1, 'p2': p2, 'mx': mx, 'my': my,
-                                            'ang': ang, 'n': 1})
+                odom = self._a_odom(px, py)
+                if odom is None:
                     continue
-
-                # Empareja p1↔p1/p2↔p2 o p1↔p2/p2↔p1, lo que quede más
-                # cerca — el mismo segmento físico puede verse "al revés"
-                # si el robot lo cruza desde el otro lado en otra vuelta.
-                d_directo = (math.hypot(p1[0] - mejor['p1'][0], p1[1] - mejor['p1'][1]) +
-                            math.hypot(p2[0] - mejor['p2'][0], p2[1] - mejor['p2'][1]))
-                d_cruzado = (math.hypot(p1[0] - mejor['p2'][0], p1[1] - mejor['p2'][1]) +
-                            math.hypot(p2[0] - mejor['p1'][0], p2[1] - mejor['p1'][1]))
-                if d_cruzado < d_directo:
-                    p1, p2 = p2, p1
-
-                n = mejor['n']
-                mejor['p1'] = ((mejor['p1'][0] * n + p1[0]) / (n + 1),
-                              (mejor['p1'][1] * n + p1[1]) / (n + 1))
-                mejor['p2'] = ((mejor['p2'][0] * n + p2[0]) / (n + 1),
-                              (mejor['p2'][1] * n + p2[1]) / (n + 1))
-                mejor['mx'] = 0.5 * (mejor['p1'][0] + mejor['p2'][0])
-                mejor['my'] = 0.5 * (mejor['p1'][1] + mejor['p2'][1])
-                mejor['ang'] = math.atan2(mejor['p2'][1] - mejor['p1'][1],
-                                          mejor['p2'][0] - mejor['p1'][0])
-                mejor['n'] = n + 1
-        if len(self.mapa_pared) > 4000:
-            self.mapa_pared = self.mapa_pared[-4000:]
+                ox, oy = odom
+                clave = (round(ox / celda), round(oy / celda))
+                entrada = self.mapa_pared.get(clave)
+                if entrada is None:
+                    if len(self.mapa_pared) < self.mapa_max_puntos:
+                        self.mapa_pared[clave] = {'x': ox, 'y': oy, 'n': 1}
+                    continue
+                n = entrada['n']
+                entrada['x'] = (entrada['x'] * n + ox) / (n + 1)
+                entrada['y'] = (entrada['y'] * n + oy) / (n + 1)
+                entrada['n'] = n + 1
 
     def cb_scan(self, msg: LaserScan):
         # Frente + mínimo crudo lateral: se miden aquí mismo, sin depender de
@@ -701,10 +714,9 @@ class Guardian(Node):
             'trail': [[round(x, 3), round(y, 3)] for x, y in self.trail[-400:]],
             'cajas_vivas': [[round(x, 3), round(y, 3)]
                             for x, y in self.cajas_vivas],
-            'cajas_fijas': [],
-            'mapa_pared': [[round(e['p1'][0], 3), round(e['p1'][1], 3),
-                            round(e['p2'][0], 3), round(e['p2'][1], 3)]
-                           for e in self.mapa_pared],
+            'cajas_fijas': [[round(x, 3), round(y, 3)] for x, y in self.cajas_fijas],
+            'mapa_pared': [[round(e['x'], 3), round(e['y'], 3)]
+                           for e in self.mapa_pared.values()],
             'segs': segs,
         }
         m = String()

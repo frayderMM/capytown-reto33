@@ -83,6 +83,17 @@ behavior_fsm:
                                 # tolerancia de diagonal de lado_caja_max, ya
                                 # que una línea es un lado real, no el bbox
 
+    # --- Mapa fijo de pared (nube de puntos en marco odom, solo panel) ---
+    mapa_rango_max:  1.5        # m no mapear detecciones lejanas (el error
+                                 # de yaw se amplifica con el rango)
+    mapa_celda:      0.04       # m lado de celda de fusión (grilla)
+    mapa_max_puntos: 6000       # tope de celdas distintas
+
+    # --- Censo confirmado, solo lado derecho (solo panel) ---
+    censo_dist_dup:       0.30  # m radio de deduplicado (igual que box_detector)
+    censo_confirmaciones: 3     # hits para confirmar una caja
+    censo_max:            8     # tope de cajas censadas
+
 # wall_follower — paredes laterales por RANSAC (reemplaza Split-and-Merge).
 # Publica /dist_izq y /dist_der; behavior_fsm los consume, no los recalcula.
 wall_follower:
