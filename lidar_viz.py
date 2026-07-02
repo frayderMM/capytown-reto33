@@ -152,12 +152,19 @@ def main():
             if dbg is not None:
                 vistos = set()
                 for s in dbg.get('segs', []):
+                    if s['clase'] == 'RUIDO':
+                        continue
                     c = COLORES.get(s['clase'], '#888')
                     lbl = s['clase'] if s['clase'] not in vistos else None
                     vistos.add(s['clase'])
                     ancho = 4.0 if s['clase'] == 'CAJA' else 2.6
                     axL.plot([s['x1'], s['x2']], [s['y1'], s['y2']],
                              color=c, linewidth=ancho, zorder=4, label=lbl)
+                    mx = 0.5 * (s['x1'] + s['x2'])
+                    my = 0.5 * (s['y1'] + s['y2'])
+                    axL.annotate(f"{s['lon'] * 100:.0f}cm", (mx, my),
+                                 color=c, fontsize=6.5, ha='center',
+                                 va='bottom', zorder=6)
                 if vistos:
                     axL.legend(loc='upper right', facecolor=BG,
                                edgecolor='#444', labelcolor='white', fontsize=8)
