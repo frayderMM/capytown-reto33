@@ -34,6 +34,8 @@ import matplotlib
 matplotlib.use('TkAgg')
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
+import matplotlib.colors as mcolors
+from matplotlib.collections import LineCollection
 
 import rclpy
 from rclpy.node import Node
@@ -227,10 +229,19 @@ def main():
                                 label='mapa pista')
 
                 trail = dbg.get('trail', [])
-                if trail:
-                    axR.plot([q[0] for q in trail], [q[1] for q in trail],
-                             color=COLOR_RECORRIDO_REAL, linewidth=2.2,
-                             alpha=0.95, zorder=3, label='recorrido real')
+                if len(trail) >= 2:
+                    # Degradado: lo mas viejo se desvanece, lo mas reciente
+                    # queda solido -- una linea solida pareja se vuelve un
+                    # garabato ilegible en cuanto el robot da varias vueltas
+                    # sobre el mismo tramo (RETROCESO, GIRO en el sitio).
+                    segs = [[trail[i], trail[i + 1]] for i in range(len(trail) - 1)]
+                    n = len(segs)
+                    base = mcolors.to_rgb(COLOR_RECORRIDO_REAL)
+                    colores = [(*base, 0.12 + 0.83 * (i / max(n - 1, 1))) for i in range(n)]
+                    axR.add_collection(LineCollection(segs, colors=colores,
+                                                       linewidths=1.6, zorder=3))
+                    axR.plot([], [], color=COLOR_RECORRIDO_REAL, linewidth=1.6,
+                             label='recorrido real')
                 pose = dbg.get('pose')
                 if pose:
                     x, y, yaw = pose
