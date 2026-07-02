@@ -39,6 +39,11 @@ behavior_fsm:
     max_w: 0.45                 # rad/s saturación
     max_delta_w: 0.08           # rad/s por ciclo (anti-zigzag)
 
+    # --- Repulsión IZQUIERDA (anti-isla) y evasión frontal suave ---
+    d_izq_min: 0.12             # m bajo esto, empuja a la derecha
+    K_izq: 3.0
+    K_front: 2.0                # ganancia de giro suave hacia lo que se acerca al frente
+
     # --- FSM / velocidades (distancias frontales POST-OFFSET: borde real) ---
     vel_crucero: 0.15
     vel_min: 0.07

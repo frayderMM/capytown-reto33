@@ -97,6 +97,11 @@ class Guardian(Node):
         self.declare_parameter('Ka', 1.0)
         self.declare_parameter('max_w', 0.8)
         self.declare_parameter('max_delta_w', 0.15)    # rad/s por ciclo (anti-zigzag)
+        # Repulsión IZQUIERDA (anti-isla) y evasión frontal suave — avance
+        # continuo en vez de depender solo de las paradas discretas
+        self.declare_parameter('d_izq_min', 0.12)      # m bajo esto, empuja a la derecha
+        self.declare_parameter('K_izq', 3.0)
+        self.declare_parameter('K_front', 2.0)         # ganancia de giro suave hacia la caja/pared
         # FSM / velocidades — distancias frontales POST-OFFSET (borde real)
         self.declare_parameter('vel_crucero', 0.15)
         self.declare_parameter('vel_min', 0.07)
@@ -135,6 +140,9 @@ class Guardian(Node):
         self.d_obj_lidar  = g('dist_pared') + self.off_l  # objetivo LiDAR→pared
         self.Kp, self.Kd, self.Ka = g('Kp'), g('Kd'), g('Ka')
         self.max_w, self.max_dw   = g('max_w'), g('max_delta_w')
+        self.d_izq_min = g('d_izq_min')
+        self.K_izq     = g('K_izq')
+        self.K_front   = g('K_front')
         self.v_cru, self.v_min, self.w_giro = (g('vel_crucero'), g('vel_min'),
                                                g('w_giro'))
         self.v_arco = g('vel_giro_arco')
@@ -348,7 +356,7 @@ class Guardian(Node):
                 self.pub_parada.publish(m)
                 self._cambiar(PARAR)
             else:
-                self._pub(self._vel_adaptativa(), self._w_pared())
+                self._pub(self._vel_adaptativa(), self._w_avance())
 
         elif self.estado == CAJA_DETECTADA:
             if self.clase_frente in (pc.PARED, pc.ESQUINA):
@@ -381,6 +389,22 @@ class Guardian(Node):
                 self._cambiar(CRUCERO)
             else:
                 self._pub(0.0, self.w_giro)     # 90° IZQUIERDA (lazo CCW)
+
+    # ── Avance de CRUCERO: PD de pared + repulsión izq + giro suave ──────────
+    def _w_avance(self):
+        """PD de pared derecha (_w_pared) + repulsión IZQUIERDA (anti-isla,
+        siempre activa) + giro suave hacia la izquierda proporcional a qué
+        tan cerca está lo que hay al frente. Antes CRUCERO solo corregía por
+        la pared derecha y dependía 100% de las paradas discretas (PARAR/
+        GIRAR_ESQUINA) para reaccionar al frente; con esto el avance ya se
+        anticipa suavemente antes de llegar a esa parada, en vez de ir recto
+        hasta el umbral y frenar en seco."""
+        w = self._w_pared()
+        if math.isfinite(self.d_izq) and self.d_izq < self.d_izq_min:
+            w -= self.K_izq * (self.d_izq_min - self.d_izq)     # empuja a la derecha
+        if self.d_frente < self.d_alerta:
+            w += self.K_front * (self.d_alerta - self.d_frente)  # gira a la izquierda
+        return max(-self.max_w, min(self.max_w, w))
 
     # ── Seguimiento de pared derecha (PD + alineación + rate limiter) ───────
     def _w_pared(self):
