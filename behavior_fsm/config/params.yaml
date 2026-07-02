@@ -37,12 +37,11 @@ behavior_fsm:
 
     # Velocidad
     vel_crucero:      0.10
-    vel_maniobra:     0.035  # lineal en GIRO/RODEO: 0.07 -> 0.05 -> 0.035, para
-                             # reducir la distancia recorrida durante el giro
-    vel_giro_gradual: 0.40   # bajado de 0.55 -> 0.45 -> 0.40: reducir un
-                             # poco mas el grado de giro en GIRO
+    vel_maniobra:     0.05   # lineal en GIRO/RODEO: bajada de 0.07 -> 0.05, el
+                             # robot pasaba bien pero avanzaba mas de lo necesario
+                             # haciendo el giro/rodeo
+    vel_giro_gradual: 0.55   # subido de 0.50 (a veces el giro se quedaba corto)
     max_w:            0.60
-    beep_ms:          300    # ms, pitido al entrar a GIRO (una vez por caja evadida)
 
     # Temporizacion / geometria de GIRO y RODEO
     # k_urgencia_giro y la magnitud del giro se calculan UNA vez al entrar a
@@ -50,14 +49,10 @@ behavior_fsm:
     # giro — antes se recalculaban en cada ciclo con dist_frente en vivo,
     # que cambia rapido mientras el robot rota, y eso lo hacia errático
     # (a veces corto, a veces se pasaba de largo).
-    t_giro_min:         0.7   # s  giro minimo; bajado de 0.8 -> 0.7 junto con
-                              # vel_giro_gradual para reducir el grado de giro
+    t_giro_min:         0.8   # s  giro minimo (~23 deg)
     t_giro_max:         4.0   # s  salvavidas
     d_lado_salida_giro: 0.20  # m  sale de GIRO si el lado hacia el que gira < 20cm
-                              # (medido crudo/sin RANSAC, ver behavior_fsm.py)
-    k_urgencia_giro:    1.2   # amplifica el giro si el obstaculo esta muy cerca de d_giro
-                              # bajado de 1.7: sumado a vel_giro_gradual alto se pasaba
-                              # de largo y terminaba muy cerca de la pared izquierda
+    k_urgencia_giro:    1.7   # amplifica el giro si el obstaculo esta muy cerca de d_giro
     t_rodeo_min:        0.4   # s  minimo recto tras GIRO antes de evaluar salida
     t_rodeo_max:        1.0   # s  salvavidas — RODEO es ciego (w=0, no corrige rumbo);
                               # bajado de 1.2 -> 1.0 junto con vel_maniobra, para
@@ -68,11 +63,10 @@ behavior_fsm:
     # Retroceso tras un choque (STOP absoluto)
     dist_retroceso: 0.15      # m  retrocede esto tras un choque
     vel_retroceso:  0.08      # m/s magnitud del retroceso (t_retroceso = dist/vel)
-    w_retroceso:    0.42      # rad/s giro de correccion durante el retroceso,
+    w_retroceso:    0.35      # rad/s giro de correccion durante el retroceso,
                               # hacia el lado con mas espacio (crudo, igual
                               # criterio que GIRO) para quedar ya encarado
-                              # hacia el lado libre al reintentar;
-                              # 0.30 -> 0.55 se paso, bajado a 0.42
+                              # hacia el lado libre al reintentar
 
 # wall_follower — paredes laterales por RANSAC (reemplaza Split-and-Merge).
 # Publica /dist_izq y /dist_der; behavior_fsm los consume, no los recalcula.

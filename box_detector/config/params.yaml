@@ -16,16 +16,10 @@ box_detector:
     rango_max_deteccion: 3.0    # m  ignora candidatos mas lejanos
 
     # --- Deduplicacion ---
-    dist_duplicado: 0.40        # m  dos detecciones son la misma caja si estan a < esto
-                                 # subido de 0.30: el ruido de odometria/centroide hacia
-                                 # que la misma caja se registrara como "nueva" varias veces
+    dist_duplicado: 0.30        # m  dos detecciones son la misma caja si estan a < esto
 
     # --- Odometria ---
     topic_odom: '/odom_raw'     # topico de odometria del yahboom_driver (confirmado con ros2 topic hz)
-
-    # Nota: el pitido de deteccion vive en behavior_fsm (pita al entrar a
-    # GIRO, una vez por caja evadida), no aqui — el censo puede re-registrar
-    # la misma caja por ruido y eso disparaba varios pitidos seguidos.
 
 metrics_logger:
   ros__parameters:
