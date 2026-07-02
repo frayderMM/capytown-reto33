@@ -2,7 +2,7 @@
 
 **RETO CLASIFICATORIO — LiDAR**
 
-El Censo y el Guardián de las Cajas
+El Censo y el Guardián de las Caja
 
 *Procesamiento de LaserScan, segmentación por clustering y reacción ante obstáculos*
 
