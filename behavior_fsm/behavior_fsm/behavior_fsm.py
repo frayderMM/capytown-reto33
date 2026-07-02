@@ -30,8 +30,10 @@ RODEO:    avanza RECTO (w=0) hasta que el frente vuelve a despejarse
           (sensor, no temporizador), con un minimo y un maximo de seguridad.
 CRUCERO(recovery): durante t_recuperacion, solo w_der sin w_front.
 RETROCESO: si el STOP absoluto se dispara (choque), en vez de quedarse
-          parado para siempre retrocede recto dist_retroceso (tiempo fijo,
-          ciego a proposito igual que RODEO) y vuelve a CRUCERO.
+          parado para siempre retrocede dist_retroceso (tiempo fijo, ciego
+          a proposito igual que RODEO) girando hacia el lado con MAS
+          espacio (crudo, igual criterio que GIRO) para quedar encarado
+          hacia el lado libre, y vuelve a CRUCERO.
 
 Topicos debug: /dist_frente /dbg/dist_izq_fsm /dbg/dist_der_fsm
                /dbg/w_front /dbg/w_der /dbg/w_izq /dbg/w_total
@@ -98,6 +100,8 @@ class BehaviorFSM(Node):
 
         self.declare_parameter('dist_retroceso', 0.15)  # m  retrocede tras un choque (STOP)
         self.declare_parameter('vel_retroceso',  0.08)  # m/s magnitud (se publica negativa)
+        self.declare_parameter('w_retroceso',    0.30)  # rad/s giro de correccion durante el retroceso,
+                                                          # hacia el lado con mas espacio (crudo)
 
         # ── Cargar ────────────────────────────────────────────────────────
         self.front_rad = math.radians(self.get_parameter('lidar_front_deg').value)
@@ -112,6 +116,7 @@ class BehaviorFSM(Node):
         self.t_ultimo_giro = -float('inf')
         self.dir_giro      = 1.0   # +1 = izquierda (w>0), -1 = derecha (w<0)
         self.w_giro_efectivo = 0.0  # magnitud del giro, congelada al entrar a GIRO
+        self.w_retroceso_efectivo = 0.0  # giro de correccion en RETROCESO, congelado al entrar
 
         # ── PD tracking pared derecha ────────────────────────────────────
         self._err_der_prev = 0.0
@@ -191,6 +196,7 @@ class BehaviorFSM(Node):
         self.dist_retroceso    = self.get_parameter('dist_retroceso').value
         self.vel_retroceso     = self.get_parameter('vel_retroceso').value
         self.t_retroceso       = self.dist_retroceso / max(self.vel_retroceso, 1e-6)
+        self.w_retroceso       = self.get_parameter('w_retroceso').value
 
     def _on_params(self, params):
         self._reload_params()
@@ -304,21 +310,37 @@ class BehaviorFSM(Node):
                 choque = f'der={self.dist_der_raw:.3f}m'
 
             if choque is not None:
+                # Gira hacia el lado con MAS espacio (crudo, no RANSAC: justo
+                # aqui es donde RANSAC es menos confiable, pegado a un
+                # obstaculo) mientras retrocede, para quedar ya encarado
+                # hacia el lado libre y no repetir el mismo choque al
+                # reintentar. Mismo criterio de "mas espacio" que GIRO.
+                if math.isfinite(self.dist_izq_raw) and math.isfinite(self.dist_der_raw):
+                    dir_retroceso = 1.0 if self.dist_izq_raw >= self.dist_der_raw else -1.0
+                elif math.isfinite(self.dist_der_raw):
+                    dir_retroceso = 1.0
+                elif math.isfinite(self.dist_izq_raw):
+                    dir_retroceso = -1.0
+                else:
+                    dir_retroceso = 1.0
+                self.w_retroceso_efectivo = dir_retroceso * self.w_retroceso
                 self.get_logger().warn(
-                    f'CHOQUE {choque} → retrocede {self.dist_retroceso:.2f}m',
+                    f'CHOQUE {choque} → retrocede {self.dist_retroceso:.2f}m'
+                    f' girando hacia {"izq" if dir_retroceso > 0 else "der"}',
                     throttle_duration_sec=0.4)
                 self._cambiar(RETROCESO)
                 self._pub_dbg(0, 0, 0, 0)
-                self._pub(-self.vel_retroceso, 0.0)
+                self._pub(-self.vel_retroceso, self.w_retroceso_efectivo)
                 return
 
-        # ── RETROCESO: recto hacia atras, tiempo fijo, ciego a proposito ───
+        # ── RETROCESO: recto hacia atras + giro de correccion (congelado al
+        # entrar) hacia el lado con mas espacio, tiempo fijo, ciego a proposito
         if self.estado == RETROCESO:
             if self._t_estado() >= self.t_retroceso:
                 self._cambiar(CRUCERO)
                 return
             self._pub_dbg(0, 0, 0, 0)
-            self._pub(-self.vel_retroceso, 0.0)
+            self._pub(-self.vel_retroceso, self.w_retroceso_efectivo)
             return
 
         # ── CRUCERO ───────────────────────────────────────────────────────

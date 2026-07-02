@@ -66,8 +66,12 @@ behavior_fsm:
     t_recuperacion:     1.5   # s  suprime w_front tras RODEO
 
     # Retroceso tras un choque (STOP absoluto)
-    dist_retroceso: 0.15      # m  retrocede recto esto tras un choque
+    dist_retroceso: 0.15      # m  retrocede esto tras un choque
     vel_retroceso:  0.08      # m/s magnitud del retroceso (t_retroceso = dist/vel)
+    w_retroceso:    0.30      # rad/s giro de correccion durante el retroceso,
+                              # hacia el lado con mas espacio (crudo, igual
+                              # criterio que GIRO) para quedar ya encarado
+                              # hacia el lado libre al reintentar
 
 # wall_follower — paredes laterales por RANSAC (reemplaza Split-and-Merge).
 # Publica /dist_izq y /dist_der; behavior_fsm los consume, no los recalcula.
