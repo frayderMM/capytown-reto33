@@ -57,21 +57,6 @@ GIRO    = 'GIRO'
 RODEO   = 'RODEO'
 
 
-def _snap_ortogonal(p1, p2):
-    """Fuerza un segmento a quedar perfectamente horizontal o vertical (el
-    eje más cercano a su orientación actual), preservando su punto medio y
-    largo. La pista es un rectángulo con isla rectangular: toda pared real
-    ES horizontal o vertical, así que cualquier desvío es error de yaw de
-    la odometría, no geometría — enderezarlo evita que el mapa fijo se vea
-    "girado" tras cada giro del robot."""
-    mx, my = 0.5 * (p1[0] + p2[0]), 0.5 * (p1[1] + p2[1])
-    semi_largo = 0.5 * math.hypot(p2[0] - p1[0], p2[1] - p1[1])
-    ang = math.atan2(p2[1] - p1[1], p2[0] - p1[0])
-    ang_eje = round(ang / (math.pi / 2)) * (math.pi / 2)
-    dx, dy = math.cos(ang_eje) * semi_largo, math.sin(ang_eje) * semi_largo
-    return (mx - dx, my - dy), (mx + dx, my + dy)
-
-
 class Guardian(Node):
     def __init__(self):
         super().__init__('behavior_fsm')
@@ -82,9 +67,7 @@ class Guardian(Node):
         self.declare_parameter('t_espera_inicio',     10.0)  # s  cuenta regresiva tras ENTER
 
         self.declare_parameter('d_stop_front',   0.14)
-        self.declare_parameter('d_stop_lateral', 0.07)
-        self.declare_parameter('d_stop_caja', 0.18)  # m frente a una CAJA (reto exige >=0.15)
-        self.declare_parameter('w_alinear', 0.25)    # rad/s: giro lento al alinearse en el STOP
+        self.declare_parameter('d_stop_lateral', 0.06)
         self.declare_parameter('d_giro',         0.30)
         self.declare_parameter('d_front_inicio', 0.40)
 
@@ -160,18 +143,15 @@ class Guardian(Node):
         self.dist_izq_raw = float('inf')
         self.dist_der_raw = float('inf')
 
-        # ── Percepción / clasificación (colisión + panel) ─────────────────
+        # ── Percepción / clasificación (solo para el panel) ───────────────
         self.clusters = []
         self.clase_frente = None
-        self.punto_fp = None    # punto que invade el footprint real (15/8 cm)
-        self.dist_caja = float('inf')  # distancia a la CAJA (línea corta) más cercana
         self.accion = 'AVANZANDO'
 
         # ── Odometría / censo (para el panel derecho) ─────────────────────
         self.pose = None
         self.trail = []
         self.cajas_vivas = []
-        self.mapa_pared = []    # segmentos de PARED acumulados en marco odom
 
         # ── ROS I/O ───────────────────────────────────────────────────────
         _qos = QoSProfile(depth=10)
@@ -205,8 +185,6 @@ class Guardian(Node):
     def _reload_params(self):
         self.d_stop_front      = self.get_parameter('d_stop_front').value
         self.d_stop_lat        = self.get_parameter('d_stop_lateral').value
-        self.d_stop_caja       = self.get_parameter('d_stop_caja').value
-        self.w_alinear         = self.get_parameter('w_alinear').value
         self.d_giro            = self.get_parameter('d_giro').value
         self.d_front_ini       = self.get_parameter('d_front_inicio').value
         self.target_der        = self.get_parameter('target_der').value
@@ -266,100 +244,6 @@ class Guardian(Node):
             vivas.append(odom)
         self.cajas_vivas = vivas[-6:]
 
-    def _actualizar_mapa_pared(self, clusters):
-        """Mapa FIJO de la pista en marco odom: cada segmento clasificado
-        como PARED se transforma con la pose actual (self.pose, la más
-        reciente de /odom_raw) y se funde con lo ya mapeado. A diferencia
-        de 'segs' (que se recalcula cada scan en el marco del robot), este
-        mapa persiste — lo que ya se detectó una vez de la pared queda
-        fijo, no desaparece cuando el robot gira o se aleja.
-
-        Tres cuidados para que la posición sea la correcta y no se
-        dupliquen ni se corran las paredes al girar:
-          · NO se mapea durante GIRO — ahí la orientación cambia rápido y
-            un error de yaw se amplifica en la transformación a odom
-            (más en los puntos lejanos del segmento); solo se mapea con el
-            robot en CRUCERO/RODEO, cuando la pose es más estable.
-          · Cada segmento se "endereza" al eje más cercano (horizontal o
-            vertical, ver _snap_ortogonal): la pista es un rectángulo con
-            isla rectangular, toda pared real ES horizontal o vertical, así
-            que si tras un giro el yaw de la odometría quedó con un
-            pequeño error, esto evita que el mapa se vea "rotado" o
-            desalineado respecto a lo ya mapeado antes de girar.
-          · Un segmento nuevo que caiga cerca de uno ya mapeado (mismo
-            punto medio Y misma orientación, no solo posición) NO se
-            agrega como entrada aparte: se PROMEDIA con la existente
-            (running average), así el mapa converge a la posición real en
-            vez de acumular copias corridas por el ruido de cada barrido.
-        """
-        if self.pose is None or self.estado == GIRO:
-            return
-        for cl in clusters:
-            if cl['clase'] != pc.PARED:
-                continue
-            for s in cl['segs']:
-                p1 = self._a_odom(*s['p1'])
-                p2 = self._a_odom(*s['p2'])
-                if p1 is None or p2 is None:
-                    continue
-                p1, p2 = _snap_ortogonal(p1, p2)
-                ang = math.atan2(p2[1] - p1[1], p2[0] - p1[0])
-                mx, my = 0.5 * (p1[0] + p2[0]), 0.5 * (p1[1] + p2[1])
-
-                mejor = None
-                for entrada in self.mapa_pared:
-                    if math.hypot(mx - entrada['mx'], my - entrada['my']) >= 0.06:
-                        continue
-                    dang = abs(math.atan2(math.sin(ang - entrada['ang']),
-                                          math.cos(ang - entrada['ang'])))
-                    dang = min(dang, math.pi - dang)  # una recta es igual a 180° de sí misma
-                    if dang <= math.radians(20):
-                        mejor = entrada
-                        break
-
-                if mejor is None:
-                    self.mapa_pared.append({'p1': p1, 'p2': p2, 'mx': mx, 'my': my,
-                                            'ang': ang, 'n': 1})
-                    continue
-
-                # Empareja p1↔p1/p2↔p2 o p1↔p2/p2↔p1, lo que quede más
-                # cerca — el mismo segmento físico puede verse "al revés"
-                # si el robot lo cruza desde el otro lado en otra vuelta.
-                d_directo = (math.hypot(p1[0] - mejor['p1'][0], p1[1] - mejor['p1'][1]) +
-                            math.hypot(p2[0] - mejor['p2'][0], p2[1] - mejor['p2'][1]))
-                d_cruzado = (math.hypot(p1[0] - mejor['p2'][0], p1[1] - mejor['p2'][1]) +
-                            math.hypot(p2[0] - mejor['p1'][0], p2[1] - mejor['p1'][1]))
-                if d_cruzado < d_directo:
-                    p1, p2 = p2, p1
-
-                n = mejor['n']
-                mejor['p1'] = ((mejor['p1'][0] * n + p1[0]) / (n + 1),
-                              (mejor['p1'][1] * n + p1[1]) / (n + 1))
-                mejor['p2'] = ((mejor['p2'][0] * n + p2[0]) / (n + 1),
-                              (mejor['p2'][1] * n + p2[1]) / (n + 1))
-                mejor['mx'] = 0.5 * (mejor['p1'][0] + mejor['p2'][0])
-                mejor['my'] = 0.5 * (mejor['p1'][1] + mejor['p2'][1])
-                mejor['ang'] = math.atan2(mejor['p2'][1] - mejor['p1'][1],
-                                          mejor['p2'][0] - mejor['p1'][0])
-                mejor['n'] = n + 1
-        if len(self.mapa_pared) > 4000:
-            self.mapa_pared = self.mapa_pared[-4000:]
-
-    @staticmethod
-    def _distancia_caja(clusters):
-        """Distancia cruda (desde el LiDAR) al cluster CAJA (línea corta,
-        ≤ lado_caja_max) más cercano. Es la señal que usa el STOP para
-        exigir el margen del reto (≥15 cm) frente a una caja específicamente
-        — d_stop_front/d_stop_lateral son un umbral genérico para CUALQUIER
-        objeto y no distinguen caja de pared."""
-        d = float('inf')
-        for cl in clusters:
-            if cl['clase'] != pc.CAJA:
-                continue
-            for x, y in cl['pts']:
-                d = min(d, math.hypot(x, y))
-        return d
-
     def cb_scan(self, msg: LaserScan):
         # Frente + mínimo crudo lateral: se miden aquí mismo, sin depender de
         # otro nodo ni de RANSAC, porque son la base del STOP de seguridad y
@@ -384,24 +268,19 @@ class Guardian(Node):
         self.dist_izq_raw  = d_l_raw
         self.dist_der_raw  = d_r_raw
 
-        # Clasificación caja/pared (percepcion.py). El movimiento (CRUCERO/
-        # GIRO/RODEO) lo decide loop_control con dist_frente/dist_izq/
-        # dist_der, igual que en RC3 — pero dist_caja (distancia a un
-        # cluster CAJA, línea corta) sí alimenta un STOP propio para
-        # cumplir el margen del reto (≥15 cm) frente a una caja específica.
+        # Clasificación caja/pared (percepcion.py) — solo para el panel de
+        # diagnóstico; NO decide el movimiento (eso lo hace loop_control con
+        # dist_frente/dist_izq/dist_der, igual que en RC3).
         pts = pc.filtrar_scan(msg.ranges, msg.angle_min, msg.angle_increment,
                               msg.range_min, msg.range_max,
                               self.front_rad, self.rango_max_clasif, self.atras_rad)
         self.clusters = pc.analizar_scan(pts, self.salto_dist, self.salto_idx,
                                          self.umbral_split, self.min_puntos,
                                          self.lado_caja)
-        _, clase_f, _, _, punto_fp, _ = pc.frente_y_lados(
+        _, clase_f, _, _, _, _ = pc.frente_y_lados(
             pts, self.clusters, self.off_f, self.off_l)
         self.clase_frente = clase_f
-        self.punto_fp = punto_fp
-        self.dist_caja = self._distancia_caja(self.clusters)
         self._actualizar_cajas_desde_scan(self.clusters)
-        self._actualizar_mapa_pared(self.clusters)
 
         self._publicar_debug()
 
@@ -474,87 +353,33 @@ class Guardian(Node):
         self.estado   = nuevo
         self.t_inicio = self.get_clock().now()
 
-    def _w_alinear(self):
-        """En vez de quedarse congelado en el STOP: gira EN EL SITIO (sin
-        avanzar) hacia el lado donde percepcion.py sí detecta una pared
-        (línea larga) — al alinearse con ella deja de estar de frente al
-        obstáculo y el STOP se libera solo en el siguiente ciclo. Gira
-        lento a propósito: a esta distancia tan corta un giro brusco puede
-        golpear con el COSTADO del chasis aunque el frente esté libre. Si
-        no hay ninguna línea detectada a ningún lado, no gira a ciegas —
-        se queda quieto (evitar chocar pesa más que intentar avanzar)."""
-        seg_izq = seg_der = None
-        for cl in self.clusters:
-            if cl['clase'] != pc.PARED:
-                continue
-            for s in cl['segs']:
-                if s['mean_y'] > 0.05:
-                    seg_izq = s
-                elif s['mean_y'] < -0.05:
-                    seg_der = s
-
-        if seg_izq is not None and seg_der is None:
-            return self.w_alinear     # línea solo a la izquierda -> gira hacia allá
-        if seg_der is not None and seg_izq is None:
-            return -self.w_alinear    # línea solo a la derecha -> gira hacia allá
-        if seg_izq is not None and seg_der is not None:
-            # línea a ambos lados: gira hacia el que tenga más espacio crudo
-            if math.isfinite(self.dist_izq_raw) and math.isfinite(self.dist_der_raw):
-                return (self.w_alinear if self.dist_izq_raw >= self.dist_der_raw
-                       else -self.w_alinear)
-            return self.w_alinear
-        return 0.0   # ninguna línea detectada: mejor quieto que girar a ciegas
-
     def loop_control(self):
-
-        # ── PRIORIDAD 0: colisión por footprint real (percepcion.py) ──────
-        # punto_fp usa la forma real del chasis (15 cm frente / 8 cm lados,
-        # no un cono de ±30° con radio fijo como el STOP de abajo) — más
-        # preciso para saber si algo va a golpear el cuerpo del robot.
-        if self.punto_fp is not None:
-            self._pub(0.0, self._w_alinear())
-            self._pub_dbg(0, 0, 0, 0)
-            self.get_logger().warn(
-                f'PARA footprint x={self.punto_fp[0]:.3f} y={self.punto_fp[1]:.3f}'
-                f' (clase={self.clase_frente}) — alineando', throttle_duration_sec=0.4)
-            return
-
-        # ── PRIORIDAD 0.5: margen del reto frente a una CAJA (≥15 cm) ─────
-        # dist_caja viene de las líneas cortas clasificadas como CAJA, no
-        # del cono genérico de d_stop_front — así el margen exigido para
-        # cajas se respeta aunque el objeto no caiga en el sector ±30°.
-        if self.dist_caja < self.d_stop_caja:
-            self._pub(0.0, self._w_alinear())
-            self._pub_dbg(0, 0, 0, 0)
-            self.get_logger().warn(
-                f'PARA caja={self.dist_caja:.3f}m — alineando', throttle_duration_sec=0.4)
-            return
 
         # ── PRIORIDAD 1: STOP absoluto ────────────────────────────────────
         if self.dist_frente < self.d_stop_front:
-            self._pub(0.0, self._w_alinear())
+            self._pub(0.0, 0.0)
             self._pub_dbg(0, 0, 0, 0)
             self.get_logger().warn(
-                f'PARA frente={self.dist_frente:.3f}m — alineando', throttle_duration_sec=0.4)
+                f'PARA frente={self.dist_frente:.3f}m', throttle_duration_sec=0.4)
             return
         # Usa el mínimo crudo (dist_izq_raw/dist_der_raw), NO el de RANSAC:
         # RANSAC descarta a propósito objetos que no son pared (p.ej. una
         # caja pegada al costado) como outliers, y ese es justo el caso que
         # este STOP tiene que detectar.
         if math.isfinite(self.dist_izq_raw) and self.dist_izq_raw < self.d_stop_lat:
-            self._pub(0.0, self._w_alinear())
+            self._pub(0.0, 0.0)
             self._pub_dbg(0, 0, 0, 0)
             self.get_logger().warn(
-                f'PARA izq={self.dist_izq_raw:.3f}m — alineando', throttle_duration_sec=0.4)
+                f'PARA izq={self.dist_izq_raw:.3f}m', throttle_duration_sec=0.4)
             return
         if math.isfinite(self.dist_der_raw) and self.dist_der_raw < self.d_stop_lat:
             # El GIRO puede ir hacia cualquier lado (no solo izquierda), así
             # que el riesgo de colisión lateral también puede venir del
             # lado derecho.
-            self._pub(0.0, self._w_alinear())
+            self._pub(0.0, 0.0)
             self._pub_dbg(0, 0, 0, 0)
             self.get_logger().warn(
-                f'PARA der={self.dist_der_raw:.3f}m — alineando', throttle_duration_sec=0.4)
+                f'PARA der={self.dist_der_raw:.3f}m', throttle_duration_sec=0.4)
             return
 
         # ── CRUCERO ───────────────────────────────────────────────────────
@@ -675,8 +500,6 @@ class Guardian(Node):
             'd_frente': None if not math.isfinite(self.dist_frente)
                         else round(self.dist_frente, 3),
             'clase_frente': self.clase_frente,
-            'dist_caja': None if not math.isfinite(self.dist_caja)
-                         else round(self.dist_caja, 3),
             'pared_der': pared_der,
             'd_izq': None if not math.isfinite(self.dist_izq_raw)
                      else round(self.dist_izq_raw, 3),
@@ -687,9 +510,6 @@ class Guardian(Node):
             'cajas_vivas': [[round(x, 3), round(y, 3)]
                             for x, y in self.cajas_vivas],
             'cajas_fijas': [],
-            'mapa_pared': [[round(e['p1'][0], 3), round(e['p1'][1], 3),
-                            round(e['p2'][0], 3), round(e['p2'][1], 3)]
-                           for e in self.mapa_pared],
             'segs': segs,
         }
         m = String()

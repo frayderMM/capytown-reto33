@@ -3,7 +3,7 @@
 # Flujo: CRUCERO → GIRO (elige lado con más espacio, según dist_izq/dist_der
 # de wall_follower) → RODEO (recto, sale por sensor cuando el frente
 # despeja) → CRUCERO. dist_izq/dist_der NO se calculan en behavior_fsm: los
-# publica wall_follower (RANSAC sobre las paredes l
+# publica wall_follower (RANSAC sobre las paredes laterales).
 #
 # La clasificación caja/pared (percepcion.py) corre en paralelo solo para
 # poblar /guardian/debug (panel de lidar_viz.py) — no decide el movimiento.
@@ -16,14 +16,7 @@ behavior_fsm:
 
     # Parada absoluta
     d_stop_front:   0.14   # m  14 cm frente
-    d_stop_lateral: 0.07   # m  7 cm costado (+1cm), aplica a izq y a der por igual
-    d_stop_caja:    0.18   # m frente a un cluster CAJA (línea corta) — el reto
-                           # exige >=15 cm, este umbral es específico de caja y
-                           # no depende de que caiga en el cono ±30° de d_stop_front
-    w_alinear:      0.25   # rad/s: en el STOP, gira lento (sin avanzar) hacia el
-                           # lado donde SÍ hay una pared detectada, para quedar
-                           # alineado y que el STOP se libere solo; si no hay
-                           # ninguna línea detectada, se queda quieto
+    d_stop_lateral: 0.06   # m  6 cm costado (aplica a izq y a der por igual)
 
     # Umbrales frontales
     d_giro:         0.30   # m  trigger GIRO
