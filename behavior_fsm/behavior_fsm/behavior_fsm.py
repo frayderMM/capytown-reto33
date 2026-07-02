@@ -100,7 +100,7 @@ class BehaviorFSM(Node):
 
         self.declare_parameter('dist_retroceso', 0.15)  # m  retrocede tras un choque (STOP)
         self.declare_parameter('vel_retroceso',  0.08)  # m/s magnitud (se publica negativa)
-        self.declare_parameter('w_retroceso',    0.30)  # rad/s giro de correccion durante el retroceso,
+        self.declare_parameter('w_retroceso',    0.55)  # rad/s giro de correccion durante el retroceso,
                                                           # hacia el lado con mas espacio (crudo)
 
         # ── Cargar ────────────────────────────────────────────────────────
