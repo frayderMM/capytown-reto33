@@ -83,6 +83,7 @@ class Guardian(Node):
 
         self.declare_parameter('d_stop_front',   0.14)
         self.declare_parameter('d_stop_lateral', 0.07)
+        self.declare_parameter('d_stop_caja', 0.18)  # m frente a una CAJA (reto exige >=0.15)
         self.declare_parameter('w_escape', 0.4)  # rad/s al girar para zafar de un STOP
         self.declare_parameter('d_giro',         0.30)
         self.declare_parameter('d_front_inicio', 0.40)
@@ -163,6 +164,7 @@ class Guardian(Node):
         self.clusters = []
         self.clase_frente = None
         self.punto_fp = None    # punto que invade el footprint real (15/8 cm)
+        self.dist_caja = float('inf')  # distancia a la CAJA (línea corta) más cercana
         self.accion = 'AVANZANDO'
 
         # ── Odometría / censo (para el panel derecho) ─────────────────────
@@ -203,6 +205,7 @@ class Guardian(Node):
     def _reload_params(self):
         self.d_stop_front      = self.get_parameter('d_stop_front').value
         self.d_stop_lat        = self.get_parameter('d_stop_lateral').value
+        self.d_stop_caja       = self.get_parameter('d_stop_caja').value
         self.w_escape          = self.get_parameter('w_escape').value
         self.d_giro            = self.get_parameter('d_giro').value
         self.d_front_ini       = self.get_parameter('d_front_inicio').value
@@ -342,6 +345,21 @@ class Guardian(Node):
         if len(self.mapa_pared) > 4000:
             self.mapa_pared = self.mapa_pared[-4000:]
 
+    @staticmethod
+    def _distancia_caja(clusters):
+        """Distancia cruda (desde el LiDAR) al cluster CAJA (línea corta,
+        ≤ lado_caja_max) más cercano. Es la señal que usa el STOP para
+        exigir el margen del reto (≥15 cm) frente a una caja específicamente
+        — d_stop_front/d_stop_lateral son un umbral genérico para CUALQUIER
+        objeto y no distinguen caja de pared."""
+        d = float('inf')
+        for cl in clusters:
+            if cl['clase'] != pc.CAJA:
+                continue
+            for x, y in cl['pts']:
+                d = min(d, math.hypot(x, y))
+        return d
+
     def cb_scan(self, msg: LaserScan):
         # Frente + mínimo crudo lateral: se miden aquí mismo, sin depender de
         # otro nodo ni de RANSAC, porque son la base del STOP de seguridad y
@@ -366,9 +384,11 @@ class Guardian(Node):
         self.dist_izq_raw  = d_l_raw
         self.dist_der_raw  = d_r_raw
 
-        # Clasificación caja/pared (percepcion.py) — solo para el panel de
-        # diagnóstico; NO decide el movimiento (eso lo hace loop_control con
-        # dist_frente/dist_izq/dist_der, igual que en RC3).
+        # Clasificación caja/pared (percepcion.py). El movimiento (CRUCERO/
+        # GIRO/RODEO) lo decide loop_control con dist_frente/dist_izq/
+        # dist_der, igual que en RC3 — pero dist_caja (distancia a un
+        # cluster CAJA, línea corta) sí alimenta un STOP propio para
+        # cumplir el margen del reto (≥15 cm) frente a una caja específica.
         pts = pc.filtrar_scan(msg.ranges, msg.angle_min, msg.angle_increment,
                               msg.range_min, msg.range_max,
                               self.front_rad, self.rango_max_clasif, self.atras_rad)
@@ -379,6 +399,7 @@ class Guardian(Node):
             pts, self.clusters, self.off_f, self.off_l)
         self.clase_frente = clase_f
         self.punto_fp = punto_fp
+        self.dist_caja = self._distancia_caja(self.clusters)
         self._actualizar_cajas_desde_scan(self.clusters)
         self._actualizar_mapa_pared(self.clusters)
 
@@ -483,6 +504,17 @@ class Guardian(Node):
             self.get_logger().warn(
                 f'PARA footprint x={self.punto_fp[0]:.3f} y={self.punto_fp[1]:.3f}'
                 f' (clase={self.clase_frente}) — zafando', throttle_duration_sec=0.4)
+            return
+
+        # ── PRIORIDAD 0.5: margen del reto frente a una CAJA (≥15 cm) ─────
+        # dist_caja viene de las líneas cortas clasificadas como CAJA, no
+        # del cono genérico de d_stop_front — así el margen exigido para
+        # cajas se respeta aunque el objeto no caiga en el sector ±30°.
+        if self.dist_caja < self.d_stop_caja:
+            self._pub(0.0, self._w_escape())
+            self._pub_dbg(0, 0, 0, 0)
+            self.get_logger().warn(
+                f'PARA caja={self.dist_caja:.3f}m — zafando', throttle_duration_sec=0.4)
             return
 
         # ── PRIORIDAD 1: STOP absoluto ────────────────────────────────────
@@ -630,6 +662,8 @@ class Guardian(Node):
             'd_frente': None if not math.isfinite(self.dist_frente)
                         else round(self.dist_frente, 3),
             'clase_frente': self.clase_frente,
+            'dist_caja': None if not math.isfinite(self.dist_caja)
+                         else round(self.dist_caja, 3),
             'pared_der': pared_der,
             'd_izq': None if not math.isfinite(self.dist_izq_raw)
                      else round(self.dist_izq_raw, 3),

@@ -17,6 +17,9 @@ behavior_fsm:
     # Parada absoluta
     d_stop_front:   0.14   # m  14 cm frente
     d_stop_lateral: 0.07   # m  7 cm costado (+1cm), aplica a izq y a der por igual
+    d_stop_caja:    0.18   # m frente a un cluster CAJA (línea corta) — el reto
+                           # exige >=15 cm, este umbral es específico de caja y
+                           # no depende de que caiga en el cono ±30° de d_stop_front
     w_escape:       0.4    # rad/s: al pararse, gira (sin avanzar) hacia el lado
                            # contrario al que disparó el STOP, en vez de quedarse
                            # congelado esperando a que el obstáculo se mueva
