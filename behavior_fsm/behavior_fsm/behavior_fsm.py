@@ -102,6 +102,7 @@ class Guardian(Node):
         self.declare_parameter('lado_caja_max', 0.32)
         self.declare_parameter('lado_caja_linea', 0.22)
         self.declare_parameter('offset_frente', 0.15)
+        self.declare_parameter('offset_atras', 0.10)
         self.declare_parameter('offset_lados', 0.08)
         self.declare_parameter('topic_odom', '/odom_raw')
 
@@ -123,6 +124,7 @@ class Guardian(Node):
         self.lado_caja       = g('lado_caja_max')
         self.lado_caja_linea = g('lado_caja_linea')
         self.off_f = g('offset_frente')
+        self.off_a = g('offset_atras')
         self.off_l = g('offset_lados')
 
         # ── Estado FSM (RC3) ──────────────────────────────────────────────
@@ -138,6 +140,7 @@ class Guardian(Node):
 
         # ── Sensores de movimiento ────────────────────────────────────────
         self.dist_frente = float('inf')
+        self.dist_atras  = float('inf')
         self.dist_izq    = float('inf')
         self.dist_der    = float('inf')
         self.dist_izq_raw = float('inf')
@@ -249,7 +252,7 @@ class Guardian(Node):
         # otro nodo ni de RANSAC, porque son la base del STOP de seguridad y
         # necesitan ver CUALQUIER objeto cercano (pared o caja), no solo la
         # pared "limpia" que RANSAC reporta para el tracking de crucero.
-        d_f = float('inf')
+        d_f = d_atras = float('inf')
         d_l_raw = d_r_raw = float('inf')
         for i, r in enumerate(msg.ranges):
             if not (math.isfinite(r) and msg.range_min <= r <= msg.range_max):
@@ -260,16 +263,20 @@ class Guardian(Node):
             abs_af = abs(af)
             if abs_af <= self.sector:
                 d_f = min(d_f, r)
+            elif abs_af >= math.pi - self.sector:
+                d_atras = min(d_atras, r)
             elif af > 0:
                 d_l_raw = min(d_l_raw, r)
             else:
                 d_r_raw = min(d_r_raw, r)
-        # d_f/d_l_raw/d_r_raw son crudas desde el LiDAR; el borde físico del
-        # robot está más adelante/afuera del sensor (offset_frente=15cm,
-        # offset_lados=8cm). Sin restarlo, "predecir" el choque con
-        # d_stop_front=0.14 en realidad dispara cuando el borde YA está a
-        # -1cm (pasado) — no es predicción, es reacción tardía.
+        # d_f/d_atras/d_l_raw/d_r_raw son crudas desde el LiDAR; el borde
+        # físico del robot está más adelante/afuera del sensor
+        # (offset_frente=15cm, offset_atras=10cm, offset_lados=8cm). Sin
+        # restarlo, "predecir" el choque con d_stop_front=0.14 en realidad
+        # dispara cuando el borde YA está a -1cm (pasado) — no es
+        # predicción, es reacción tardía.
         self.dist_frente   = d_f - self.off_f
+        self.dist_atras    = d_atras - self.off_a
         self.dist_izq_raw  = d_l_raw - self.off_l
         self.dist_der_raw  = d_r_raw - self.off_l
 
@@ -515,6 +522,8 @@ class Guardian(Node):
             'accion': self.accion,
             'd_frente': None if not math.isfinite(self.dist_frente)
                         else round(self.dist_frente, 3),
+            'd_atras': None if not math.isfinite(self.dist_atras)
+                       else round(self.dist_atras, 3),
             'clase_frente': self.clase_frente,
             'pared_der': pared_der,
             'd_izq': None if not math.isfinite(self.dist_izq_raw)

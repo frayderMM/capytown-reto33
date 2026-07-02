@@ -8,6 +8,9 @@ Panel IZQUIERDO (marco del robot, frente hacia +x):
         CAJA = naranja · PARED = azul · ESQUINA = magenta · RUIDO = gris
     · footprint REAL del robot (15 cm frente / 10 cm atrás / 8 cm lados)
       y corredor frontal de colisión
+    · cruz de distancias: 4 líneas perpendiculares a cada lado del robot
+      (frente/atrás/izq/der) desde el BORDE físico hasta la pared más
+      cercana en esa dirección, con la distancia en cm
     · estado de la FSM, distancia frontal y distancia a la pared derecha
 
 Panel DERECHO (marco odom):
@@ -113,6 +116,36 @@ def dibujar_robot(ax):
         linewidth=0.7, linestyle='--', zorder=1))
 
 
+def dibujar_cruz_distancias(ax, dbg):
+    """Cuatro líneas perpendiculares a los lados del robot (forma de +),
+    desde el BORDE físico (no el LiDAR) hasta la pared/obstáculo más
+    cercano en esa dirección — frente, atrás, izquierda y derecha —
+    con la distancia real en cm rotulada en la punta."""
+    LARGO_MAX = 1.0   # recorta la línea dibujada para no salirse del plot;
+                       # la etiqueta siempre muestra la distancia real
+    specs = [
+        ('d_frente', (OFF_FRENTE, 0.0), (1, 0)),
+        ('d_atras',  (-OFF_ATRAS, 0.0), (-1, 0)),
+        ('d_izq',    (0.0, OFF_LADO), (0, 1)),
+        ('d_der',    (0.0, -OFF_LADO), (0, -1)),
+    ]
+    for clave, (bx, by), (dx, dy) in specs:
+        d = dbg.get(clave)
+        if d is None or d <= 0:
+            continue
+        d_dibujo = min(d, LARGO_MAX)
+        ex, ey = bx + dx * d_dibujo, by + dy * d_dibujo
+        ax.plot([bx, ex], [by, ey], color='#ffd54f', linewidth=1.3,
+                linestyle=':', zorder=5)
+        ax.plot(ex, ey, 'o', color='#ffd54f', markersize=4, zorder=6)
+        ax.annotate(f'{d * 100:.0f}cm', (ex, ey), color='#ffd54f',
+                    fontsize=7.5, fontweight='bold',
+                    ha='left' if dx >= 0 else 'right',
+                    va='bottom' if dy >= 0 else 'top', zorder=6,
+                    bbox=dict(boxstyle='round,pad=0.12', fc=PANEL,
+                              ec='#ffd54f', linewidth=0.5, alpha=0.85))
+
+
 def main():
     p = argparse.ArgumentParser()
     p.add_argument('--front', type=float, default=180.0,
@@ -152,6 +185,7 @@ def main():
             dibujar_robot(axL)
 
             if dbg is not None:
+                dibujar_cruz_distancias(axL, dbg)
                 vistos = set()
                 for s in dbg.get('segs', []):
                     if s['clase'] == 'RUIDO':
