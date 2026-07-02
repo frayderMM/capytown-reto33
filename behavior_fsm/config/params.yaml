@@ -65,6 +65,10 @@ behavior_fsm:
     t_cooldown:         2.0   # s  cooldown post-RODEO
     t_recuperacion:     1.5   # s  suprime w_front tras RODEO
 
+    # Retroceso tras un choque (STOP absoluto)
+    dist_retroceso: 0.15      # m  retrocede recto esto tras un choque
+    vel_retroceso:  0.08      # m/s magnitud del retroceso (t_retroceso = dist/vel)
+
 # wall_follower — paredes laterales por RANSAC (reemplaza Split-and-Merge).
 # Publica /dist_izq y /dist_der; behavior_fsm los consume, no los recalcula.
 wall_follower:

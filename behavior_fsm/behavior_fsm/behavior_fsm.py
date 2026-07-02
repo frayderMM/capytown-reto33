@@ -3,6 +3,7 @@
 behavior_fsm.py  —  Guardian v4
 
 Estados: CRUCERO → GIRO → RODEO → CRUCERO
+         (cualquier estado) → RETROCESO → CRUCERO   [si hay choque/STOP]
 
 dist_frente y dist_izq_raw/dist_der_raw (minimo crudo, sin filtrar) se
 miden localmente sobre /scan: son la base del STOP de seguridad y deben
@@ -28,6 +29,9 @@ GIRO:     gira hacia el lado con MAS espacio (compara dist_izq vs dist_der
 RODEO:    avanza RECTO (w=0) hasta que el frente vuelve a despejarse
           (sensor, no temporizador), con un minimo y un maximo de seguridad.
 CRUCERO(recovery): durante t_recuperacion, solo w_der sin w_front.
+RETROCESO: si el STOP absoluto se dispara (choque), en vez de quedarse
+          parado para siempre retrocede recto dist_retroceso (tiempo fijo,
+          ciego a proposito igual que RODEO) y vuelve a CRUCERO.
 
 Topicos debug: /dist_frente /dbg/dist_izq_fsm /dbg/dist_der_fsm
                /dbg/w_front /dbg/w_der /dbg/w_izq /dbg/w_total
@@ -47,9 +51,10 @@ from geometry_msgs.msg import Twist
 from std_msgs.msg import Float32, String, UInt16
 
 
-CRUCERO = 'CRUCERO'
-GIRO    = 'GIRO'
-RODEO   = 'RODEO'
+CRUCERO   = 'CRUCERO'
+GIRO      = 'GIRO'
+RODEO     = 'RODEO'
+RETROCESO = 'RETROCESO'
 
 
 class BehaviorFSM(Node):
@@ -90,6 +95,9 @@ class BehaviorFSM(Node):
         self.declare_parameter('t_rodeo_max',       1.0)   # salvavidas — RODEO es ciego (w=0)
         self.declare_parameter('t_cooldown',        2.0)
         self.declare_parameter('t_recuperacion',    1.5)
+
+        self.declare_parameter('dist_retroceso', 0.15)  # m  retrocede tras un choque (STOP)
+        self.declare_parameter('vel_retroceso',  0.08)  # m/s magnitud (se publica negativa)
 
         # ── Cargar ────────────────────────────────────────────────────────
         self.front_rad = math.radians(self.get_parameter('lidar_front_deg').value)
@@ -180,6 +188,9 @@ class BehaviorFSM(Node):
         self.t_rodeo_max       = self.get_parameter('t_rodeo_max').value
         self.t_cooldown        = self.get_parameter('t_cooldown').value
         self.t_recuperacion    = self.get_parameter('t_recuperacion').value
+        self.dist_retroceso    = self.get_parameter('dist_retroceso').value
+        self.vel_retroceso     = self.get_parameter('vel_retroceso').value
+        self.t_retroceso       = self.dist_retroceso / max(self.vel_retroceso, 1e-6)
 
     def _on_params(self, params):
         self._reload_params()
@@ -261,8 +272,8 @@ class BehaviorFSM(Node):
         self.get_logger().info(
             f'{self.estado}→{nuevo}  '
             f'f={self.dist_frente:.2f}  l={self.dist_izq:.2f}  r={self.dist_der:.2f}')
-        # Marca cooldown al salir de GIRO o RODEO hacia CRUCERO
-        if self.estado in (GIRO, RODEO) and nuevo == CRUCERO:
+        # Marca cooldown al salir de GIRO, RODEO o RETROCESO hacia CRUCERO
+        if self.estado in (GIRO, RODEO, RETROCESO) and nuevo == CRUCERO:
             self.t_ultimo_giro = self.get_clock().now().nanoseconds * 1e-9
             # Resetea la derivada: si no, el primer tick calcula d_err sobre
             # un salto acumulado durante todo GIRO+RODEO (spike falso).
@@ -274,31 +285,40 @@ class BehaviorFSM(Node):
 
     def loop_control(self):
 
-        # ── PRIORIDAD 1: STOP absoluto ────────────────────────────────────
-        if self.dist_frente < self.d_stop_front:
-            self._pub(0.0, 0.0)
+        # ── PRIORIDAD 1: STOP absoluto → retrocede recto ───────────────────
+        # No se evalua si ya estamos en RETROCESO: dist_frente sigue por
+        # debajo de d_stop_front justo al entrar (es la causa del choque), y
+        # si el STOP se re-disparara aqui el robot se quedaria parado para
+        # siempre sin llegar nunca a ejecutar el retroceso.
+        if self.estado != RETROCESO:
+            choque = None
+            if self.dist_frente < self.d_stop_front:
+                choque = f'frente={self.dist_frente:.3f}m'
+            # Usa el minimo crudo (dist_izq_raw/dist_der_raw), NO el de
+            # RANSAC: RANSAC descarta a proposito objetos que no son pared
+            # (p.ej. una caja pegada al costado) como outliers, y ese es
+            # justo el caso que este STOP tiene que detectar.
+            elif math.isfinite(self.dist_izq_raw) and self.dist_izq_raw < self.d_stop_lat:
+                choque = f'izq={self.dist_izq_raw:.3f}m'
+            elif math.isfinite(self.dist_der_raw) and self.dist_der_raw < self.d_stop_lat:
+                choque = f'der={self.dist_der_raw:.3f}m'
+
+            if choque is not None:
+                self.get_logger().warn(
+                    f'CHOQUE {choque} → retrocede {self.dist_retroceso:.2f}m',
+                    throttle_duration_sec=0.4)
+                self._cambiar(RETROCESO)
+                self._pub_dbg(0, 0, 0, 0)
+                self._pub(-self.vel_retroceso, 0.0)
+                return
+
+        # ── RETROCESO: recto hacia atras, tiempo fijo, ciego a proposito ───
+        if self.estado == RETROCESO:
+            if self._t_estado() >= self.t_retroceso:
+                self._cambiar(CRUCERO)
+                return
             self._pub_dbg(0, 0, 0, 0)
-            self.get_logger().warn(
-                f'PARA frente={self.dist_frente:.3f}m', throttle_duration_sec=0.4)
-            return
-        # Usa el minimo crudo (dist_izq_raw/dist_der_raw), NO el de RANSAC:
-        # RANSAC descarta a proposito objetos que no son pared (p.ej. una
-        # caja pegada al costado) como outliers, y ese es justo el caso que
-        # este STOP tiene que detectar.
-        if math.isfinite(self.dist_izq_raw) and self.dist_izq_raw < self.d_stop_lat:
-            self._pub(0.0, 0.0)
-            self._pub_dbg(0, 0, 0, 0)
-            self.get_logger().warn(
-                f'PARA izq={self.dist_izq_raw:.3f}m', throttle_duration_sec=0.4)
-            return
-        if math.isfinite(self.dist_der_raw) and self.dist_der_raw < self.d_stop_lat:
-            # Ahora el GIRO puede ir hacia cualquier lado (no solo izquierda),
-            # asi que el riesgo de colision lateral tambien puede venir del
-            # lado derecho.
-            self._pub(0.0, 0.0)
-            self._pub_dbg(0, 0, 0, 0)
-            self.get_logger().warn(
-                f'PARA der={self.dist_der_raw:.3f}m', throttle_duration_sec=0.4)
+            self._pub(-self.vel_retroceso, 0.0)
             return
 
         # ── CRUCERO ───────────────────────────────────────────────────────
