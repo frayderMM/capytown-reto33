@@ -1,20 +1,21 @@
 #!/usr/bin/env python3
 """
 lidar_viz.py — Monitor visual en tiempo real del robot CapyTown.
-VERSION: v29 — RANSAC
+VERSION: v35 — Split-and-Merge + sector FRENTE real
 
-Panel izquierdo : mapa LiDAR con sector frontal coloreado por estado.
-  - cyan   : sector +-12 grados libre (sin caja)
+Panel izquierdo : mapa LiDAR. FRENTE = mismo sector +-30° que usa
+  behavior_fsm de verdad (marcado con lineas punteadas), todo lo demas se
+  colorea IZQUIERDA o DERECHA (todo el LiDAR, sin banda angosta).
+  - cyan   : sector frontal libre (sin caja)
   - naranja: caja 25 cm perpendicular detectada -> se dibuja rectangulo en el mapa
 Panel derecho   : DER (grande) + IZQ (grande) + historial velocidad.
 
-Cambio de version respecto a v28: DER/IZQ ya NO se recalculan desde el
-/scan crudo en este script (eso duplicaba, y podia desincronizarse de, lo
-que el robot realmente usa para controlar). Ahora se leen directamente de
-los topicos que publica wall_follower (RANSAC sobre las paredes
-laterales): /dist_izq, /dist_der, mas su confianza (ratio de inliers de
-RANSAC) en /dbg/confianza_izq y /dbg/confianza_der, y el chequeo de
-consistencia del ancho del jiron en /dbg/ancho_jiron_medido. Asi el
+DER/IZQ se leen directamente de los topicos que publica wall_follower
+(Split-and-Merge + minimos cuadrados sobre las paredes laterales,
+deterministico -- ya no RANSAC, que daba variacion de cuadro a cuadro):
+/dist_izq, /dist_der, mas si se encontro un segmento de pared valido o se
+uso el fallback en /dbg/confianza_izq y /dbg/confianza_der, y el chequeo
+de consistencia del ancho del jiron en /dbg/ancho_jiron_medido. Asi el
 monitor muestra exactamente lo que ve behavior_fsm, no una aproximacion
 paralela.
 
@@ -26,7 +27,7 @@ Deteccion de caja frontal (heuristica de visualizacion, independiente del
 censo oficial de box_detector): std_x < 4 cm (perpendicular) + 8 cm <= ancho <= 32 cm.
 """
 
-VIZ_VERSION = 'v33'
+VIZ_VERSION = 'v35'
 
 import math
 import argparse
@@ -68,12 +69,14 @@ C_DIM       = '#8b949e'
 C_WARN      = '#f39c12'
 C_ALERT     = '#e94560'
 C_OK        = '#2ecc71'
-C_CONF_LO   = '#e94560'   # confianza RANSAC baja (fallback usado)
+C_CONF_LO   = '#e94560'   # fallback usado (no se encontro segmento de pared valido)
 
 # ── Constantes ────────────────────────────────────────────────────────────────
-FRONT_GIRO_HALF = math.radians(12.0)   # +-12 grados dispara GIRO en la FSM
-SIDE_LO    = math.radians(60.0)        # solo para colorear el mapa (contexto visual)
-SIDE_HI    = math.radians(120.0)
+# Sector FRENTE: debe ser el mismo que sector_frontal_deg real en
+# behavior_fsm/wall_follower (params.yaml), no un valor aparte
+# desincronizado. Todo lo que no es frente se colorea IZQUIERDA (af>0) o
+# DERECHA (af<0) -- todo el LiDAR, sin banda lateral angosta.
+SECTOR_FRENTE = math.radians(30.0)
 
 # Deben reflejar los parametros reales de behavior_fsm/config/params.yaml.
 TARGET_DER   = 0.17   # m  objetivo pared derecha (behavior_fsm: target_der)
@@ -86,9 +89,6 @@ DIST_IZQ_WARN = 0.25  # m  inicio de advertencia
 # Chequeo de consistencia del ancho del jiron (wall_follower: ancho_jiron / tol_ancho_jiron)
 ANCHO_JIRON     = 0.60
 TOL_ANCHO_JIRON = 0.15
-
-# Confianza RANSAC (ratio de inliers): por debajo de esto se considera "fallback"
-CONF_MIN_OK = 0.30
 
 # Deteccion de caja (~25 cm): perpendicular (std_x) + ancho lateral
 DETECT_HALF   = math.radians(20.0)  # sector de busqueda para caja
@@ -126,7 +126,7 @@ class LidarViz(Node):
         self.vel_ang    = 0.0
         self.cajas_odom = []
 
-        # Distancias laterales: llegan de wall_follower (RANSAC), no se
+        # Distancias laterales: llegan de wall_follower (Split-and-Merge), no se
         # recalculan aqui. Igual para su confianza (ratio de inliers).
         self.dist_izq   = float('inf')
         self.dist_der   = float('inf')
@@ -188,15 +188,17 @@ class LidarViz(Node):
                                 math.cos(theta - self.front_rad))
             abs_af = abs(af)
 
-            # Coloreado del mapa (solo contexto visual; las distancias
-            # oficiales izq/der ya no se calculan aqui, vienen de wall_follower).
-            if abs_af <= FRONT_GIRO_HALF:
+            # Coloreado del mapa: mismo sector que usa behavior_fsm.cb_scan()
+            # de verdad -- FRENTE = +-30°, todo lo demas es IZQUIERDA o
+            # DERECHA (sin banda angosta ni zona "otro"). Las distancias
+            # oficiales izq/der no se calculan aqui, vienen de wall_follower.
+            if abs_af <= SECTOR_FRENTE:
                 color = '__front__'   # placeholder: naranja o cyan segun deteccion
                 d_f = min(d_f, r)
-            elif SIDE_LO <= abs_af <= SIDE_HI:
-                color = C_LEFT if af > 0 else C_RIGHT
+            elif af > 0:
+                color = C_LEFT
             else:
-                color = C_OTHER
+                color = C_RIGHT
 
             # Colectar puntos cercanos en sector de deteccion (independiente del color)
             if abs_af <= DETECT_HALF and r <= DETECT_MAX_R:
@@ -317,6 +319,19 @@ def build_figure():
     for d, label in [(0.3, '30cm'), (0.5, '50cm'), (1.0, '1m'), (1.5, '1.5m')]:
         ax_lidar.add_patch(plt.Circle((0, 0), d, color=BORDER, fill=False, lw=0.7, ls=':'))
         ax_lidar.text(0.01, d + 0.02, label, color=BORDER, fontsize=7)
+
+    # Limites del sector FRENTE (+-SECTOR_FRENTE): mismo sector que usa
+    # behavior_fsm de verdad para disparar GIRO. Todo lo que quede fuera
+    # de estas dos lineas es IZQUIERDA (izq de la pantalla) o DERECHA.
+    _r_sec = 1.45
+    _xd_izq_b = -_r_sec * math.sin(SECTOR_FRENTE)
+    _xd_der_b =  _r_sec * math.sin(SECTOR_FRENTE)
+    _yd_b     =  _r_sec * math.cos(SECTOR_FRENTE)
+    ax_lidar.plot([0, _xd_izq_b], [0, _yd_b], color=C_WARN, lw=1.2, ls='--', alpha=0.7, zorder=2)
+    ax_lidar.plot([0, _xd_der_b], [0, _yd_b], color=C_WARN, lw=1.2, ls='--', alpha=0.7, zorder=2)
+    ax_lidar.text(0, _yd_b + 0.03, f'FRENTE ±{math.degrees(SECTOR_FRENTE):.0f}°',
+                  color=C_WARN, fontsize=7, ha='center', va='bottom', alpha=0.85)
+
     ax_lidar.scatter([0], [0], s=80, c='white', zorder=6)
     ax_lidar.annotate('', xy=(0, 0.25), xytext=(0, 0),
                       arrowprops=dict(arrowstyle='->', color=C_ARROW, lw=2.5), zorder=7)
@@ -353,7 +368,7 @@ def build_figure():
     ax_der.axis('off')
     ax_der.set_xlim(0, 1)
     ax_der.set_ylim(0, 1)
-    ax_der.set_title('PARED DERECHA (RANSAC)', color=C_RIGHT, fontsize=12, pad=6)
+    ax_der.set_title('PARED DERECHA (S&M)', color=C_RIGHT, fontsize=12, pad=6)
 
     # Barra gauge horizontal
     ax_der.add_patch(mpatches.FancyBboxPatch(
@@ -398,7 +413,7 @@ def build_figure():
     ax_izq.axis('off')
     ax_izq.set_xlim(0, 1)
     ax_izq.set_ylim(0, 1)
-    ax_izq.set_title('PARED IZQUIERDA (RANSAC)', color=C_LEFT, fontsize=12, pad=6)
+    ax_izq.set_title('PARED IZQUIERDA (S&M)', color=C_LEFT, fontsize=12, pad=6)
 
     lbl_izq_val    = ax_izq.text(0.5, 0.60, '---', ha='center', va='center',
                                   color=C_LEFT, fontsize=34, fontweight='bold')
@@ -427,12 +442,9 @@ def build_figure():
 
 
 def _color_confianza(conf):
-    """Color segun la confianza RANSAC (ratio de inliers). 0 = fallback usado."""
-    if conf <= 0.0:
-        return C_CONF_LO
-    if conf < CONF_MIN_OK:
-        return C_WARN
-    return C_OK
+    """Color segun si Split-and-Merge encontro un segmento de pared valido
+    (conf=1.0) o se uso el fallback de minimo rango crudo (conf=0.0)."""
+    return C_CONF_LO if conf <= 0.0 else C_OK
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
@@ -547,7 +559,7 @@ def main():
 
             col_conf_der = _color_confianza(node.conf_der)
             conf_txt_der = ('fallback (min. rango)' if node.conf_der <= 0.0
-                            else f'RANSAC conf: {node.conf_der*100:.0f}%')
+                            else 'pared encontrada (S&M)')
             da['lbl_conf'].set_text(conf_txt_der)
             da['lbl_conf'].set_color(col_conf_der)
 
@@ -580,7 +592,7 @@ def main():
 
             col_conf_izq = _color_confianza(node.conf_izq)
             conf_txt_izq = ('fallback (min. rango)' if node.conf_izq <= 0.0
-                            else f'RANSAC conf: {node.conf_izq*100:.0f}%')
+                            else 'pared encontrada (S&M)')
             ia['lbl_conf'].set_text(conf_txt_izq)
             ia['lbl_conf'].set_color(col_conf_izq)
 

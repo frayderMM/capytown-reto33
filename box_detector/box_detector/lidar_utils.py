@@ -11,8 +11,7 @@ de forma independiente y reutilizarlas tanto en el detector como en la FSM.
 """
 
 import math
-import random
-from typing import List, Optional, Tuple
+from typing import List, Tuple
 
 # Un "punto" del barrido se representa como (angulo, rango) en coordenadas polares.
 PuntoPolar = Tuple[float, float]
@@ -185,53 +184,131 @@ def distancia_recta_origen(recta: Recta) -> float:
     return abs(c)
 
 
-def ajustar_recta_ransac(puntos_xy: List[PuntoXY],
-                         umbral_inlier: float = 0.03,
-                         iteraciones: int = 80,
-                         min_inliers: int = 12,
-                         rng: Optional[random.Random] = None) -> Optional[dict]:
-    """Ajusta una recta a puntos_xy por RANSAC, robusta a outliers.
+# ── Split-and-Merge ──────────────────────────────────────────────────────
+# Segmenta una nube de puntos en tramos localmente rectos. Se probo RANSAC
+# (consenso robusto a outliers) pero en la practica dio peor resultado: el
+# muestreo aleatorio produce variacion de cuadro a cuadro incluso con la
+# pared quieta (ruido en el control, y sobre todo en esquinas eleccion de
+# lado inconsistente entre intentos identicos). Split-and-Merge separa la
+# pared de una caja que la interrumpe de forma DETERMINISTICA (mismo scan
+# -> mismo resultado siempre), y luego se elige el mejor segmento para el
+# ajuste final por minimos cuadrados.
 
-    Es la alternativa a Split-and-Merge para detectar paredes: no requiere
-    que los puntos sean contiguos, asi que si una caja interrumpe la pared,
-    sus puntos quedan fuera del consenso (outliers) en vez de romper o
-    fusionar mal los segmentos.
-
-    Procedimiento: en cada iteracion se muestrean 2 puntos al azar, se arma
-    la recta que pasa por ellos y se cuentan los inliers (puntos a distancia
-    <= umbral_inlier). Se conserva el modelo con mas inliers y, al final, se
-    refina con recta_por_pca() sobre ese conjunto de inliers (mas preciso
-    que la recta de 2 puntos usada solo para muestrear).
-
-    Devuelve un dict {'a','b','c','inliers','ratio'} o None si no hay
-    puntos suficientes o ningun modelo alcanza min_inliers.
+def pre_segmentar(puntos_idx_xy: List[Tuple[int, float, float]],
+                  salto_dist: float, salto_idx: int) -> List[List[PuntoXY]]:
+    """Rompe una nube de puntos (idx_barrido, x, y) ordenada en grupos
+    contiguos, cortando donde hay un hueco de indice (puntos no
+    consecutivos en el barrido, p.ej. por lecturas invalidas filtradas) o
+    un salto euclidiano grande (discontinuidad de objeto: el borde de una
+    caja frente a la pared). Devuelve una lista de grupos, cada uno una
+    lista de (x, y). Descarta grupos de un solo punto (no definen recta).
     """
-    n = len(puntos_xy)
-    if n < min_inliers:
-        return None
-    if rng is None:
-        rng = random.Random()
+    if not puntos_idx_xy:
+        return []
+    grupos: List[List[PuntoXY]] = []
+    actual = [puntos_idx_xy[0]]
+    for k in range(1, len(puntos_idx_xy)):
+        ip, xp, yp = puntos_idx_xy[k - 1]
+        ic, xc, yc = puntos_idx_xy[k]
+        if (ic - ip) > salto_idx or math.hypot(xc - xp, yc - yp) > salto_dist:
+            if len(actual) >= 2:
+                grupos.append([(x, y) for _, x, y in actual])
+            actual = [puntos_idx_xy[k]]
+        else:
+            actual.append(puntos_idx_xy[k])
+    if len(actual) >= 2:
+        grupos.append([(x, y) for _, x, y in actual])
+    return grupos
 
-    mejor_inliers: List[int] = []
-    for _ in range(iteraciones):
-        i, j = rng.sample(range(n), 2)
-        x1, y1 = puntos_xy[i]
-        x2, y2 = puntos_xy[j]
-        dx, dy = x2 - x1, y2 - y1
-        norm = math.hypot(dx, dy)
-        if norm < 1e-6:
-            continue
-        a, b = -dy / norm, dx / norm
-        c = -(a * x1 + b * y1)
 
-        inliers = [k for k, (px, py) in enumerate(puntos_xy)
-                  if abs(a * px + b * py + c) <= umbral_inlier]
-        if len(inliers) > len(mejor_inliers):
-            mejor_inliers = inliers
+def _distancia_perpendicular_segmento(px, py, ax, ay, bx, by) -> float:
+    """Distancia de (px,py) a la recta que pasa por (ax,ay)-(bx,by)."""
+    dx, dy = bx - ax, by - ay
+    L = math.hypot(dx, dy)
+    if L < 1e-9:
+        return math.hypot(px - ax, py - ay)
+    return abs(dy * px - dx * py + bx * ay - by * ax) / L
 
-    if len(mejor_inliers) < min_inliers:
-        return None
 
-    pts_inlier = [puntos_xy[k] for k in mejor_inliers]
-    a, b, c = recta_por_pca(pts_inlier)
-    return {'a': a, 'b': b, 'c': c, 'inliers': mejor_inliers, 'ratio': len(mejor_inliers) / n}
+def dividir_split(puntos_xy: List[PuntoXY], umbral: float) -> List[List[PuntoXY]]:
+    """Paso 'split': si el punto de mayor desviacion perpendicular a la
+    cuerda (primer punto - ultimo punto) supera el umbral, corta ahi y
+    repite recursivamente en cada mitad. Cuando ya no hay que cortar mas,
+    devuelve el tramo tal cual (localmente recto dentro del umbral)."""
+    if len(puntos_xy) < 3:
+        return [puntos_xy]
+    ax, ay = puntos_xy[0]
+    bx, by = puntos_xy[-1]
+    dists = [_distancia_perpendicular_segmento(p[0], p[1], ax, ay, bx, by)
+             for p in puntos_xy]
+    im = max(range(len(dists)), key=lambda i: dists[i])
+    if dists[im] > umbral:
+        return dividir_split(puntos_xy[:im + 1], umbral) + dividir_split(puntos_xy[im:], umbral)[1:]
+    return [puntos_xy]
+
+
+def fusionar_merge(segmentos: List[List[PuntoXY]], umbral: float) -> List[List[PuntoXY]]:
+    """Paso 'merge': fusiona segmentos adyacentes si, juntos, siguen
+    siendo una sola recta dentro del umbral — evita sobre-segmentar un
+    tramo recto que el split partio de mas por ruido puntual."""
+    if len(segmentos) <= 1:
+        return segmentos
+    fusionados = [segmentos[0]]
+    for seg in segmentos[1:]:
+        candidato = fusionados[-1] + seg
+        if len(dividir_split(candidato, umbral)) == 1:
+            fusionados[-1] = candidato
+        else:
+            fusionados.append(seg)
+    return fusionados
+
+
+def segmentar_split_and_merge(puntos_idx_xy: List[Tuple[int, float, float]],
+                              umbral_split: float,
+                              salto_dist: float,
+                              salto_idx: int,
+                              min_puntos_segmento: int = 4) -> List[List[PuntoXY]]:
+    """Pipeline completo: pre-segmenta por discontinuidad de objeto, luego
+    aplica split+merge a cada grupo contiguo. Descarta segmentos con menos
+    de min_puntos_segmento puntos (ruido, no una pared).
+
+    Devuelve la lista final de segmentos, cada uno una lista de (x, y).
+    """
+    segmentos_finales: List[List[PuntoXY]] = []
+    for grupo in pre_segmentar(puntos_idx_xy, salto_dist, salto_idx):
+        for seg in fusionar_merge(dividir_split(grupo, umbral_split), umbral_split):
+            if len(seg) >= min_puntos_segmento:
+                segmentos_finales.append(seg)
+    return segmentos_finales
+
+
+def largo_segmento(segmento: List[PuntoXY]) -> float:
+    """Longitud de un segmento: distancia entre su primer y ultimo punto."""
+    if len(segmento) < 2:
+        return 0.0
+    (x0, y0), (x1, y1) = segmento[0], segmento[-1]
+    return math.hypot(x1 - x0, y1 - y0)
+
+
+def es_segmento_lateral(segmento: List[PuntoXY], cos_min: float = 0.75) -> bool:
+    """True si el segmento va mayormente a lo LARGO del eje x (direccion
+    de avance del robot) en vez de CRUZADO (como una pared frontal en una
+    esquina, o el tramo donde el pasillo dobla).
+
+    Mejora sobre el diseño anterior: en una esquina, antes de que el robot
+    termine de girar, un tramo de la pared que esta justo doblando puede
+    colarse en el sector lateral (izq/der) y ser lo bastante largo para
+    pasar el filtro de longitud — pero esa pared no es paralela al
+    pasillo, es casi perpendicular. Este filtro la descarta como
+    candidata a "pared lateral" aunque sea larga, evitando que una lectura
+    de la esquina se confunda con la pared del costado.
+
+    cos_min: coseno minimo del angulo con el eje x (0.75 ~ 41° de
+    tolerancia); mas alto = mas estricto (exige mas paralelismo).
+    """
+    (x0, y0), (x1, y1) = segmento[0], segmento[-1]
+    dx, dy = x1 - x0, y1 - y0
+    L = math.hypot(dx, dy)
+    if L < 1e-6:
+        return False
+    return abs(dx) / L >= cos_min
