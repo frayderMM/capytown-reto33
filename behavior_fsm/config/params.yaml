@@ -23,6 +23,8 @@ behavior_fsm:
     d_emergencia_lateral: 0.03  # m
     w_salir_choque:       0.3   # rad/s: gira en el sitio hacia el lado con
                                 # más espacio crudo para salir del choque
+    v_retroceso_choque:   0.04  # m/s: retrocede un poco (solo si el frente
+                                # es lo que dispara) mientras gira para calibrar
 
     # Umbrales frontales
     d_giro:         0.30   # m  trigger GIRO
