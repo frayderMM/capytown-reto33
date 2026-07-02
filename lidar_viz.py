@@ -14,10 +14,8 @@ Panel IZQUIERDO (marco del robot, frente hacia +x):
     · estado de la FSM, distancia frontal y distancia a la pared derecha
 
 Panel DERECHO (marco odom):
-    · recorrido del robot + pose actual
-    · cajas censadas por box_detector, numeradas
-    · mapa FIJO de la pista: segmentos de pared ya detectados alguna vez,
-      acumulados en marco odom (no desaparecen al girar/alejarse)
+    · recorrido del robot + pose actual (degradado: lo reciente resalta)
+    · cajas vivas (visibles ahora) y censadas (confirmadas, lado derecho)
 
 Consume /scan y /guardian/debug (JSON del guardián). Correr aparte (VNC):
 
@@ -222,12 +220,6 @@ def main():
                          transform=axL.transAxes, color='#80ffea',
                          fontsize=11, fontweight='bold', va='top')
 
-                mapa_pared = dbg.get('mapa_pared', [])
-                if mapa_pared:
-                    axR.scatter([p[0] for p in mapa_pared], [p[1] for p in mapa_pared],
-                                s=3, color=COLORES['PARED'], alpha=0.6, zorder=2,
-                                label='mapa pista')
-
                 trail = dbg.get('trail', [])
                 if len(trail) >= 2:
                     # Degradado: lo mas viejo se desvanece, lo mas reciente
@@ -267,7 +259,7 @@ def main():
                     axR.annotate(f'{i + 1}', (bx, by), color='#1a1a2e',
                                  ha='center', va='center', fontsize=8,
                                  fontweight='bold', zorder=5)
-                if trail or pose or cajas_vivas or cajas_fijas or mapa_pared:
+                if trail or pose or cajas_vivas or cajas_fijas:
                     handles, labels = axR.get_legend_handles_labels()
                     if cajas_vivas:
                         handles.append(mpatches.Patch(
@@ -284,7 +276,7 @@ def main():
                          fontweight='bold',
                          bbox=dict(boxstyle='round,pad=0.25', fc=PANEL,
                                    ec='#ffa726', linewidth=0.6, alpha=0.85))
-                todos = trail + cajas_vivas + cajas_fijas + mapa_pared + \
+                todos = trail + cajas_vivas + cajas_fijas + \
                         ([pose[:2]] if pose else [])
                 if todos:
                     xs, ys = [q[0] for q in todos], [q[1] for q in todos]
