@@ -509,11 +509,21 @@ class Guardian(Node):
             f'{self.estado}→{nuevo}  '
             f'f={self.dist_frente:.2f}  l={self.dist_izq:.2f}  r={self.dist_der:.2f}'
             f'  clase_frente={self.clase_frente}')
-        # Marca cooldown al salir de GIRO o RODEO hacia CRUCERO
-        if self.estado in (GIRO, RODEO, RETROCESO) and nuevo == CRUCERO:
+        # Cooldown de GIRO: SOLO tras un GIRO/RODEO normal — evita reactivar
+        # GIRO apenas se termina de rodear, por proximidad residual del giro
+        # mismo. NO se aplica tras RETROCESO: ahí el obstáculo que causó el
+        # choque puede seguir justo enfrente, y CRUCERO necesita poder
+        # re-evaluar GIRO de inmediato. Aplicarlo también tras RETROCESO
+        # dejaba al robot ciego a GIRO 1.5-2s, arrastrándose hacia el mismo
+        # obstáculo y disparando CHOQUE→RETROCESO otra vez sin girar nunca
+        # (visto en pruebas reales: ~10 ciclos seguidos sin avanzar).
+        if self.estado in (GIRO, RODEO) and nuevo == CRUCERO:
             self.t_ultimo_giro = self.get_clock().now().nanoseconds * 1e-9
-            # Resetea la derivada: si no, el primer tick calcula d_err sobre
-            # un salto acumulado durante todo GIRO+RODEO (spike falso).
+        # Resetea la derivada del PD al volver a CRUCERO desde cualquier
+        # maniobra ciega (GIRO/RODEO/RETROCESO): si no, el primer tick
+        # calcula d_err sobre un salto acumulado durante la maniobra
+        # (spike falso).
+        if self.estado in (GIRO, RODEO, RETROCESO) and nuevo == CRUCERO:
             if math.isfinite(self.dist_der):
                 self._err_der_prev = self.dist_der - self.target_der
             self._t_der_prev = self.get_clock().now()
