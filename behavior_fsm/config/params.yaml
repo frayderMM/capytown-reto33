@@ -1,9 +1,10 @@
-# Guardian v4 (RC3) — CRUCERO / GIRO / RODEO
+# Guardian v4 (RC3) — CRUCERO / GIRO / RODEO / RETROCESO
 #
 # Flujo: CRUCERO → GIRO (elige lado con más espacio, según dist_izq/dist_der
 # de wall_follower) → RODEO (recto, sale por sensor cuando el frente
-# despeja) → CRUCERO. dist_izq/dist_der NO se calculan en behavior_fsm: los
-# publica wall_follower (RANSAC sobre las paredes l
+# despeja) → CRUCERO. (cualquier estado) → RETROCESO → CRUCERO si el STOP
+# absoluto se dispara (choque). dist_izq/dist_der NO se calculan en
+# behavior_fsm: los publica wall_follower (RANSAC sobre las paredes laterales).
 #
 # La clasificación caja/pared (percepcion.py) corre en paralelo solo para
 # poblar /guardian/debug (panel de lidar_viz.py) — no decide el movimiento.
@@ -19,7 +20,7 @@ behavior_fsm:
     d_stop_lateral: 0.06   # m  6 cm costado (aplica a izq y a der por igual)
 
     # Umbrales frontales
-    d_giro:         0.30   # m  trigger GIRO
+    d_giro:         0.28   # m  trigger GIRO
     d_front_inicio: 0.40   # m  inicio evasión frontal
 
     # Tracking pared derecha
@@ -36,19 +37,29 @@ behavior_fsm:
 
     # Velocidad
     vel_crucero:      0.10
-    vel_maniobra:     0.07   # lineal en GIRO/RODEO: más lento que crucero
-    vel_giro_gradual: 0.55
+    vel_maniobra:     0.035  # lineal en GIRO/RODEO: reducida para recorrer
+                             # menos distancia "a ciegas" durante el giro
+    vel_giro_gradual: 0.40
     max_w:            0.60
 
     # Temporización / geometría de GIRO y RODEO
-    t_giro_min:         0.8   # s  giro mínimo (~23°)
+    t_giro_min:         0.7   # s  giro mínimo
     t_giro_max:         4.0   # s  salvavidas
     d_lado_salida_giro: 0.20  # m  sale de GIRO si el lado hacia el que gira < 20cm
-    k_urgencia_giro:    1.7   # amplifica el giro si el obstáculo está muy cerca de d_giro
+                              # (medido crudo/sin RANSAC, ver behavior_fsm.py)
+    k_urgencia_giro:    1.2   # amplifica el giro si el obstáculo está muy cerca de d_giro
     t_rodeo_min:        0.4   # s  mínimo recto tras GIRO antes de evaluar salida
-    t_rodeo_max:        1.2   # s  salvavidas — RODEO es ciego (w=0)
+    t_rodeo_max:        1.0   # s  salvavidas — RODEO es ciego (w=0)
     t_cooldown:         2.0   # s  cooldown post-RODEO
     t_recuperacion:     1.5   # s  suprime evasión frontal tras RODEO
+
+    # Retroceso tras un choque (STOP absoluto)
+    dist_retroceso: 0.15      # m  retrocede esto tras un choque
+    vel_retroceso:  0.08      # m/s magnitud del retroceso (t_retroceso = dist/vel)
+    w_retroceso:    0.42      # rad/s giro de corrección durante el retroceso,
+                              # hacia el lado con más espacio (crudo, igual
+                              # criterio que GIRO) para quedar ya encarado
+                              # hacia el lado libre al reintentar
 
     topic_odom: '/odom_raw'   # odometría del yahboom_driver (trail + censo vivo del panel)
 

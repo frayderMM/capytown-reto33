@@ -52,9 +52,10 @@ from std_msgs.msg import Float32, String
 from behavior_fsm import percepcion as pc
 
 
-CRUCERO = 'CRUCERO'
-GIRO    = 'GIRO'
-RODEO   = 'RODEO'
+CRUCERO   = 'CRUCERO'
+GIRO      = 'GIRO'
+RODEO     = 'RODEO'
+RETROCESO = 'RETROCESO'
 
 
 class Guardian(Node):
@@ -68,7 +69,7 @@ class Guardian(Node):
 
         self.declare_parameter('d_stop_front',   0.14)
         self.declare_parameter('d_stop_lateral', 0.06)
-        self.declare_parameter('d_giro',         0.30)
+        self.declare_parameter('d_giro',         0.28)
         self.declare_parameter('d_front_inicio', 0.40)
 
         self.declare_parameter('target_der', 0.17)   # robot consistente a 17-20cm
@@ -79,18 +80,25 @@ class Guardian(Node):
         self.declare_parameter('Kfront',      2.0)
 
         self.declare_parameter('vel_crucero',      0.10)
-        self.declare_parameter('vel_maniobra',     0.07)
-        self.declare_parameter('vel_giro_gradual', 0.55)
+        self.declare_parameter('vel_maniobra',     0.035)  # reducida: menos distancia recorrida en el giro
+        self.declare_parameter('vel_giro_gradual', 0.40)
         self.declare_parameter('max_w',            0.60)
 
-        self.declare_parameter('t_giro_min',        0.8)
+        self.declare_parameter('t_giro_min',        0.7)
         self.declare_parameter('t_giro_max',        4.0)
         self.declare_parameter('d_lado_salida_giro', 0.20)
-        self.declare_parameter('k_urgencia_giro',   1.7)
+        self.declare_parameter('k_urgencia_giro',   1.2)
         self.declare_parameter('t_rodeo_min',       0.4)
-        self.declare_parameter('t_rodeo_max',       1.2)
+        self.declare_parameter('t_rodeo_max',       1.0)
         self.declare_parameter('t_cooldown',        2.0)
         self.declare_parameter('t_recuperacion',    1.5)
+
+        # Retroceso tras un choque (STOP absoluto)
+        self.declare_parameter('dist_retroceso', 0.15)  # m  retrocede esto tras un choque
+        self.declare_parameter('vel_retroceso',  0.08)  # m/s magnitud (t_retroceso = dist/vel)
+        self.declare_parameter('w_retroceso',    0.42)  # rad/s giro de corrección durante el
+                                                          # retroceso, hacia el lado con más
+                                                          # espacio (crudo, igual criterio que GIRO)
 
         # ── Parámetros de percepción / clasificación (solo para el panel) ─
         self.declare_parameter('excluir_atras_deg', 60.0)
@@ -131,6 +139,7 @@ class Guardian(Node):
         self.t_ultimo_giro = -float('inf')
         self.dir_giro      = 1.0   # +1 = izquierda (w>0), -1 = derecha (w<0)
         self.w_giro_efectivo = 0.0  # magnitud del giro, congelada al entrar a GIRO
+        self.w_retroceso_efectivo = 0.0  # giro de corrección en RETROCESO, congelado al entrar
 
         # ── PD tracking pared derecha ─────────────────────────────────────
         self._err_der_prev = 0.0
@@ -205,6 +214,10 @@ class Guardian(Node):
         self.t_rodeo_max       = self.get_parameter('t_rodeo_max').value
         self.t_cooldown        = self.get_parameter('t_cooldown').value
         self.t_recuperacion    = self.get_parameter('t_recuperacion').value
+        self.dist_retroceso    = self.get_parameter('dist_retroceso').value
+        self.vel_retroceso     = self.get_parameter('vel_retroceso').value
+        self.t_retroceso       = self.dist_retroceso / max(self.vel_retroceso, 1e-6)
+        self.w_retroceso       = self.get_parameter('w_retroceso').value
 
     def _on_params(self, params):
         self._reload_params()
@@ -297,7 +310,9 @@ class Guardian(Node):
         self.pub_cmd.publish(cmd)
         s = String(); s.data = self.estado
         self.pub_estado.publish(s)
-        if self.estado == GIRO:
+        if self.estado == RETROCESO:
+            self.accion = 'RETROCEDIENDO'
+        elif self.estado == GIRO:
             self.accion = 'GIRANDO'
         elif self.estado == RODEO:
             self.accion = 'BORDEANDO_OBSTACULO'
@@ -343,7 +358,7 @@ class Guardian(Node):
             f'f={self.dist_frente:.2f}  l={self.dist_izq:.2f}  r={self.dist_der:.2f}'
             f'  clase_frente={self.clase_frente}')
         # Marca cooldown al salir de GIRO o RODEO hacia CRUCERO
-        if self.estado in (GIRO, RODEO) and nuevo == CRUCERO:
+        if self.estado in (GIRO, RODEO, RETROCESO) and nuevo == CRUCERO:
             self.t_ultimo_giro = self.get_clock().now().nanoseconds * 1e-9
             # Resetea la derivada: si no, el primer tick calcula d_err sobre
             # un salto acumulado durante todo GIRO+RODEO (spike falso).
@@ -355,31 +370,56 @@ class Guardian(Node):
 
     def loop_control(self):
 
-        # ── PRIORIDAD 1: STOP absoluto ────────────────────────────────────
-        if self.dist_frente < self.d_stop_front:
-            self._pub(0.0, 0.0)
+        # ── PRIORIDAD 1: STOP absoluto → retrocede recto ───────────────────
+        # No se evalúa si ya estamos en RETROCESO: dist_frente sigue por
+        # debajo de d_stop_front justo al entrar (es la causa del choque), y
+        # si el STOP se re-disparara aquí el robot se quedaría parado para
+        # siempre sin llegar nunca a ejecutar el retroceso.
+        if self.estado != RETROCESO:
+            choque = None
+            if self.dist_frente < self.d_stop_front:
+                choque = f'frente={self.dist_frente:.3f}m'
+            # Usa el mínimo crudo (dist_izq_raw/dist_der_raw), NO el de
+            # RANSAC: RANSAC descarta a propósito objetos que no son pared
+            # (p.ej. una caja pegada al costado) como outliers, y ese es
+            # justo el caso que este STOP tiene que detectar.
+            elif math.isfinite(self.dist_izq_raw) and self.dist_izq_raw < self.d_stop_lat:
+                choque = f'izq={self.dist_izq_raw:.3f}m'
+            elif math.isfinite(self.dist_der_raw) and self.dist_der_raw < self.d_stop_lat:
+                choque = f'der={self.dist_der_raw:.3f}m'
+
+            if choque is not None:
+                # Gira hacia el lado con MÁS espacio (crudo, no RANSAC: justo
+                # aquí es donde RANSAC es menos confiable, pegado a un
+                # obstáculo) mientras retrocede, para quedar ya encarado
+                # hacia el lado libre y no repetir el mismo choque al
+                # reintentar. Mismo criterio de "más espacio" que GIRO.
+                if math.isfinite(self.dist_izq_raw) and math.isfinite(self.dist_der_raw):
+                    dir_retroceso = 1.0 if self.dist_izq_raw >= self.dist_der_raw else -1.0
+                elif math.isfinite(self.dist_der_raw):
+                    dir_retroceso = 1.0
+                elif math.isfinite(self.dist_izq_raw):
+                    dir_retroceso = -1.0
+                else:
+                    dir_retroceso = 1.0
+                self.w_retroceso_efectivo = dir_retroceso * self.w_retroceso
+                self.get_logger().warn(
+                    f'CHOQUE {choque} → retrocede {self.dist_retroceso:.2f}m'
+                    f' girando hacia {"izq" if dir_retroceso > 0 else "der"}',
+                    throttle_duration_sec=0.4)
+                self._cambiar(RETROCESO)
+                self._pub_dbg(0, 0, 0, 0)
+                self._pub(-self.vel_retroceso, self.w_retroceso_efectivo)
+                return
+
+        # ── RETROCESO: recto hacia atrás + giro de corrección (congelado al
+        # entrar) hacia el lado con más espacio, tiempo fijo, ciego a propósito
+        if self.estado == RETROCESO:
+            if self._t_estado() >= self.t_retroceso:
+                self._cambiar(CRUCERO)
+                return
             self._pub_dbg(0, 0, 0, 0)
-            self.get_logger().warn(
-                f'PARA frente={self.dist_frente:.3f}m', throttle_duration_sec=0.4)
-            return
-        # Usa el mínimo crudo (dist_izq_raw/dist_der_raw), NO el de RANSAC:
-        # RANSAC descarta a propósito objetos que no son pared (p.ej. una
-        # caja pegada al costado) como outliers, y ese es justo el caso que
-        # este STOP tiene que detectar.
-        if math.isfinite(self.dist_izq_raw) and self.dist_izq_raw < self.d_stop_lat:
-            self._pub(0.0, 0.0)
-            self._pub_dbg(0, 0, 0, 0)
-            self.get_logger().warn(
-                f'PARA izq={self.dist_izq_raw:.3f}m', throttle_duration_sec=0.4)
-            return
-        if math.isfinite(self.dist_der_raw) and self.dist_der_raw < self.d_stop_lat:
-            # El GIRO puede ir hacia cualquier lado (no solo izquierda), así
-            # que el riesgo de colisión lateral también puede venir del
-            # lado derecho.
-            self._pub(0.0, 0.0)
-            self._pub_dbg(0, 0, 0, 0)
-            self.get_logger().warn(
-                f'PARA der={self.dist_der_raw:.3f}m', throttle_duration_sec=0.4)
+            self._pub(-self.vel_retroceso, self.w_retroceso_efectivo)
             return
 
         # ── CRUCERO ───────────────────────────────────────────────────────
@@ -442,9 +482,13 @@ class Guardian(Node):
 
         # ── GIRO ──────────────────────────────────────────────────────────
         elif self.estado == GIRO:
-            # d_lado: distancia del lado HACIA EL QUE SE GIRA (criterio de
-            # salida por acercamiento excesivo a esa pared).
-            d_lado = self.dist_izq if self.dir_giro > 0 else self.dist_der
+            # d_lado: distancia CRUDA (no RANSAC) del lado HACIA EL QUE SE
+            # GIRA — criterio de salida por acercamiento excesivo a esa
+            # pared. Con el valor de RANSAC este chequeo podía quedar
+            # "ciego" (isfinite falla y se salta) justo cuando lo que se
+            # acerca es la pared misma durante el giro, que es el caso que
+            # tiene que frenar.
+            d_lado = self.dist_izq_raw if self.dir_giro > 0 else self.dist_der_raw
 
             if self._t_estado() > self.t_giro_max:
                 self._cambiar(RODEO)
