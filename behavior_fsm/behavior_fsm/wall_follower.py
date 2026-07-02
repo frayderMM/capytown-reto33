@@ -1,25 +1,39 @@
 #!/usr/bin/env python3
-"""
-wall_follower.py  —  Seguimiento lateral del jirón usando Split-and-Merge.
+r"""
+wall_follower.py  —  Alineacion paralela con la pared DERECHA (metodo de 2 haces).
 
-Suscribe a /scan, detecta los segmentos de las paredes laterales del jirón
-y publica en /lateral_correction (std_msgs/Float32) la corrección angular
-sugerida para que behavior_fsm la aplique en el estado CRUCERO.
+Suscribe a /scan, toma dos lecturas del lado derecho (una casi perpendicular
+y otra un poco adelantada hacia el frente) y calcula el angulo entre el
+robot y la pared. Publica esa correccion angular en /lateral_correction
+(std_msgs/Float32) para que behavior_fsm la aplique en CRUCERO (avanza con
+vel_crucero mientras se autoalinea con esta correccion).
 
-Pipeline:
-    /scan → filtrar → pre-segmentar → Split-and-Merge
-          → clasificar (pared larga / cara de caja corta)
-          → calcular error de centrado
-          → PD → /lateral_correction [rad/s]
+Geometria (vista superior, el robot avanza hacia arriba):
 
-                         jirón
-    pared izq  ─────────────────────────────────
-                        [robot] →
-    pared der  ─────────────────────────────────
+              r_frente
+                 \
+                  \  theta
+    -------------- x ----- pared derecha (y < 0)
+                  |
+                  | r_derecha (perpendicular, angulo_derecha_deg)
 
-    error > 0  →  robot desplazado hacia la izquierda  →  girar derecha (w < 0)
-    error < 0  →  robot desplazado hacia la derecha    →  girar izquierda (w > 0)
-    → angular.z = Kp * error + Kd * d(error)/dt
+    alpha = atan2( r_frente*cos(theta) - r_derecha , r_frente*sin(theta) )
+
+    alpha == 0   -> el robot esta paralelo a la pared.
+    alpha != 0   -> hay que girar hasta que alpha vuelva a 0.
+
+    Esto se recalcula en CADA mensaje de /scan: no es una calibracion de
+    una sola vez, es continua mientras el nodo esta vivo (se autocorrige
+    todo el rato, tambien mientras el robot avanza).
+
+    El signo de la correccion (que lado hay que girar) se ajusta con el
+    parametro 'signo_correccion' (+1.0 o -1.0): en la primera prueba ESTATICA
+    (robot quieto, girado a mano junto a la pared) hay que confirmar que el
+    signo de 'w' publicado tenga sentido antes de dejar que el robot se mueva
+    solo. Si gira para el lado contrario, cambiar signo_correccion a -1.0.
+
+    Con |alpha| por debajo de 'umbral_paralelo_deg' se considera "ya esta
+    paralelo" y no se publica correccion (evita vibrar cerca de cero).
 """
 
 import math
@@ -35,220 +49,94 @@ class WallFollower(Node):
     def __init__(self):
         super().__init__('wall_follower')
 
-        # ── Parámetros ────────────────────────────────────────────────────
-        self.declare_parameter('dist_objetivo',  0.50)   # m  – dist. a pared si solo hay una
-        self.declare_parameter('Kp',             0.8)    # ganancia proporcional
-        self.declare_parameter('Kd',             0.1)    # ganancia derivativa
-        self.declare_parameter('min_long_pared', 0.60)   # m  – longitud mínima = pared
-        self.declare_parameter('umbral_split',   0.06)   # m  – tolerancia rectitud S&M
-        self.declare_parameter('rango_max',      3.5)    # m  – distancia máxima al procesar
-        self.declare_parameter('salto_dist',     0.35)   # m  – salto euclidiano para cortar grupo
-        self.declare_parameter('salto_idx',      5)      # N  – huecos de índice para cortar grupo
-        self.declare_parameter('max_correccion', 0.40)   # rad/s – saturación de la salida
-        self.declare_parameter('cos_lateral_min',0.55)   # coseno mínimo con eje x para "pared lateral"
-        self.declare_parameter('remove_min_deg', float('nan'))  # zona angular ignorada (inicio)
-        self.declare_parameter('remove_max_deg', float('nan'))  # zona angular ignorada (fin)
+        # ── Parametros ────────────────────────────────────────────────────
+        # Angulos en convencion ROS: 0=frente, +90=izquierda, -90=derecha.
+        self.declare_parameter('angulo_frente_deg', -50.0)   # haz adelantado (entre frente y derecha)
+        self.declare_parameter('angulo_derecha_deg', -90.0)  # haz perpendicular a la derecha
+        self.declare_parameter('ventana_busqueda_deg', 3.0)  # +/- grados para buscar lectura valida
+        self.declare_parameter('Kp', 1.0)                    # ganancia: alpha (rad) -> w (rad/s)
+        self.declare_parameter('signo_correccion', 1.0)      # +1.0 o -1.0, se ajusta en prueba estatica
+        self.declare_parameter('max_correccion', 0.40)       # rad/s - saturacion de la salida
+        self.declare_parameter('umbral_paralelo_deg', 3.0)   # deg - por debajo, se considera paralelo
+        self.declare_parameter('log_cada_seg', 0.5)          # s - periodo de log de estado
 
-        self._d_obj    = self.get_parameter('dist_objetivo').value
-        self._Kp       = self.get_parameter('Kp').value
-        self._Kd       = self.get_parameter('Kd').value
-        self._min_pared= self.get_parameter('min_long_pared').value
-        self._umbral   = self.get_parameter('umbral_split').value
-        self._rmax     = self.get_parameter('rango_max').value
-        self._s_dist   = self.get_parameter('salto_dist').value
-        self._s_idx    = int(self.get_parameter('salto_idx').value)
-        self._max_w    = self.get_parameter('max_correccion').value
-        self._cos_lat  = self.get_parameter('cos_lateral_min').value
+        self._ang_frente = math.radians(self.get_parameter('angulo_frente_deg').value)
+        self._ang_derecha = math.radians(self.get_parameter('angulo_derecha_deg').value)
+        self._ventana = math.radians(self.get_parameter('ventana_busqueda_deg').value)
+        self._Kp = self.get_parameter('Kp').value
+        self._signo = self.get_parameter('signo_correccion').value
+        self._max_w = self.get_parameter('max_correccion').value
+        self._umbral_deg = self.get_parameter('umbral_paralelo_deg').value
+        self._log_periodo = self.get_parameter('log_cada_seg').value
 
-        rm_min = self.get_parameter('remove_min_deg').value
-        rm_max = self.get_parameter('remove_max_deg').value
-        self._rm_min = math.radians(rm_min) if not math.isnan(rm_min) else None
-        self._rm_max = math.radians(rm_max) if not math.isnan(rm_max) else None
-
-        # ── Estado PD ─────────────────────────────────────────────────────
-        self._err_prev = 0.0
-        self._t_prev   = self.get_clock().now()
+        self._theta = abs(self._ang_derecha - self._ang_frente)
+        self._t_ultimo_log = self.get_clock().now()
 
         # ── ROS I/O ───────────────────────────────────────────────────────
         self.create_subscription(LaserScan, '/scan', self._cb_scan, 10)
         self._pub = self.create_publisher(Float32, '/lateral_correction', 10)
 
         self.get_logger().info(
-            f'wall_follower listo  |  Kp={self._Kp}  Kd={self._Kd}'
-            f'  dist_obj={self._d_obj} m  min_pared={self._min_pared} m')
+            f'wall_follower listo (paralelo a pared DERECHA)  |  '
+            f'ang_frente={math.degrees(self._ang_frente):.0f} deg  '
+            f'ang_derecha={math.degrees(self._ang_derecha):.0f} deg  '
+            f'Kp={self._Kp}  signo={self._signo}')
 
-    # ── Filtrado ──────────────────────────────────────────────────────────
-    def _en_arco(self, theta: float) -> bool:
-        if self._rm_min is None:
-            return False
-        if self._rm_min <= self._rm_max:
-            return self._rm_min <= theta <= self._rm_max
-        return theta >= self._rm_min or theta <= self._rm_max
-
-    def _filtrar(self, msg: LaserScan):
-        """Devuelve lista de (scan_idx, x, y) conservando orden del barrido."""
-        puntos = []
-        for i, r in enumerate(msg.ranges):
-            if not math.isfinite(r):
+    # ── Lectura robusta de un haz por angulo objetivo ──────────────────────
+    def _rango_en_angulo(self, msg: LaserScan, angulo_obj: float):
+        """Busca, cerca de 'angulo_obj', la lectura valida mas cercana a ese angulo."""
+        idx_obj = int(round((angulo_obj - msg.angle_min) / msg.angle_increment))
+        medio = max(1, int(round(self._ventana / msg.angle_increment)))
+        mejor_r = None
+        mejor_di = None
+        for di in range(-medio, medio + 1):
+            i = idx_obj + di
+            if i < 0 or i >= len(msg.ranges):
                 continue
-            if r < msg.range_min or r > min(msg.range_max, self._rmax):
+            r = msg.ranges[i]
+            if not math.isfinite(r) or r < msg.range_min or r > msg.range_max:
                 continue
-            theta = msg.angle_min + i * msg.angle_increment
-            tn    = math.atan2(math.sin(theta), math.cos(theta))
-            if self._en_arco(tn):
-                continue
-            puntos.append((i, r * math.cos(theta), r * math.sin(theta)))
-        return puntos
+            if mejor_di is None or abs(di) < mejor_di:
+                mejor_r, mejor_di = r, abs(di)
+        return mejor_r
 
-    # ── Pre-segmentación ─────────────────────────────────────────────────
-    def _pre_seg(self, pts):
-        """Rompe la nube en grupos contiguos por hueco de índice o salto euclidiano."""
-        if not pts:
-            return []
-        grupos, actual = [], [pts[0]]
-        for k in range(1, len(pts)):
-            ip, xp, yp = pts[k - 1]
-            ic, xc, yc = pts[k]
-            gap  = ic - ip
-            dist = math.hypot(xc - xp, yc - yp)
-            if gap > self._s_idx or dist > self._s_dist:
-                if len(actual) >= 2:
-                    grupos.append([(x, y) for _, x, y in actual])
-                actual = [pts[k]]
-            else:
-                actual.append(pts[k])
-        if len(actual) >= 2:
-            grupos.append([(x, y) for _, x, y in actual])
-        return grupos
-
-    # ── Split-and-Merge ───────────────────────────────────────────────────
-    @staticmethod
-    def _dist_perp(px, py, ax, ay, bx, by) -> float:
-        dx, dy = bx - ax, by - ay
-        L = math.hypot(dx, dy)
-        if L < 1e-9:
-            return math.hypot(px - ax, py - ay)
-        return abs(dy * px - dx * py + bx * ay - by * ax) / L
-
-    def _split(self, pts):
-        if len(pts) < 2:
-            return [pts]
-        ax, ay = pts[0]
-        bx, by = pts[-1]
-        dists  = [self._dist_perp(p[0], p[1], ax, ay, bx, by) for p in pts]
-        im     = max(range(len(dists)), key=lambda i: dists[i])
-        if dists[im] > self._umbral and len(pts) > 2:
-            return self._split(pts[:im + 1]) + self._split(pts[im:])[1:]
-        return [pts]
-
-    def _merge(self, grupos):
-        if len(grupos) <= 1:
-            return grupos
-        merged = [grupos[0]]
-        for g in grupos[1:]:
-            cand = merged[-1] + g
-            if len(self._split(cand)) == 1:
-                merged[-1] = cand
-            else:
-                merged.append(g)
-        return merged
-
-    def _detectar_segmentos(self, pts_idx):
-        """Detecta segmentos de línea con S&M. Devuelve lista de dicts."""
-        segs = []
-        for grupo in self._pre_seg(pts_idx):
-            if len(grupo) < 4:
-                continue
-            sub = self._merge(self._split(grupo))
-            for s in sub:
-                if len(s) < 4:
-                    continue
-                p1, p2 = s[0], s[-1]
-                lon = math.hypot(p2[0] - p1[0], p2[1] - p1[1])
-                if lon < 0.08:
-                    continue
-                mean_y = sum(p[1] for p in s) / len(s)
-                segs.append({'p1': p1, 'p2': p2, 'lon': lon,
-                             'mean_y': mean_y, 'pts': s})
-        return segs
-
-    # ── Clasificación y control ───────────────────────────────────────────
-    def _paredes_laterales(self, segs):
-        """
-        De los segmentos detectados, filtra las paredes laterales del jirón.
-
-        Criterios de "pared lateral":
-          - longitud > min_long_pared
-          - dirección mayormente a lo largo de X  (|dx|/L > cos_lateral_min)
-          - media_y significativa (|mean_y| > 0.15 m)
-
-        Devuelve (pared_izq, pared_der), cada una el segmento más cercano
-        al robot en cada lado, o None si no hay referencia.
-        """
-        izq, der = [], []
-        for s in segs:
-            if s['lon'] < self._min_pared:
-                continue
-            dx  = abs(s['p2'][0] - s['p1'][0])
-            cos_x = dx / s['lon']
-            if cos_x < self._cos_lat:
-                continue                   # pared frontal, no lateral
-            my = s['mean_y']
-            if my > 0.15:
-                izq.append(s)             # a la izquierda (y > 0)
-            elif my < -0.15:
-                der.append(s)             # a la derecha  (y < 0)
-
-        # La más cercana de cada lado (menor |mean_y|)
-        pared_izq = min(izq, key=lambda s:  s['mean_y']) if izq else None
-        pared_der = max(der, key=lambda s:  s['mean_y']) if der else None
-        return pared_izq, pared_der
-
-    def _calcular_error(self, izq, der):
-        """
-        Error de centrado lateral.
-
-        Con ambas paredes: error = mean_y_izq + mean_y_der
-            (izq positiva, der negativa; suma nula si centrado)
-        Solo izquierda:    error = mean_y_izq - dist_objetivo
-        Solo derecha:      error = dist_objetivo + mean_y_der
-        """
-        if izq and der:
-            return izq['mean_y'] + der['mean_y']
-        if izq:
-            return izq['mean_y'] - self._d_obj
-        if der:
-            return self._d_obj + der['mean_y']
-        return None
+    # ── Log de estado, throttled ────────────────────────────────────────────
+    def _log_estado(self, texto: str):
+        ahora = self.get_clock().now()
+        if (ahora - self._t_ultimo_log).nanoseconds * 1e-9 >= self._log_periodo:
+            self.get_logger().info(texto)
+            self._t_ultimo_log = ahora
 
     # ── Callback principal ────────────────────────────────────────────────
     def _cb_scan(self, msg: LaserScan):
-        pts_idx = self._filtrar(msg)
-        segs    = self._detectar_segmentos(pts_idx)
-        izq, der = self._paredes_laterales(segs)
-        error   = self._calcular_error(izq, der)
+        r_frente = self._rango_en_angulo(msg, self._ang_frente)
+        r_derecha = self._rango_en_angulo(msg, self._ang_derecha)
 
-        if error is None:
-            return          # sin referencia lateral → no publicar
+        if r_frente is None or r_derecha is None:
+            self._log_estado('SIN LECTURA valida en el lado derecho (revisar orientacion del LiDAR)')
+            return
 
-        # Controlador PD
-        now = self.get_clock().now()
-        dt  = max((now - self._t_prev).nanoseconds * 1e-9, 0.01)
-        d_err = (error - self._err_prev) / dt
-        w   = self._Kp * error + self._Kd * d_err
-        w   = max(-self._max_w, min(self._max_w, w))
+        alpha = math.atan2(r_frente * math.cos(self._theta) - r_derecha,
+                           r_frente * math.sin(self._theta))
+        alpha_deg = math.degrees(alpha)
+        dist_pared = r_derecha * math.cos(alpha)
 
-        self._err_prev = error
-        self._t_prev   = now
+        if abs(alpha_deg) <= self._umbral_deg:
+            w = 0.0
+            estado = 'PARALELO'
+        else:
+            w = self._signo * self._Kp * alpha
+            w = max(-self._max_w, min(self._max_w, w))
+            estado = 'gira IZQ (w>0)' if w > 0 else 'gira DER (w<0)'
 
         out = Float32()
         out.data = float(w)
         self._pub.publish(out)
 
-        ref = ("ambas" if (izq and der)
-               else ("izq" if izq else "der"))
-        self.get_logger().debug(
-            f'ref={ref}  error={error:.3f}  w={w:.3f} rad/s')
+        self._log_estado(
+            f'{estado:16s}  alpha={alpha_deg:+6.1f} deg  '
+            f'r_frente={r_frente:.2f}  r_derecha={r_derecha:.2f}  '
+            f'dist_pared={dist_pared:.2f} m  w={w:+.3f} rad/s')
 
 
 def main(args=None):

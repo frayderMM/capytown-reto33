@@ -26,6 +26,7 @@ setup(
         'console_scripts': [
             'behavior_fsm = behavior_fsm.behavior_fsm:main',
             'wall_follower = behavior_fsm.wall_follower:main',
+            'lidar_calib_viz = behavior_fsm.lidar_calib_viz:main',
         ],
     },
 )
