@@ -63,6 +63,21 @@ RODEO     = 'RODEO'
 RETROCESO = 'RETROCESO'
 
 
+def _snap_ortogonal(p1, p2):
+    """Fuerza un segmento a quedar perfectamente horizontal o vertical (el
+    eje más cercano a su orientación actual), preservando su punto medio y
+    largo. La pista es un rectángulo con isla rectangular: toda pared real
+    ES horizontal o vertical, así que cualquier desvío es error de yaw de
+    la odometría, no geometría — enderezarlo evita que el mapa fijo se vea
+    "girado" tras cada giro del robot."""
+    mx, my = 0.5 * (p1[0] + p2[0]), 0.5 * (p1[1] + p2[1])
+    semi_largo = 0.5 * math.hypot(p2[0] - p1[0], p2[1] - p1[1])
+    ang = math.atan2(p2[1] - p1[1], p2[0] - p1[0])
+    ang_eje = round(ang / (math.pi / 2)) * (math.pi / 2)
+    dx, dy = math.cos(ang_eje) * semi_largo, math.sin(ang_eje) * semi_largo
+    return (mx - dx, my - dy), (mx + dx, my + dy)
+
+
 class Guardian(Node):
     def __init__(self):
         super().__init__('behavior_fsm')
@@ -179,6 +194,7 @@ class Guardian(Node):
         self.pose = None
         self.trail = []
         self.cajas_vivas = []
+        self.mapa_pared = []    # segmentos de PARED acumulados en marco odom
 
         # ── ROS I/O ───────────────────────────────────────────────────────
         _qos = QoSProfile(depth=10)
@@ -278,6 +294,86 @@ class Guardian(Node):
             vivas.append(odom)
         self.cajas_vivas = vivas[-6:]
 
+    def _actualizar_mapa_pared(self, clusters):
+        """Mapa FIJO de la pista en marco odom: cada segmento clasificado
+        como PARED se transforma con la pose actual (self.pose, la más
+        reciente de /odom_raw) y se funde con lo ya mapeado. A diferencia
+        de 'segs' (que se recalcula cada scan en el marco del robot), este
+        mapa persiste — lo que ya se detectó una vez de la pared queda
+        fijo, no desaparece cuando el robot gira o se aleja.
+
+        Tres cuidados para que la posición sea la correcta y no se
+        dupliquen ni se corran las paredes al girar:
+          · NO se mapea durante GIRO ni RETROCESO — en ambos la
+            orientación cambia mientras el robot se mueve, y un error de
+            yaw se amplifica en la transformación a odom (más en los
+            puntos lejanos del segmento); solo se mapea en CRUCERO/RODEO,
+            cuando la pose es más estable.
+          · Cada segmento se "endereza" al eje más cercano (horizontal o
+            vertical, ver _snap_ortogonal): la pista es un rectángulo con
+            isla rectangular, toda pared real ES horizontal o vertical, así
+            que si el yaw de la odometría quedó con un pequeño error tras
+            un giro, esto evita que el mapa se vea "rotado" o desalineado
+            respecto a lo ya mapeado antes.
+          · Un segmento nuevo que caiga cerca de uno ya mapeado (mismo
+            punto medio Y misma orientación, no solo posición) NO se
+            agrega como entrada aparte: se PROMEDIA con la existente
+            (running average), así el mapa converge a la posición real en
+            vez de acumular copias corridas por el ruido de cada barrido.
+        """
+        if self.pose is None or self.estado in (GIRO, RETROCESO):
+            return
+        for cl in clusters:
+            if cl['clase'] != pc.PARED:
+                continue
+            for s in cl['segs']:
+                p1 = self._a_odom(*s['p1'])
+                p2 = self._a_odom(*s['p2'])
+                if p1 is None or p2 is None:
+                    continue
+                p1, p2 = _snap_ortogonal(p1, p2)
+                ang = math.atan2(p2[1] - p1[1], p2[0] - p1[0])
+                mx, my = 0.5 * (p1[0] + p2[0]), 0.5 * (p1[1] + p2[1])
+
+                mejor = None
+                for entrada in self.mapa_pared:
+                    if math.hypot(mx - entrada['mx'], my - entrada['my']) >= 0.06:
+                        continue
+                    dang = abs(math.atan2(math.sin(ang - entrada['ang']),
+                                          math.cos(ang - entrada['ang'])))
+                    dang = min(dang, math.pi - dang)  # una recta es igual a 180° de sí misma
+                    if dang <= math.radians(20):
+                        mejor = entrada
+                        break
+
+                if mejor is None:
+                    self.mapa_pared.append({'p1': p1, 'p2': p2, 'mx': mx, 'my': my,
+                                            'ang': ang, 'n': 1})
+                    continue
+
+                # Empareja p1↔p1/p2↔p2 o p1↔p2/p2↔p1, lo que quede más
+                # cerca — el mismo segmento físico puede verse "al revés"
+                # si el robot lo cruza desde el otro lado en otra vuelta.
+                d_directo = (math.hypot(p1[0] - mejor['p1'][0], p1[1] - mejor['p1'][1]) +
+                            math.hypot(p2[0] - mejor['p2'][0], p2[1] - mejor['p2'][1]))
+                d_cruzado = (math.hypot(p1[0] - mejor['p2'][0], p1[1] - mejor['p2'][1]) +
+                            math.hypot(p2[0] - mejor['p1'][0], p2[1] - mejor['p1'][1]))
+                if d_cruzado < d_directo:
+                    p1, p2 = p2, p1
+
+                n = mejor['n']
+                mejor['p1'] = ((mejor['p1'][0] * n + p1[0]) / (n + 1),
+                              (mejor['p1'][1] * n + p1[1]) / (n + 1))
+                mejor['p2'] = ((mejor['p2'][0] * n + p2[0]) / (n + 1),
+                              (mejor['p2'][1] * n + p2[1]) / (n + 1))
+                mejor['mx'] = 0.5 * (mejor['p1'][0] + mejor['p2'][0])
+                mejor['my'] = 0.5 * (mejor['p1'][1] + mejor['p2'][1])
+                mejor['ang'] = math.atan2(mejor['p2'][1] - mejor['p1'][1],
+                                          mejor['p2'][0] - mejor['p1'][0])
+                mejor['n'] = n + 1
+        if len(self.mapa_pared) > 4000:
+            self.mapa_pared = self.mapa_pared[-4000:]
+
     def cb_scan(self, msg: LaserScan):
         # Frente + mínimo crudo lateral: se miden aquí mismo, sin depender de
         # otro nodo ni de RANSAC, porque son la base del STOP de seguridad y
@@ -319,6 +415,7 @@ class Guardian(Node):
         self.pared_der_seg = pc.pared_derecha(self.clusters, self.min_long_pared_pd,
                                               self.cos_lat_pd)
         self._actualizar_cajas_desde_scan(self.clusters)
+        self._actualizar_mapa_pared(self.clusters)
 
         self._publicar_debug()
 
@@ -605,6 +702,9 @@ class Guardian(Node):
             'cajas_vivas': [[round(x, 3), round(y, 3)]
                             for x, y in self.cajas_vivas],
             'cajas_fijas': [],
+            'mapa_pared': [[round(e['p1'][0], 3), round(e['p1'][1], 3),
+                            round(e['p2'][0], 3), round(e['p2'][1], 3)]
+                           for e in self.mapa_pared],
             'segs': segs,
         }
         m = String()
