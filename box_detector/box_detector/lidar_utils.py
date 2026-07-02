@@ -303,12 +303,18 @@ def es_segmento_lateral(segmento: List[PuntoXY], cos_min: float = 0.75) -> bool:
     candidata a "pared lateral" aunque sea larga, evitando que una lectura
     de la esquina se confunda con la pared del costado.
 
+    Usa la direccion del ajuste por minimos cuadrados sobre TODOS los
+    puntos del segmento (recta_por_pca), no solo los dos extremos: con
+    segmentos cortos, dos puntos individuales son ruidosos (el LiDAR
+    tiene su propio error de rango) y pueden rechazar de mas un segmento
+    que en realidad si es una pared valida.
+
     cos_min: coseno minimo del angulo con el eje x (0.75 ~ 41° de
     tolerancia); mas alto = mas estricto (exige mas paralelismo).
     """
-    (x0, y0), (x1, y1) = segmento[0], segmento[-1]
-    dx, dy = x1 - x0, y1 - y0
-    L = math.hypot(dx, dy)
-    if L < 1e-6:
+    if len(segmento) < 2:
         return False
-    return abs(dx) / L >= cos_min
+    a, b, _ = recta_por_pca(segmento)
+    # Direccion del segmento = (-b, a) (perpendicular a la normal (a,b));
+    # su componente en x es -b, o sea |cos(angulo con eje x)| = |b|.
+    return abs(b) >= cos_min
