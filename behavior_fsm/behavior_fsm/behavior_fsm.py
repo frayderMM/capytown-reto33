@@ -332,15 +332,10 @@ class BehaviorFSM(Node):
                 if math.isfinite(self.dist_der):
                     w_der = self._w_der_pd()
 
-            # Repulsion izquierda (siempre activa). Usa dist_izq_raw (minimo
-            # crudo local), NO dist_izq (wall_follower): si Split-and-Merge
-            # no encuentra un segmento de pared valido en ese instante,
-            # dist_izq queda en infinito y esta repulsion se apagaria sola
-            # justo cuando mas hace falta. dist_izq_raw siempre tiene un
-            # valor (es el mismo minimo que usa el STOP absoluto).
+            # Repulsion izquierda (siempre activa)
             w_izq = 0.0
-            if math.isfinite(self.dist_izq_raw) and self.dist_izq_raw < self.d_izq_min:
-                w_izq = -self.Kizq * (self.d_izq_min - self.dist_izq_raw)
+            if math.isfinite(self.dist_izq) and self.dist_izq < self.d_izq_min:
+                w_izq = -self.Kizq * (self.d_izq_min - self.dist_izq)
 
             w = max(-self.max_w, min(self.max_w, w_front + w_der + w_izq))
             self._pub_dbg(w_front, w_der, w_izq, w)
@@ -349,15 +344,8 @@ class BehaviorFSM(Node):
         # ── GIRO ──────────────────────────────────────────────────────────
         elif self.estado == GIRO:
             # d_lado: distancia del lado HACIA EL QUE SE GIRA (criterio de
-            # salida por acercamiento excesivo a esa pared). Usa el minimo
-            # crudo local (dist_izq_raw/dist_der_raw), NO el del
-            # wall_follower: si Split-and-Merge no encuentra un segmento de
-            # pared valido justo mientras el robot gira (frecuente en una
-            # esquina, que es geometria mas dificil), dist_izq/dist_der
-            # quedan en infinito y esta salida de seguridad se apagaria
-            # sola justo cuando mas hace falta — el robot seguiria girando
-            # con la magnitud congelada hasta topar con la pared.
-            d_lado = self.dist_izq_raw if self.dir_giro > 0 else self.dist_der_raw
+            # salida por acercamiento excesivo a esa pared).
+            d_lado = self.dist_izq if self.dir_giro > 0 else self.dist_der
 
             if self._t_estado() > self.t_giro_max:
                 self._cambiar(RODEO)
