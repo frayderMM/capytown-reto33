@@ -57,6 +57,21 @@ GIRO    = 'GIRO'
 RODEO   = 'RODEO'
 
 
+def _snap_ortogonal(p1, p2):
+    """Fuerza un segmento a quedar perfectamente horizontal o vertical (el
+    eje más cercano a su orientación actual), preservando su punto medio y
+    largo. La pista es un rectángulo con isla rectangular: toda pared real
+    ES horizontal o vertical, así que cualquier desvío es error de yaw de
+    la odometría, no geometría — enderezarlo evita que el mapa fijo se vea
+    "girado" tras cada giro del robot."""
+    mx, my = 0.5 * (p1[0] + p2[0]), 0.5 * (p1[1] + p2[1])
+    semi_largo = 0.5 * math.hypot(p2[0] - p1[0], p2[1] - p1[1])
+    ang = math.atan2(p2[1] - p1[1], p2[0] - p1[0])
+    ang_eje = round(ang / (math.pi / 2)) * (math.pi / 2)
+    dx, dy = math.cos(ang_eje) * semi_largo, math.sin(ang_eje) * semi_largo
+    return (mx - dx, my - dy), (mx + dx, my + dy)
+
+
 class Guardian(Node):
     def __init__(self):
         super().__init__('behavior_fsm')
@@ -67,7 +82,8 @@ class Guardian(Node):
         self.declare_parameter('t_espera_inicio',     10.0)  # s  cuenta regresiva tras ENTER
 
         self.declare_parameter('d_stop_front',   0.14)
-        self.declare_parameter('d_stop_lateral', 0.06)
+        self.declare_parameter('d_stop_lateral', 0.07)
+        self.declare_parameter('w_escape', 0.4)  # rad/s al girar para zafar de un STOP
         self.declare_parameter('d_giro',         0.30)
         self.declare_parameter('d_front_inicio', 0.40)
 
@@ -187,6 +203,7 @@ class Guardian(Node):
     def _reload_params(self):
         self.d_stop_front      = self.get_parameter('d_stop_front').value
         self.d_stop_lat        = self.get_parameter('d_stop_lateral').value
+        self.w_escape          = self.get_parameter('w_escape').value
         self.d_giro            = self.get_parameter('d_giro').value
         self.d_front_ini       = self.get_parameter('d_front_inicio').value
         self.target_der        = self.get_parameter('target_der').value
@@ -254,12 +271,18 @@ class Guardian(Node):
         mapa persiste — lo que ya se detectó una vez de la pared queda
         fijo, no desaparece cuando el robot gira o se aleja.
 
-        Dos cuidados para que la posición sea la correcta y no se dupliquen
-        ni se corran las paredes:
+        Tres cuidados para que la posición sea la correcta y no se
+        dupliquen ni se corran las paredes al girar:
           · NO se mapea durante GIRO — ahí la orientación cambia rápido y
             un error de yaw se amplifica en la transformación a odom
             (más en los puntos lejanos del segmento); solo se mapea con el
             robot en CRUCERO/RODEO, cuando la pose es más estable.
+          · Cada segmento se "endereza" al eje más cercano (horizontal o
+            vertical, ver _snap_ortogonal): la pista es un rectángulo con
+            isla rectangular, toda pared real ES horizontal o vertical, así
+            que si tras un giro el yaw de la odometría quedó con un
+            pequeño error, esto evita que el mapa se vea "rotado" o
+            desalineado respecto a lo ya mapeado antes de girar.
           · Un segmento nuevo que caiga cerca de uno ya mapeado (mismo
             punto medio Y misma orientación, no solo posición) NO se
             agrega como entrada aparte: se PROMEDIA con la existente
@@ -276,6 +299,7 @@ class Guardian(Node):
                 p2 = self._a_odom(*s['p2'])
                 if p1 is None or p2 is None:
                     continue
+                p1, p2 = _snap_ortogonal(p1, p2)
                 ang = math.atan2(p2[1] - p1[1], p2[0] - p1[0])
                 mx, my = 0.5 * (p1[0] + p2[0]), 0.5 * (p1[1] + p2[1])
 
@@ -429,6 +453,24 @@ class Guardian(Node):
         self.estado   = nuevo
         self.t_inicio = self.get_clock().now()
 
+    def _w_escape(self):
+        """Al disparar un STOP no hay que quedarse congelado sin remedio:
+        gira (sin avanzar) hacia el lado CONTRARIO al que indica el error,
+        para que el robot intente zafar solo en vez de esperar a que el
+        obstáculo se mueva. Prioridad: punto_fp (lado exacto por el signo
+        de y) > comparar los crudos izq/der > el único lado que sí ve algo
+        cerca > por defecto, izquierda."""
+        if self.punto_fp is not None:
+            _, y = self.punto_fp
+            return self.w_escape if y < 0 else -self.w_escape   # aleja del lado invadido
+        if math.isfinite(self.dist_izq_raw) and math.isfinite(self.dist_der_raw):
+            return -self.w_escape if self.dist_izq_raw < self.dist_der_raw else self.w_escape
+        if math.isfinite(self.dist_der_raw):
+            return self.w_escape    # cerca a la derecha -> gira izquierda
+        if math.isfinite(self.dist_izq_raw):
+            return -self.w_escape   # cerca a la izquierda -> gira derecha
+        return self.w_escape
+
     def loop_control(self):
 
         # ── PRIORIDAD 0: colisión por footprint real (percepcion.py) ──────
@@ -436,38 +478,38 @@ class Guardian(Node):
         # no un cono de ±30° con radio fijo como el STOP de abajo) — más
         # preciso para saber si algo va a golpear el cuerpo del robot.
         if self.punto_fp is not None:
-            self._pub(0.0, 0.0)
+            self._pub(0.0, self._w_escape())
             self._pub_dbg(0, 0, 0, 0)
             self.get_logger().warn(
                 f'PARA footprint x={self.punto_fp[0]:.3f} y={self.punto_fp[1]:.3f}'
-                f' (clase={self.clase_frente})', throttle_duration_sec=0.4)
+                f' (clase={self.clase_frente}) — zafando', throttle_duration_sec=0.4)
             return
 
         # ── PRIORIDAD 1: STOP absoluto ────────────────────────────────────
         if self.dist_frente < self.d_stop_front:
-            self._pub(0.0, 0.0)
+            self._pub(0.0, self._w_escape())
             self._pub_dbg(0, 0, 0, 0)
             self.get_logger().warn(
-                f'PARA frente={self.dist_frente:.3f}m', throttle_duration_sec=0.4)
+                f'PARA frente={self.dist_frente:.3f}m — zafando', throttle_duration_sec=0.4)
             return
         # Usa el mínimo crudo (dist_izq_raw/dist_der_raw), NO el de RANSAC:
         # RANSAC descarta a propósito objetos que no son pared (p.ej. una
         # caja pegada al costado) como outliers, y ese es justo el caso que
         # este STOP tiene que detectar.
         if math.isfinite(self.dist_izq_raw) and self.dist_izq_raw < self.d_stop_lat:
-            self._pub(0.0, 0.0)
+            self._pub(0.0, self._w_escape())
             self._pub_dbg(0, 0, 0, 0)
             self.get_logger().warn(
-                f'PARA izq={self.dist_izq_raw:.3f}m', throttle_duration_sec=0.4)
+                f'PARA izq={self.dist_izq_raw:.3f}m — zafando', throttle_duration_sec=0.4)
             return
         if math.isfinite(self.dist_der_raw) and self.dist_der_raw < self.d_stop_lat:
             # El GIRO puede ir hacia cualquier lado (no solo izquierda), así
             # que el riesgo de colisión lateral también puede venir del
             # lado derecho.
-            self._pub(0.0, 0.0)
+            self._pub(0.0, self._w_escape())
             self._pub_dbg(0, 0, 0, 0)
             self.get_logger().warn(
-                f'PARA der={self.dist_der_raw:.3f}m', throttle_duration_sec=0.4)
+                f'PARA der={self.dist_der_raw:.3f}m — zafando', throttle_duration_sec=0.4)
             return
 
         # ── CRUCERO ───────────────────────────────────────────────────────
