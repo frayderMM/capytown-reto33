@@ -144,7 +144,7 @@ def main():
                 if pts:
                     axL.scatter([q[0] for q in pts], [q[1] for q in pts],
                                 s=5, color='#546e7a', alpha=0.5, zorder=2)
-                    M = max(max(abs(x), abs(y)) for x, y in pts) + 0.3
+                    M = min(max(max(abs(x), abs(y)) for x, y in pts) + 0.3, 1.2)
                     axL.set_xlim(-M, M)
                     axL.set_ylim(-M, M)
             dibujar_robot(axL)
