@@ -272,9 +272,16 @@ class Guardian(Node):
                 d_l_raw = min(d_l_raw, r)
             else:
                 d_r_raw = min(d_r_raw, r)
-        self.dist_frente   = d_f
-        self.dist_izq_raw  = d_l_raw
-        self.dist_der_raw  = d_r_raw
+        # d_f/d_l_raw/d_r_raw son distancias CRUDAS desde el LiDAR, pero el
+        # borde físico del robot está más adelante/afuera del sensor
+        # (offset_frente=15cm, offset_lados=8cm) — sin restar esto, un
+        # umbral como d_stop_front=0.14m se cumple cuando el LiDAR ve algo
+        # a 14cm, momento en el que el borde real (15cm más adelante) YA
+        # está tocando o pasado el obstáculo. Todas las distancias que usa
+        # loop_control deben ser relativas al borde, no al sensor.
+        self.dist_frente   = d_f - self.off_f
+        self.dist_izq_raw  = d_l_raw - self.off_l
+        self.dist_der_raw  = d_r_raw - self.off_l
 
         # Clasificación caja/pared (percepcion.py) — solo para el panel de
         # diagnóstico; NO decide el movimiento (eso lo hace loop_control con
