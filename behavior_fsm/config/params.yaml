@@ -6,14 +6,11 @@
 behavior_fsm:
   ros__parameters:
     sector_frontal_deg: 45.0    # grados - sector frontal +/- vigilado
-    dist_alerta: 0.30           # m  - entra a CAJA_DETECTADA
-    dist_parada: 0.15           # m  - entra a PARAR
+    dist_alerta: 0.30           # m  - entra a EVASION
+    dist_parada: 0.15           # m  - frena el avance (sigue girando hacia la izq)
     vel_crucero: 0.15           # m/s
-    vel_precaucion: 0.07        # m/s
-    vel_giro: 0.5               # rad/s
-    espera_seg: 3.0             # s  - tiempo detenido frente a la caja
-    angulo_rodeo_deg: 30.0      # grados de giro de la maniobra de rodeo
-    avance_rodeo_seg: 2.0       # s  - avance lateral al rodear
+    vel_evasion: 0.08           # m/s  - avance reducido mientras evade
+    w_evasion_max: 0.6          # rad/s - giro maximo hacia la izquierda (a dist_parada)
 
 wall_follower:
   ros__parameters:
