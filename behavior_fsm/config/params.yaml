@@ -56,7 +56,6 @@ behavior_fsm:
     excluir_atras_deg: 60.0     # cono trasero ignorado (cable/soporte ~12 cm)
     rango_max_clasif: 3.5       # m distancia máxima a procesar
     offset_frente: 0.15
-    offset_atras:  0.10
     offset_lados:  0.08
     salto_dist: 0.09            # m salto euclidiano que separa clusters
     salto_idx: 5                # huecos de índice para cortar cluster
