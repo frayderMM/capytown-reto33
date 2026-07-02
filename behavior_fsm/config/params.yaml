@@ -1,26 +1,83 @@
-# Parametros del guardian (Parte B).
-# Lanza los dos nodos con:
-#   ros2 run behavior_fsm behavior_fsm  --ros-args --params-file params.yaml
-#   ros2 run behavior_fsm wall_follower --ros-args --params-file params.yaml
+# Guardian v4 — CRUCERO / GIRO / RODEO
+#
+# Flujo: CRUCERO → GIRO (elige lado por RANSAC izq/der) → RODEO (recto,
+# sale por sensor cuando el frente despeja) → CRUCERO.
+# dist_izq / dist_der ya NO se calculan aqui: los publica wall_follower
+# (RANSAC sobre las paredes laterales) en /dist_izq y /dist_der.
 
 behavior_fsm:
   ros__parameters:
-    sector_frontal_deg: 45.0    # grados - sector frontal +/- vigilado
-    dist_alerta: 0.30           # m  - entra a EVASION
-    dist_parada: 0.15           # m  - frena el avance (sigue girando hacia la izq)
-    vel_crucero: 0.15           # m/s
-    vel_evasion: 0.08           # m/s  - avance reducido mientras evade
-    w_evasion_max: 0.6          # rad/s - giro maximo hacia la izquierda (a dist_parada)
 
+    lidar_front_deg:    180.0
+    sector_frontal_deg:  30.0
+    t_espera_inicio:     10.0  # s  cuenta regresiva tras ENTER antes de arrancar
+
+    # Parada absoluta
+    d_stop_front:   0.14   # m  14 cm frente
+    d_stop_lateral: 0.06   # m  6 cm costado (aplica a izq y a der por igual)
+
+    # Umbrales frontales
+    d_giro:         0.30   # m  trigger GIRO
+    d_front_inicio: 0.40   # m  inicio evasion frontal
+
+    # Tracking pared derecha
+    # target_der 17cm: robot consistente a 17-20cm, 13cm generaba overcorreccion
+    # Kder subido de 2.0 a 2.6 (no se pegaba lo suficiente al target desde 25cm);
+    # Kd_der amortigua el overshoot que trae el Kder mas alto.
+    target_der: 0.17
+    Kder:       2.6
+    Kd_der:     0.3
+
+    # Repulsion pared izquierda
+    d_izq_min: 0.15
+    Kizq:      4.0
+
+    # Evasion frontal
+    Kfront: 2.0
+
+    # Velocidad
+    vel_crucero:      0.10
+    vel_maniobra:     0.07   # lineal en GIRO/RODEO: mas lento que crucero para
+                             # recorrer menos distancia "a ciegas" si el rumbo
+                             # queda torcido tras el giro (problema de la diagonal)
+    vel_giro_gradual: 0.55   # subido de 0.50 (a veces el giro se quedaba corto)
+    max_w:            0.60
+
+    # Temporizacion / geometria de GIRO y RODEO
+    # k_urgencia_giro y la magnitud del giro se calculan UNA vez al entrar a
+    # GIRO (con dist_frente de ese instante) y quedan fijas durante todo el
+    # giro — antes se recalculaban en cada ciclo con dist_frente en vivo,
+    # que cambia rapido mientras el robot rota, y eso lo hacia errático
+    # (a veces corto, a veces se pasaba de largo).
+    t_giro_min:         0.8   # s  giro minimo (~23 deg)
+    t_giro_max:         4.0   # s  salvavidas
+    d_lado_salida_giro: 0.20  # m  sale de GIRO si el lado hacia el que gira < 20cm
+    k_urgencia_giro:    1.7   # amplifica el giro si el obstaculo esta muy cerca de d_giro
+    t_rodeo_min:        0.4   # s  minimo recto tras GIRO antes de evaluar salida
+    t_rodeo_max:        1.2   # s  salvavidas — RODEO es ciego (w=0, no corrige rumbo);
+                              # si GIRO no dejo el robot bien alineado, acotar esto limita
+                              # cuanto se puede ir en diagonal antes de volver a CRUCERO
+    t_cooldown:         2.0   # s  cooldown post-RODEO
+    t_recuperacion:     1.5   # s  suprime w_front tras RODEO
+
+# wall_follower — paredes laterales por RANSAC (reemplaza Split-and-Merge).
+# Publica /dist_izq y /dist_der; behavior_fsm los consume, no los recalcula.
 wall_follower:
   ros__parameters:
-    # --- Metodo de 2 haces: paralelo a la pared DERECHA ---
-    angulo_frente_deg: -50.0      # deg  haz adelantado (entre frente y derecha)
-    angulo_derecha_deg: -90.0     # deg  haz perpendicular a la derecha
-    ventana_busqueda_deg: 3.0     # deg  +/- para buscar lectura valida cerca del angulo objetivo
-    Kp: 1.0                       # ganancia: alpha (rad) -> w (rad/s)
-    signo_correccion: 1.0         # +1.0 o -1.0 -- AJUSTAR en la prueba estatica segun hacia
-                                  # donde gire realmente el robot
-    max_correccion: 0.40          # rad/s  saturacion de la salida
-    umbral_paralelo_deg: 3.0      # deg  por debajo de esto se considera "ya paralelo"
-    log_cada_seg: 0.5             # s  periodo del log de estado en consola
+    lidar_front_deg:    180.0
+    sector_frontal_deg:  30.0   # excluido del ajuste de pared (zona de obstaculos)
+    sector_lateral_lo:   60.0   # ventana estrecha del fallback (cerca de perpendicular)
+    sector_lateral_hi:  120.0
+    sector_trasero_deg: 160.0   # excluido del ajuste (posible otra pared tras un giro)
+    rango_max:            3.50  # m  ignora lecturas mas lejanas
+
+    umbral_inlier_ransac: 0.03  # m  tolerancia de inlier
+    iteraciones_ransac:   80
+    min_inliers_ransac:   12
+    min_puntos_lado:      15    # puntos minimos en el lado para intentar RANSAC
+    semilla_ransac:       -1    # -1 = aleatorio real; >=0 = reproducible (defensa/debug)
+
+    ema_alpha: 0.5              # suavizado temporal de dist_izq/dist_der
+
+    ancho_jiron:     0.60       # m  ancho esperado del jiron (chequeo de consistencia)
+    tol_ancho_jiron: 0.15       # m  tolerancia antes de advertir

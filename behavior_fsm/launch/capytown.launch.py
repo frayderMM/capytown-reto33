@@ -43,6 +43,14 @@ def generate_launch_description():
         parameters=[params_det],
     )
 
+    wall = Node(
+        package='behavior_fsm',
+        executable='wall_follower',
+        name='wall_follower',
+        output='screen',
+        parameters=[params_fsm],
+    )
+
     guardian = Node(
         package='behavior_fsm',
         executable='behavior_fsm',
@@ -51,18 +59,10 @@ def generate_launch_description():
         parameters=[params_fsm],
     )
 
-    wall_follower = Node(
-        package='behavior_fsm',
-        executable='wall_follower',
-        name='wall_follower',
-        output='screen',
-        parameters=[params_fsm],
-    )
-
     return LaunchDescription([
         # driver_lidar,   # <-- descomenta cuando tengas el driver correcto
         detector,
         metrics,
+        wall,
         guardian,
-        wall_follower,
     ])

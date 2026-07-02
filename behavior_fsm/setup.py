@@ -17,8 +17,8 @@ setup(
     ],
     install_requires=['setuptools'],
     zip_safe=True,
-    maintainer='Codeplai',
-    maintainer_email='codeplaigamessac@gmail.com',
+    maintainer='frayderMM',
+    maintainer_email='fraydermezamorveli@gmail.com',
     description='Parte B del reto CapyTown: guardian con FSM reactiva al LiDAR.',
     license='MIT',
     tests_require=['pytest'],
@@ -26,7 +26,6 @@ setup(
         'console_scripts': [
             'behavior_fsm = behavior_fsm.behavior_fsm:main',
             'wall_follower = behavior_fsm.wall_follower:main',
-            'lidar_calib_viz = behavior_fsm.lidar_calib_viz:main',
         ],
     },
 )
