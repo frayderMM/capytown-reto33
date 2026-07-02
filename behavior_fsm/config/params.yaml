@@ -1,83 +1,90 @@
-# Parámetros del Guardián (Parte B) — versión corregida.
-# El guardián integra percepción + seguimiento de pared + FSM en UN nodo.
-# wall_follower es solo depuración opcional (usa el mismo bloque de abajo).
+# Guardian v4 (RC3) — CRUCERO / GIRO / RODEO
+#
+# Flujo: CRUCERO → GIRO (elige lado con más espacio, según dist_izq/dist_der
+# de wall_follower) → RODEO (recto, sale por sensor cuando el frente
+# despeja) → CRUCERO. dist_izq/dist_der NO se calculan en behavior_fsm: los
+# publica wall_follower (RANSAC sobre las paredes laterales).
+#
+# La clasificación caja/pared (percepcion.py) corre en paralelo solo para
+# poblar /guardian/debug (panel de lidar_viz.py) — no decide el movimiento.
 
 behavior_fsm:
   ros__parameters:
-    # --- Orientación del LiDAR ---
-    lidar_front_deg: 180.0      # frente del MS200 Yahboom (cable atrás)
+    lidar_front_deg:    180.0
+    sector_frontal_deg:  30.0
+    t_espera_inicio:     10.0  # s  cuenta regresiva antes de arrancar
+
+    # Parada absoluta
+    d_stop_front:   0.14   # m  14 cm frente
+    d_stop_lateral: 0.06   # m  6 cm costado (aplica a izq y a der por igual)
+
+    # Umbrales frontales
+    d_giro:         0.30   # m  trigger GIRO
+    d_front_inicio: 0.40   # m  inicio evasión frontal
+
+    # Tracking pared derecha
+    target_der: 0.17
+    Kder:       2.6
+    Kd_der:     0.3
+
+    # Repulsión pared izquierda
+    d_izq_min: 0.15
+    Kizq:      4.0
+
+    # Evasión frontal
+    Kfront: 2.0
+
+    # Velocidad
+    vel_crucero:      0.10
+    vel_maniobra:     0.07   # lineal en GIRO/RODEO: más lento que crucero
+    vel_giro_gradual: 0.55
+    max_w:            0.60
+
+    # Temporización / geometría de GIRO y RODEO
+    t_giro_min:         0.8   # s  giro mínimo (~23°)
+    t_giro_max:         4.0   # s  salvavidas
+    d_lado_salida_giro: 0.20  # m  sale de GIRO si el lado hacia el que gira < 20cm
+    k_urgencia_giro:    1.7   # amplifica el giro si el obstáculo está muy cerca de d_giro
+    t_rodeo_min:        0.4   # s  mínimo recto tras GIRO antes de evaluar salida
+    t_rodeo_max:        1.2   # s  salvavidas — RODEO es ciego (w=0)
+    t_cooldown:         2.0   # s  cooldown post-RODEO
+    t_recuperacion:     1.5   # s  suprime evasión frontal tras RODEO
+
+    topic_odom: '/odom_raw'   # odometría del yahboom_driver (trail + censo vivo del panel)
+
+    # --- Clasificación caja/pared (solo para /guardian/debug, no mueve el robot) ---
     excluir_atras_deg: 60.0     # cono trasero ignorado (cable/soporte ~12 cm)
-    # remove_min_deg: 135.0     # zona angular extra a ignorar (marco robot)
-    # remove_max_deg: 225.0
-    rango_max: 3.5              # m distancia máxima a procesar
-
-    # --- Offsets LiDAR -> borde físico del robot (medidos en el chasis) ---
+    rango_max_clasif: 3.5       # m distancia máxima a procesar
     offset_frente: 0.15
-    offset_atras:  0.10
     offset_lados:  0.08
-
-    # --- Clustering / Split-and-Merge / clasificación ---
     salto_dist: 0.09            # m salto euclidiano que separa clusters
     salto_idx: 5                # huecos de índice para cortar cluster
     umbral_split: 0.04          # m tolerancia de rectitud (S&M)
     min_puntos: 4
-    lado_caja_max: 0.32         # m lado máx de caja (20 cm + tol; diag 28 cm)
+    lado_caja_max: 0.32         # m lado máx de caja para el bbox del cluster (20 cm + tol)
     lado_caja_linea: 0.22       # m corte por LÍNEA individual (viz): ≤esto
                                 # naranja (caja), mayor azul (pared) — sin la
                                 # tolerancia de diagonal de lado_caja_max, ya
                                 # que una línea es un lado real, no el bbox
-    min_long_pared: 0.45        # m lado mínimo de pared
-    cos_lateral_min: 0.55
-    votos_clase: 5              # barridos del voto por mayoría (anti-ruido)
 
-    # --- Seguimiento de pared DERECHA ---
-    dist_pared: 0.06            # m holgura LADO del robot -> pared
-                                # (LiDAR queda a 0.15+0.08=0.23 m; jirón 60 cm)
-    Kp: 0.8
-    Kd: 0.05
-    Ka: 0.5                     # ganancia de alineación angular con la pared
-    max_w: 0.45                 # rad/s saturación
-    max_delta_w: 0.08           # rad/s por ciclo (anti-zigzag)
-
-    # --- Repulsión IZQUIERDA (anti-isla) y evasión frontal suave ---
-    d_izq_min: 0.12             # m bajo esto, empuja a la derecha
-    K_izq: 3.0
-    K_front: 2.0                # ganancia de giro suave hacia lo que se acerca al frente
-
-    # --- FSM / velocidades (distancias frontales POST-OFFSET: borde real) ---
-    vel_crucero: 0.15
-    vel_min: 0.07
-    w_giro: 0.5                 # rad/s en giros de esquina y rodeo
-    vel_giro_arco: 0.04         # m/s para que el rodeo no pivote tan cerrado
-    dist_alerta: 0.35           # m entra a CAJA_DETECTADA
-    dist_parada: 0.17           # m se detiene frente a la caja (reto: >= 0.15)
-    dist_esquina: 0.08          # m borde -> pared frontal para girar 90° izq
-                                # (tras el giro la pared queda a ~0.20+0.15=0.35
-                                #  del LiDAR y el PD converge a 0.23)
-    dist_emergencia: 0.04
-    espera_seg: 10.0
-    ang_rodeo_deg: 50.0
-    avance_diag: 0.42           # m diagonal: abre el rodeo antes de pasar
-    avance_paralelo: 0.65       # m recto para pasar la caja (20 cm + robot + margen)
-    cooldown_esquina: 2.0       # s sin re-disparar giro de esquina
-    topic_odom: '/odom_raw'     # odometría del yahboom_driver
-
+# wall_follower — paredes laterales por RANSAC (reemplaza Split-and-Merge).
+# Publica /dist_izq y /dist_der; behavior_fsm los consume, no los recalcula.
 wall_follower:
   ros__parameters:
-    lidar_front_deg: 180.0
-    excluir_atras_deg: 60.0
-    rango_max: 3.5
-    salto_dist: 0.09
-    salto_idx: 5
-    umbral_split: 0.04
-    min_puntos: 4
-    lado_caja_max: 0.32
-    min_long_pared: 0.45
-    cos_lateral_min: 0.55
-    dist_pared: 0.06
-    offset_lados: 0.08
-    Kp: 0.8
-    Kd: 0.05
-    Ka: 0.5
-    max_w: 0.45
-    max_delta_w: 0.08
+    lidar_front_deg:    180.0
+    sector_frontal_deg:  30.0   # excluido del ajuste de pared (zona de obstáculos)
+    sector_lateral_lo:   60.0   # ventana estrecha del fallback (cerca de perpendicular)
+    sector_lateral_hi:  120.0
+    sector_trasero_deg: 160.0   # excluido del ajuste (posible otra pared tras un giro)
+    rango_max:            3.50  # m  ignora lecturas más lejanas
+
+    umbral_inlier_ransac: 0.03  # m  tolerancia de inlier
+    iteraciones_ransac:   80
+    min_inliers_ransac:   12
+    min_puntos_lado:      15    # puntos mínimos en el lado para intentar RANSAC
+    semilla_ransac:       -1    # -1 = aleatorio real; >=0 = reproducible (defensa/debug)
+
+    ema_alpha: 0.5              # suavizado temporal de dist_izq/dist_der
+
+    ancho_jiron:     0.60       # m  ancho esperado del jirón (chequeo de consistencia)
+    tol_ancho_jiron: 0.15       # m  tolerancia antes de advertir

@@ -37,6 +37,7 @@ CORRECCIONES clave respecto a la versión anterior:
 """
 
 import math
+import random
 from typing import List, Optional, Tuple
 
 Point = Tuple[float, float]
@@ -389,3 +390,85 @@ def frente_y_lados(pts_idx, clusters, off_frente, off_lado,
                                       and abs(y) <= off_lado + 0.035):
             punto_trasero = (x, y)
     return d_frente, clase_f, d_izq, d_der, punto_fp, punto_trasero
+
+
+# ── RANSAC para pared lateral (wall_follower) ────────────────────────────────
+# Alternativa a Split-and-Merge para el seguimiento lateral: no requiere que
+# los puntos de la pared sean contiguos, así que si una caja interrumpe el
+# tramo que ve el LiDAR, sus puntos quedan fuera del consenso (outliers) en
+# vez de cortar o fusionar mal el segmento.
+Recta = Tuple[float, float, float]  # a*x + b*y + c = 0, normalizada (a²+b²=1)
+
+
+def polar_a_cartesiano(angulo: float, rango: float) -> Point:
+    return rango * math.cos(angulo), rango * math.sin(angulo)
+
+
+def recta_por_pca(puntos_xy: List[Point]) -> Recta:
+    """Ajusta una recta por regresión ortogonal (PCA): la normal es el
+    autovector de MENOR varianza, así no degenera con rectas casi verticales
+    como sí lo haría una regresión y=mx+b."""
+    n = len(puntos_xy)
+    mx = sum(p[0] for p in puntos_xy) / n
+    my = sum(p[1] for p in puntos_xy) / n
+    sxx = sum((p[0] - mx) ** 2 for p in puntos_xy)
+    syy = sum((p[1] - my) ** 2 for p in puntos_xy)
+    sxy = sum((p[0] - mx) * (p[1] - my) for p in puntos_xy)
+
+    if abs(sxx - syy) < 1e-12 and abs(sxy) < 1e-12:
+        theta = 0.0
+    else:
+        theta = 0.5 * math.atan2(2 * sxy, sxx - syy)
+
+    def residual(a, b):
+        return sum((a * (p[0] - mx) + b * (p[1] - my)) ** 2 for p in puntos_xy)
+
+    cand_a = (-math.sin(theta), math.cos(theta))
+    cand_b = (math.cos(theta), math.sin(theta))
+    a, b = cand_a if residual(*cand_a) <= residual(*cand_b) else cand_b
+    c = -(a * mx + b * my)
+    return a, b, c
+
+
+def distancia_recta_origen(recta: Recta) -> float:
+    """Distancia perpendicular del origen (el robot, marco base_link) a la recta."""
+    _, _, c = recta
+    return abs(c)
+
+
+def ajustar_recta_ransac(puntos_xy: List[Point], umbral_inlier: float = 0.03,
+                         iteraciones: int = 80, min_inliers: int = 12,
+                         rng: Optional[random.Random] = None) -> Optional[dict]:
+    """RANSAC: muestrea 2 puntos al azar por iteración, cuenta inliers a la
+    recta que forman, y al final refina con recta_por_pca() sobre el mejor
+    conjunto de inliers. Devuelve {'a','b','c','inliers','ratio'} o None."""
+    n = len(puntos_xy)
+    if n < min_inliers:
+        return None
+    if rng is None:
+        rng = random.Random()
+
+    mejor_inliers: List[int] = []
+    for _ in range(iteraciones):
+        i, j = rng.sample(range(n), 2)
+        x1, y1 = puntos_xy[i]
+        x2, y2 = puntos_xy[j]
+        dx, dy = x2 - x1, y2 - y1
+        norm = math.hypot(dx, dy)
+        if norm < 1e-6:
+            continue
+        a, b = -dy / norm, dx / norm
+        c = -(a * x1 + b * y1)
+
+        inliers = [k for k, (px, py) in enumerate(puntos_xy)
+                  if abs(a * px + b * py + c) <= umbral_inlier]
+        if len(inliers) > len(mejor_inliers):
+            mejor_inliers = inliers
+
+    if len(mejor_inliers) < min_inliers:
+        return None
+
+    pts_inlier = [puntos_xy[k] for k in mejor_inliers]
+    a, b, c = recta_por_pca(pts_inlier)
+    return {'a': a, 'b': b, 'c': c, 'inliers': mejor_inliers,
+            'ratio': len(mejor_inliers) / n}

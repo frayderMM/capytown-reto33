@@ -1,204 +1,217 @@
 #!/usr/bin/env python3
 """
-behavior_fsm.py — PARTE B: "El Guardián" (versión corregida y completa).
+behavior_fsm.py — Guardian v4 (RC3): motor de movimiento + detección de
+caja/pared por tamaño para el panel de diagnóstico (lidar_viz.py).
 
-Un SOLO nodo hace percepción + control (antes wall_follower y behavior_fsm
-procesaban el mismo /scan por separado, en marcos distintos — wall_follower
-ni siquiera rotaba lidar_front_deg — y se coordinaban por /lateral_correction
-con carreras de tiempo; esa inconsistencia de marcos era la causa de los
-giros erráticos).
+Estados: CRUCERO → GIRO → RODEO → CRUCERO
 
-FSM:
+El motor de movimiento (control, STOP de seguridad, GIRO/RODEO) es el de
+RC3 (2)/RC3/behavior_fsm/behavior_fsm/behavior_fsm.py, sin cambios: gira
+hacia el lado con MÁS espacio disponible en cada momento (no siempre hacia
+la izquierda) y RODEO avanza recto hasta que el frente se despeja, con
+mínimos/máximos de tiempo como salvavidas.
 
-  CRUCERO ── caja al frente ──▶ CAJA_DETECTADA ─▶ PARAR (espera `espera_seg`) ─▶ RODEAR ─▶ CRUCERO
-      │
-      └── pared/esquina al frente ──▶ GIRAR_ESQUINA (90° izq) ──▶ CRUCERO
+dist_frente y dist_izq_raw/dist_der_raw (mínimo crudo, sin filtrar) se
+miden localmente sobre /scan: son la base del STOP de seguridad y deben
+ver CUALQUIER objeto cercano. dist_izq / dist_der llegan del nodo
+wall_follower (RANSAC sobre las paredes laterales, vía /dist_izq y
+/dist_der) y se usan solo para el tracking de crucero y la elección de
+lado en GIRO — RANSAC descarta a propósito los objetos que no son pared
+(p.ej. una caja pegada al costado) como outliers, por lo que NO sirven
+para detectar un choque lateral inminente.
 
-· CRUCERO sigue la pared DERECHA (PD distancia + alineación angular, con
-  limitador de tasa de cambio de w — lección aprendida — y velocidad
-  adaptativa según espacio al frente).
-· La clasificación caja/esquina vuelve a ser confiable con el Split-and-Merge
-  corregido (bug del [1:]) y se estabiliza con un VOTO por mayoría sobre los
-  últimos N barridos: no se decide con un solo scan ruidoso.
-· RODEAR: gira +45° (izquierda), avanza en diagonal para librar la caja,
-  gira −45°, avanza recto hasta pasarla; al volver a CRUCERO el PD lo
-  re-pega solo a la pared derecha con el mismo umbral de siempre. Distancias
-  y giros por /odom_raw (fallback por tiempo si no hay odometría).
-· GIRAR_ESQUINA: 90° a la IZQUIERDA (lazo antihorario) con cooldown para no
-  encadenar giros. Nunca gira a la derecha en esquinas ni retrocede →
-  el recorrido no puede invertirse ("no regresa").
-· Clamp de seguridad con los offsets reales del chasis (15 cm frente /
-  10 cm atrás / 8 cm lados): si algo invade el footprint inflado, se
-  detiene ese ciclo sin cambiar de estado (no es un estado aparte, para
-  no bloquear el avance del estado real una vez que el obstáculo se aleja).
-· Cono trasero excluido (cable del LiDAR) y frente en raw=180° (MS200).
+Aparte del motor de movimiento, este nodo corre en paralelo la
+clasificación caja/pared de percepcion.py (Split-and-Merge por tamaño de
+línea: ≤ lado_caja_linea → caja, mayor → pared) únicamente para poblar
+/guardian/debug (clase_frente, segmentos coloreados, cajas vivas, trail)
+que consume lidar_viz.py. Esa clasificación NO decide el movimiento — el
+motor de RC3 reacciona solo a distancias (dist_frente/dist_izq/dist_der),
+igual que en RC3 (2).
 
-Publica /fsm_state (String) y /guardian/debug (String JSON) para lidar_viz.py.
-
-ESAN - Robótica de Móviles 2026-I | Proyecto CapyTown
+Tópicos debug: /dist_frente /dbg/dist_izq_fsm /dbg/dist_der_fsm
+               /dbg/w_front /dbg/w_der /dbg/w_izq /dbg/w_total
+               /guardian/debug (JSON para lidar_viz.py)
+Suscritos:     /dist_izq /dist_der (de wall_follower, RANSAC)
+               /odom_raw (trail + censo de cajas vivas para el panel)
 """
 
 import json
 import math
-from collections import Counter, deque
+import time
 
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy
+from rcl_interfaces.msg import SetParametersResult
 
 from sensor_msgs.msg import LaserScan
 from nav_msgs.msg import Odometry
 from geometry_msgs.msg import Twist
-from std_msgs.msg import String, Float32
+from std_msgs.msg import Float32, String
 
 from behavior_fsm import percepcion as pc
 
-# Estados
-CRUCERO        = 'CRUCERO'
-CAJA_DETECTADA = 'CAJA_DETECTADA'
-PARAR          = 'PARAR'
-RODEAR         = 'RODEAR'
-GIRAR_ESQUINA  = 'GIRAR_ESQUINA'
+
+CRUCERO = 'CRUCERO'
+GIRO    = 'GIRO'
+RODEO   = 'RODEO'
 
 
 class Guardian(Node):
     def __init__(self):
         super().__init__('behavior_fsm')
 
-        # ── Parámetros ─────────────────────────────────────────────────────
-        # Orientación del sensor y zonas ignoradas
-        self.declare_parameter('lidar_front_deg', 180.0)   # frente del MS200 Yahboom
-        self.declare_parameter('excluir_atras_deg', 60.0)  # cable/soporte del LiDAR
-        self.declare_parameter('remove_min_deg', float('nan'))
-        self.declare_parameter('remove_max_deg', float('nan'))
-        self.declare_parameter('rango_max', 3.5)
-        # Offsets LiDAR → borde físico del robot
-        self.declare_parameter('offset_frente', 0.15)
-        self.declare_parameter('offset_atras',  0.10)
-        self.declare_parameter('offset_lados',  0.08)
-        # Clustering / Split-and-Merge / clasificación
+        # ── Parámetros de movimiento (RC3) ───────────────────────────────
+        self.declare_parameter('lidar_front_deg',    180.0)
+        self.declare_parameter('sector_frontal_deg',  30.0)
+        self.declare_parameter('t_espera_inicio',     10.0)  # s  cuenta regresiva tras ENTER
+
+        self.declare_parameter('d_stop_front',   0.14)
+        self.declare_parameter('d_stop_lateral', 0.06)
+        self.declare_parameter('d_giro',         0.30)
+        self.declare_parameter('d_front_inicio', 0.40)
+
+        self.declare_parameter('target_der', 0.17)   # robot consistente a 17-20cm
+        self.declare_parameter('Kder',        2.6)
+        self.declare_parameter('Kd_der',      0.3)
+        self.declare_parameter('d_izq_min',  0.15)
+        self.declare_parameter('Kizq',        4.0)
+        self.declare_parameter('Kfront',      2.0)
+
+        self.declare_parameter('vel_crucero',      0.10)
+        self.declare_parameter('vel_maniobra',     0.07)
+        self.declare_parameter('vel_giro_gradual', 0.55)
+        self.declare_parameter('max_w',            0.60)
+
+        self.declare_parameter('t_giro_min',        0.8)
+        self.declare_parameter('t_giro_max',        4.0)
+        self.declare_parameter('d_lado_salida_giro', 0.20)
+        self.declare_parameter('k_urgencia_giro',   1.7)
+        self.declare_parameter('t_rodeo_min',       0.4)
+        self.declare_parameter('t_rodeo_max',       1.2)
+        self.declare_parameter('t_cooldown',        2.0)
+        self.declare_parameter('t_recuperacion',    1.5)
+
+        # ── Parámetros de percepción / clasificación (solo para el panel) ─
+        self.declare_parameter('excluir_atras_deg', 60.0)
+        self.declare_parameter('rango_max_clasif', 3.5)
         self.declare_parameter('salto_dist', 0.12)
         self.declare_parameter('salto_idx', 5)
         self.declare_parameter('umbral_split', 0.04)
         self.declare_parameter('min_puntos', 4)
         self.declare_parameter('lado_caja_max', 0.32)
-        self.declare_parameter('lado_caja_linea', 0.22)  # corte por LÍNEA
-        # (lado_caja_max ya trae tolerancia de diagonal para el bbox del
-        # cluster completo; una LÍNEA individual es un lado real de la
-        # caja, no la diagonal, así que en diagonal hay que tomarla con un
-        # corte más ajustado a los 20 cm reales, no el mismo de 32 cm)
-        self.declare_parameter('min_long_pared', 0.45)
-        self.declare_parameter('cos_lateral_min', 0.55)
-        self.declare_parameter('votos_clase', 5)       # barridos para el voto por mayoría
-        # Seguimiento de pared derecha
-        self.declare_parameter('dist_pared', 0.15)     # m holgura LADO robot→pared
-        self.declare_parameter('Kp', 1.4)
-        self.declare_parameter('Kd', 0.20)
-        self.declare_parameter('Ka', 1.0)
-        self.declare_parameter('max_w', 0.8)
-        self.declare_parameter('max_delta_w', 0.15)    # rad/s por ciclo (anti-zigzag)
-        # Repulsión IZQUIERDA (anti-isla) y evasión frontal suave — avance
-        # continuo en vez de depender solo de las paradas discretas
-        self.declare_parameter('d_izq_min', 0.12)      # m bajo esto, empuja a la derecha
-        self.declare_parameter('K_izq', 3.0)
-        self.declare_parameter('K_front', 2.0)         # ganancia de giro suave hacia la caja/pared
-        # FSM / velocidades — distancias frontales POST-OFFSET (borde real)
-        self.declare_parameter('vel_crucero', 0.15)
-        self.declare_parameter('vel_min', 0.07)
-        self.declare_parameter('w_giro', 0.7)
-        self.declare_parameter('vel_giro_arco', 0.04)
-        self.declare_parameter('dist_alerta', 0.35)    # entra a CAJA_DETECTADA
-        self.declare_parameter('dist_parada', 0.17)    # se detiene (reto exige ≥0.15)
-        self.declare_parameter('dist_esquina', 0.20)   # borde→pared frontal p/ girar
-        self.declare_parameter('dist_emergencia', 0.04)
-        self.declare_parameter('espera_seg', 10.0)
-        self.declare_parameter('ang_rodeo_deg', 45.0)
-        self.declare_parameter('avance_diag', 0.38)
-        self.declare_parameter('avance_paralelo', 0.55)
-        self.declare_parameter('cooldown_esquina', 2.0)
+        self.declare_parameter('lado_caja_linea', 0.22)
+        self.declare_parameter('offset_frente', 0.15)
+        self.declare_parameter('offset_lados', 0.08)
         self.declare_parameter('topic_odom', '/odom_raw')
 
+        # ── Cargar movimiento ─────────────────────────────────────────────
+        self.front_rad = math.radians(self.get_parameter('lidar_front_deg').value)
+        self.sector    = math.radians(self.get_parameter('sector_frontal_deg').value)
+        self.t_espera_inicio = self.get_parameter('t_espera_inicio').value
+        self._reload_params()
+        self.add_on_set_parameters_callback(self._on_params)
+
+        # ── Cargar percepción / clasificación ─────────────────────────────
         g = lambda n: self.get_parameter(n).value
-        self.front_rad = math.radians(g('lidar_front_deg'))
-        self.atras_rad = math.radians(g('excluir_atras_deg')) / 2.0
-        rm_min, rm_max = g('remove_min_deg'), g('remove_max_deg')
-        self.rm_min = math.radians(rm_min) if not math.isnan(rm_min) else None
-        self.rm_max = math.radians(rm_max) if not math.isnan(rm_max) else None
-        self.rango_max = g('rango_max')
-        self.off_f, self.off_a, self.off_l = (g('offset_frente'),
-                                              g('offset_atras'),
-                                              g('offset_lados'))
-        self.salto_dist   = g('salto_dist')
-        self.salto_idx    = int(g('salto_idx'))
-        self.umbral_split = g('umbral_split')
-        self.min_puntos   = int(g('min_puntos'))
-        self.lado_caja    = g('lado_caja_max')
+        self.atras_rad       = math.radians(g('excluir_atras_deg')) / 2.0
+        self.rango_max_clasif = g('rango_max_clasif')
+        self.salto_dist      = g('salto_dist')
+        self.salto_idx       = int(g('salto_idx'))
+        self.umbral_split    = g('umbral_split')
+        self.min_puntos      = int(g('min_puntos'))
+        self.lado_caja       = g('lado_caja_max')
         self.lado_caja_linea = g('lado_caja_linea')
-        self.min_pared    = g('min_long_pared')
-        self.cos_lat      = g('cos_lateral_min')
-        self.n_votos      = int(g('votos_clase'))
-        self.d_obj_lidar  = g('dist_pared') + self.off_l  # objetivo LiDAR→pared
-        self.Kp, self.Kd, self.Ka = g('Kp'), g('Kd'), g('Ka')
-        self.max_w, self.max_dw   = g('max_w'), g('max_delta_w')
-        self.d_izq_min = g('d_izq_min')
-        self.K_izq     = g('K_izq')
-        self.K_front   = g('K_front')
-        self.v_cru, self.v_min, self.w_giro = (g('vel_crucero'), g('vel_min'),
-                                               g('w_giro'))
-        self.v_arco = g('vel_giro_arco')
-        self.d_alerta   = g('dist_alerta')
-        self.d_parada   = g('dist_parada')
-        self.d_esquina  = g('dist_esquina')
-        self.d_emerg    = g('dist_emergencia')
-        self.espera     = g('espera_seg')
-        self.ang_rodeo  = math.radians(g('ang_rodeo_deg'))
-        self.av_diag    = g('avance_diag')
-        self.av_par     = g('avance_paralelo')
-        self.cooldown   = g('cooldown_esquina')
+        self.off_f = g('offset_frente')
+        self.off_l = g('offset_lados')
 
-        # ── Estado de percepción (lo escribe cb_scan, lo lee loop) ─────────
-        self.d_frente = float('inf')
-        self.clase_frente = None
-        self.votos = deque(maxlen=self.n_votos)   # voto por mayoría de clase
-        self.pared_der = None
-        self.punto_fp = None
-        self.punto_trasero = None
-        self.d_izq = self.d_der = float('inf')
+        # ── Estado FSM (RC3) ──────────────────────────────────────────────
+        self.estado        = CRUCERO
+        self.t_inicio      = self.get_clock().now()
+        self.t_ultimo_giro = -float('inf')
+        self.dir_giro      = 1.0   # +1 = izquierda (w>0), -1 = derecha (w<0)
+        self.w_giro_efectivo = 0.0  # magnitud del giro, congelada al entrar a GIRO
+
+        # ── PD tracking pared derecha ─────────────────────────────────────
+        self._err_der_prev = 0.0
+        self._t_der_prev   = self.get_clock().now()
+
+        # ── Sensores de movimiento ────────────────────────────────────────
+        self.dist_frente = float('inf')
+        self.dist_izq    = float('inf')
+        self.dist_der    = float('inf')
+        self.dist_izq_raw = float('inf')
+        self.dist_der_raw = float('inf')
+
+        # ── Percepción / clasificación (solo para el panel) ───────────────
         self.clusters = []
+        self.clase_frente = None
+        self.accion = 'AVANZANDO'
 
-        # ── Odometría / censo (de box_detector) ────────────────────────────
+        # ── Odometría / censo (para el panel derecho) ─────────────────────
         self.pose = None
         self.trail = []
         self.cajas_vivas = []
 
-        # ── FSM ─────────────────────────────────────────────────────────────
-        self.estado = CRUCERO
-        self.fase = 0
-        self.accion = 'AVANZANDO'
-        self.t0 = self.get_clock().now()
-        self.yaw0 = 0.0
-        self.pos0 = (0.0, 0.0)
-        self.t_fin_esquina = self.get_clock().now()
-        self._err_prev, self._w_prev = 0.0, 0.0
-        self._t_pd = self.get_clock().now()
-
-        # ── ROS I/O ─────────────────────────────────────────────────────────
-        qos = QoSProfile(depth=10)
-        qos.reliability = ReliabilityPolicy.BEST_EFFORT
-        self.create_subscription(LaserScan, '/scan', self.cb_scan, qos)
-        self.create_subscription(Odometry, g('topic_odom'), self.cb_odom, qos)
-        self.pub_cmd    = self.create_publisher(Twist, '/cmd_vel', 10)
+        # ── ROS I/O ───────────────────────────────────────────────────────
+        _qos = QoSProfile(depth=10)
+        _qos.reliability = ReliabilityPolicy.BEST_EFFORT
+        self.create_subscription(LaserScan, '/scan', self.cb_scan, _qos)
+        self.create_subscription(Float32, '/dist_izq', self._cb_dist_izq, _qos)
+        self.create_subscription(Float32, '/dist_der', self._cb_dist_der, _qos)
+        self.create_subscription(Odometry, g('topic_odom'), self.cb_odom, _qos)
+        self.pub_cmd    = self.create_publisher(Twist,  '/cmd_vel',   10)
         self.pub_estado = self.create_publisher(String, '/fsm_state', 10)
-        self.pub_parada = self.create_publisher(Float32, '/parada_dist', 10)
         self.pub_debug  = self.create_publisher(String, '/guardian/debug', 10)
-        self.create_timer(0.1, self.loop)
+
+        # /dist_izq y /dist_der los publica wall_follower (RANSAC); este nodo
+        # solo los consume. Republicamos lo que efectivamente usa la FSM bajo
+        # /dbg/ para no crear un segundo publicador sobre el mismo tópico.
+        self.pub_df  = self.create_publisher(Float32, '/dist_frente',  10)
+        self.pub_dl  = self.create_publisher(Float32, '/dbg/dist_izq_fsm', 10)
+        self.pub_dr  = self.create_publisher(Float32, '/dbg/dist_der_fsm', 10)
+        self.pub_wf  = self.create_publisher(Float32, '/dbg/w_front',  10)
+        self.pub_wd  = self.create_publisher(Float32, '/dbg/w_der',    10)
+        self.pub_wi  = self.create_publisher(Float32, '/dbg/w_izq',    10)
+        self.pub_wt  = self.create_publisher(Float32, '/dbg/w_total',  10)
+
+        self.create_timer(0.05, self.loop_control)
 
         self.get_logger().info(
-            f'Guardián listo | pared der objetivo {g("dist_pared")*100:.0f} cm '
-            f'| parada caja {self.d_parada*100:.0f} cm | frente LiDAR '
-            f'{g("lidar_front_deg"):.0f}° | footprint 15/10/8 cm')
+            f'Guardian v4 (RC3)  giro<{self.d_giro}m  front_ini={self.d_front_ini}m'
+            f'  target_der={self.target_der}m  Kder={self.Kder}'
+            f'  t_rodeo=[{self.t_rodeo_min},{self.t_rodeo_max}]s (salida por sensor)')
 
-    # ── Callbacks ────────────────────────────────────────────────────────────
+    def _reload_params(self):
+        self.d_stop_front      = self.get_parameter('d_stop_front').value
+        self.d_stop_lat        = self.get_parameter('d_stop_lateral').value
+        self.d_giro            = self.get_parameter('d_giro').value
+        self.d_front_ini       = self.get_parameter('d_front_inicio').value
+        self.target_der        = self.get_parameter('target_der').value
+        self.Kder               = self.get_parameter('Kder').value
+        self.Kd_der             = self.get_parameter('Kd_der').value
+        self.d_izq_min         = self.get_parameter('d_izq_min').value
+        self.Kizq              = self.get_parameter('Kizq').value
+        self.Kfront            = self.get_parameter('Kfront').value
+        self.v_cruise          = self.get_parameter('vel_crucero').value
+        self.v_maniobra        = self.get_parameter('vel_maniobra').value
+        self.w_giro            = self.get_parameter('vel_giro_gradual').value
+        self.max_w             = self.get_parameter('max_w').value
+        self.t_giro_min        = self.get_parameter('t_giro_min').value
+        self.t_giro_max        = self.get_parameter('t_giro_max').value
+        self.d_lado_salida_giro = self.get_parameter('d_lado_salida_giro').value
+        self.k_urgencia_giro   = self.get_parameter('k_urgencia_giro').value
+        self.t_rodeo_min       = self.get_parameter('t_rodeo_min').value
+        self.t_rodeo_max       = self.get_parameter('t_rodeo_max').value
+        self.t_cooldown        = self.get_parameter('t_cooldown').value
+        self.t_recuperacion    = self.get_parameter('t_recuperacion').value
+
+    def _on_params(self, params):
+        self._reload_params()
+        self.get_logger().info(f'Params: {[p.name for p in params]}')
+        return SetParametersResult(successful=True)
+
+    # ── Odometría / trail / censo vivo (solo para el panel derecho) ──────────
     def cb_odom(self, msg: Odometry):
         p, q = msg.pose.pose.position, msg.pose.pose.orientation
         yaw = math.atan2(2.0 * (q.w * q.z + q.x * q.y),
@@ -209,101 +222,6 @@ class Guardian(Node):
             self.trail.append((p.x, p.y))
             self.trail = self.trail[-600:]
 
-    def cb_scan(self, msg: LaserScan):
-        pts = pc.filtrar_scan(msg.ranges, msg.angle_min, msg.angle_increment,
-                              msg.range_min, msg.range_max,
-                              self.front_rad, self.rango_max,
-                              self.atras_rad, self.rm_min, self.rm_max)
-        cls = pc.analizar_scan(pts, self.salto_dist, self.salto_idx,
-                               self.umbral_split, self.min_puntos,
-                               self.lado_caja)
-        self.clusters = cls
-        self.pared_der = (pc.camino_derecho(pts, self.off_l)
-                          or pc.pared_derecha(cls, self.min_pared, self.cos_lat))
-        (self.d_frente, clase_f, self.d_izq, self.d_der,
-         self.punto_fp, self.punto_trasero) = pc.frente_y_lados(
-             pts, cls, self.off_f, self.off_l)
-        self._actualizar_cajas_desde_scan(cls)
-
-        # Voto por mayoría: la clase del frente solo cambia si la mayoría de
-        # los últimos N barridos coincide — un scan ruidoso ya no decide.
-        self.votos.append(clase_f)
-        validos = [v for v in self.votos if v is not None]
-        if validos:
-            clase, n = Counter(validos).most_common(1)[0]
-            self.clase_frente = clase if n >= max(2, len(self.votos) // 2) else clase_f
-        else:
-            self.clase_frente = None
-
-        self._publicar_debug()
-
-    # ── Helpers FSM ──────────────────────────────────────────────────────────
-    def _t(self):
-        return (self.get_clock().now() - self.t0).nanoseconds * 1e-9
-
-    def _cambiar(self, nuevo, fase=0):
-        if nuevo != self.estado or fase != self.fase:
-            self.get_logger().info(
-                f'{self.estado}[{self.fase}] → {nuevo}[{fase}] '
-                f'(frente={self.d_frente:.2f} m, clase={self.clase_frente})')
-        self.estado, self.fase = nuevo, fase
-        self.t0 = self.get_clock().now()
-        if self.pose is not None:
-            self.yaw0 = self.pose[2]
-            self.pos0 = (self.pose[0], self.pose[1])
-
-    def _pub(self, v, w):
-        cmd = Twist()
-        cmd.linear.x = float(max(0.0, v))   # NUNCA retrocede
-        cmd.angular.z = float(w)
-        if self.estado == PARAR:
-            self.accion = 'ESPERANDO_10S'
-        elif self.estado == RODEAR and self.fase == 0:
-            self.accion = 'GIRO_IZQUIERDA_BORDEO'
-        elif self.estado == RODEAR and self.fase == 1:
-            self.accion = 'BORDEANDO_OBSTACULO'
-        elif self.estado == RODEAR and self.fase == 2:
-            self.accion = 'CALIBRANDO_DERECHA'
-        elif self.estado == RODEAR and self.fase == 3:
-            self.accion = 'REINCORPORANDO_CARRIL'
-        elif self.estado == GIRAR_ESQUINA:
-            self.accion = 'GIRANDO'
-        elif abs(cmd.angular.z) > 0.08 and cmd.linear.x > 0.01:
-            self.accion = 'CORRIGIENDO_DERECHA'
-        elif abs(cmd.angular.z) > 0.08:
-            self.accion = 'GIRANDO'
-        elif cmd.linear.x > 0.01:
-            self.accion = 'AVANZANDO'
-        else:
-            self.accion = 'DETENIDO'
-        self.pub_cmd.publish(cmd)
-        s = String()
-        s.data = self.estado
-        self.pub_estado.publish(s)
-
-    def _giro_ok(self, objetivo):
-        if self.pose is not None:
-            d = math.atan2(math.sin(self.pose[2] - self.yaw0),
-                           math.cos(self.pose[2] - self.yaw0))
-            return abs(d) >= abs(objetivo) - math.radians(3)
-        return self._t() >= abs(objetivo) / self.w_giro
-
-    def _avance_ok(self, dist):
-        if self.pose is not None:
-            return math.hypot(self.pose[0] - self.pos0[0],
-                              self.pose[1] - self.pos0[1]) >= dist
-        return self._t() >= dist / self.v_cru
-
-    def _vel_adaptativa(self):
-        """Velocidad progresiva según espacio libre al frente (post-offset)."""
-        c = self.d_frente
-        if c >= self.d_alerta:
-            return self.v_cru
-        ratio = max(0.0, min(1.0, (c - self.d_parada) /
-                             (self.d_alerta - self.d_parada)))
-        return self.v_min + ratio * (self.v_cru - self.v_min)
-
-    # ── Lazo de control 10 Hz ────────────────────────────────────────────────
     def _a_odom(self, x, y):
         if self.pose is None:
             return None
@@ -323,143 +241,243 @@ class Guardian(Node):
             odom = self._a_odom(cx, cy)
             if odom is None:
                 continue
-            ox, oy = odom
-            vivas.append((ox, oy))
+            vivas.append(odom)
         self.cajas_vivas = vivas[-6:]
 
-    def loop(self):
-        d = self.d_frente
-
-        # Clamp de seguridad: si algo invade el footprint, frena este ciclo
-        # sin cambiar de estado. PARAR/RODEAR ya se manejan solos a esta
-        # distancia (o incluso más conservador) — dejarlos fuera evita que
-        # el clamp los interrumpa justo cuando van a progresar (el bug del
-        # log: EMERGENCIA↔PARAR en bucle sin llegar nunca a RODEAR).
-        if (self.punto_fp is not None and d < self.d_emerg
-                and self.estado not in (PARAR, RODEAR)):
-            self._pub(0.0, 0.0)
-            return
-
-        if self.estado == CRUCERO:
-            en_cd = (self.get_clock().now() - self.t_fin_esquina
-                     ).nanoseconds * 1e-9 < self.cooldown
-            if self.clase_frente == pc.CAJA and d < self.d_alerta:
-                self._cambiar(CAJA_DETECTADA)
-            elif (self.clase_frente in (pc.PARED, pc.ESQUINA)
-                  and d < self.d_esquina and not en_cd):
-                self._cambiar(GIRAR_ESQUINA)
-            elif d < self.d_parada and self.clase_frente not in (pc.PARED, pc.ESQUINA):
-                # bloqueo sin clase clara → tratar como caja (lo más seguro:
-                # detenerse ≥15 cm nunca tumba nada)
-                self._pub(0.0, 0.0)
-                m = Float32(); m.data = float(d)
-                self.pub_parada.publish(m)
-                self._cambiar(PARAR)
+    def cb_scan(self, msg: LaserScan):
+        # Frente + mínimo crudo lateral: se miden aquí mismo, sin depender de
+        # otro nodo ni de RANSAC, porque son la base del STOP de seguridad y
+        # necesitan ver CUALQUIER objeto cercano (pared o caja), no solo la
+        # pared "limpia" que RANSAC reporta para el tracking de crucero.
+        d_f = float('inf')
+        d_l_raw = d_r_raw = float('inf')
+        for i, r in enumerate(msg.ranges):
+            if not (math.isfinite(r) and msg.range_min <= r <= msg.range_max):
+                continue
+            raw    = msg.angle_min + i * msg.angle_increment
+            af     = math.atan2(math.sin(raw - self.front_rad),
+                                math.cos(raw - self.front_rad))
+            abs_af = abs(af)
+            if abs_af <= self.sector:
+                d_f = min(d_f, r)
+            elif af > 0:
+                d_l_raw = min(d_l_raw, r)
             else:
-                self._pub(self._vel_adaptativa(), self._w_avance())
+                d_r_raw = min(d_r_raw, r)
+        self.dist_frente   = d_f
+        self.dist_izq_raw  = d_l_raw
+        self.dist_der_raw  = d_r_raw
 
-        elif self.estado == CAJA_DETECTADA:
-            if self.clase_frente in (pc.PARED, pc.ESQUINA):
-                self._cambiar(CRUCERO)
-            elif d <= self.d_parada:
-                self._pub(0.0, 0.0)
-                m = Float32(); m.data = float(d)
-                self.pub_parada.publish(m)
-                self._cambiar(PARAR)
-            elif d > self.d_alerta * 1.3 or self.clase_frente is None:
-                self._cambiar(CRUCERO)          # se despejó
-            else:
-                self._pub(self.v_min, 0.0)      # acercamiento recto y lento
+        # Clasificación caja/pared (percepcion.py) — solo para el panel de
+        # diagnóstico; NO decide el movimiento (eso lo hace loop_control con
+        # dist_frente/dist_izq/dist_der, igual que en RC3).
+        pts = pc.filtrar_scan(msg.ranges, msg.angle_min, msg.angle_increment,
+                              msg.range_min, msg.range_max,
+                              self.front_rad, self.rango_max_clasif, self.atras_rad)
+        self.clusters = pc.analizar_scan(pts, self.salto_dist, self.salto_idx,
+                                         self.umbral_split, self.min_puntos,
+                                         self.lado_caja)
+        _, clase_f, _, _, _, _ = pc.frente_y_lados(
+            pts, self.clusters, self.off_f, self.off_l)
+        self.clase_frente = clase_f
+        self._actualizar_cajas_desde_scan(self.clusters)
 
-        elif self.estado == PARAR:
-            self._pub(0.0, 0.0)
-            if self._t() >= self.espera:
-                self._cambiar(RODEAR, 0)
+        self._publicar_debug()
 
-        elif self.estado == RODEAR:
-            self._rodear()
+    def _cb_dist_izq(self, msg: Float32):
+        self.dist_izq = msg.data
 
-        elif self.estado == GIRAR_ESQUINA:
-            if self.punto_trasero is not None:
-                self._pub(0.0, 0.0)
-            elif self._giro_ok(math.pi / 2):
-                self._pub(0.0, 0.0)
-                self.t_fin_esquina = self.get_clock().now()
-                self._w_prev = 0.0
-                self._cambiar(CRUCERO)
-            else:
-                self._pub(0.0, self.w_giro)     # 90° IZQUIERDA (lazo CCW)
+    def _cb_dist_der(self, msg: Float32):
+        self.dist_der = msg.data
 
-    # ── Avance de CRUCERO: PD de pared + repulsión izq + giro suave ──────────
-    def _w_avance(self):
-        """PD de pared derecha (_w_pared) + repulsión IZQUIERDA (anti-isla,
-        siempre activa) + giro suave hacia la izquierda proporcional a qué
-        tan cerca está lo que hay al frente. Antes CRUCERO solo corregía por
-        la pared derecha y dependía 100% de las paradas discretas (PARAR/
-        GIRAR_ESQUINA) para reaccionar al frente; con esto el avance ya se
-        anticipa suavemente antes de llegar a esa parada, en vez de ir recto
-        hasta el umbral y frenar en seco."""
-        w = self._w_pared()
-        if math.isfinite(self.d_izq) and self.d_izq < self.d_izq_min:
-            w -= self.K_izq * (self.d_izq_min - self.d_izq)     # empuja a la derecha
-        if self.d_frente < self.d_alerta:
-            w += self.K_front * (self.d_alerta - self.d_frente)  # gira a la izquierda
-        return max(-self.max_w, min(self.max_w, w))
-
-    # ── Seguimiento de pared derecha (PD + alineación + rate limiter) ───────
-    def _w_pared(self):
-        ref = self.pared_der
-        if ref is None:
-            w = 0.0                              # sin referencia: recto
-            self._err_prev = 0.0
+    def _pub(self, v: float, w: float):
+        cmd = Twist()
+        cmd.linear.x  = float(v)
+        cmd.angular.z = float(w)
+        self.pub_cmd.publish(cmd)
+        s = String(); s.data = self.estado
+        self.pub_estado.publish(s)
+        if self.estado == GIRO:
+            self.accion = 'GIRANDO'
+        elif self.estado == RODEO:
+            self.accion = 'BORDEANDO_OBSTACULO'
+        elif abs(cmd.angular.z) > 0.08 and cmd.linear.x > 0.01:
+            self.accion = 'CORRIGIENDO_DERECHA'
+        elif abs(cmd.angular.z) > 0.08:
+            self.accion = 'GIRANDO'
+        elif cmd.linear.x > 0.01:
+            self.accion = 'AVANZANDO'
         else:
-            err = ref['d'] - self.d_obj_lidar   # >0: lejos
-            now = self.get_clock().now()
-            dt = max((now - self._t_pd).nanoseconds * 1e-9, 0.01)
-            derr = (err - self._err_prev) / dt
-            self._err_prev, self._t_pd = err, now
-            if abs(err) < 0.08 and abs(ref['alpha']) < 0.35:
-                w = 0.0
-                self._w_prev = 0.0
-                return w
-            # lejos → girar derecha (w<0); alpha≠0 → realinear paralelo
-            w = -self.Kp * err - self.Kd * derr + self.Ka * ref['alpha']
-            w = max(-self.max_w, min(self.max_w, w))
-        # limitador de tasa de cambio (anti-zigzag, lección aprendida)
-        w = max(self._w_prev - self.max_dw, min(self._w_prev + self.max_dw, w))
-        self._w_prev = w
-        return w
+            self.accion = 'DETENIDO'
 
-    # ── Rodeo por la izquierda ───────────────────────────────────────────────
-    def _rodear(self):
-        # guardia de colisión solo en las fases de avance (los giros +45/−45
-        # ya no se bloquean por punto_trasero: avanzan sin importar lo que
-        # haya detrás, solo se detienen ante riesgo real de choque frontal)
-        if self.fase in (1, 3) and self.d_frente < self.d_parada:
+    def _pub_dbg(self, wf, wd, wi, wt):
+        def f32(x):
+            m = Float32()
+            m.data = float(x) if math.isfinite(x) else -999.0
+            return m
+        self.pub_df.publish(f32(self.dist_frente))
+        self.pub_dl.publish(f32(self.dist_izq))
+        self.pub_dr.publish(f32(self.dist_der))
+        self.pub_wf.publish(f32(wf))
+        self.pub_wd.publish(f32(wd))
+        self.pub_wi.publish(f32(wi))
+        self.pub_wt.publish(f32(wt))
+
+    def _t_estado(self) -> float:
+        return (self.get_clock().now() - self.t_inicio).nanoseconds * 1e-9
+
+    def _w_der_pd(self) -> float:
+        """PD de tracking a la pared derecha. El término derivativo amortigua
+        el overshoot que trae subir Kder para pegarse más rápido al target."""
+        error = self.dist_der - self.target_der
+        now   = self.get_clock().now()
+        dt    = max((now - self._t_der_prev).nanoseconds * 1e-9, 0.01)
+        d_err = (error - self._err_der_prev) / dt
+        self._err_der_prev = error
+        self._t_der_prev   = now
+        return -(self.Kder * error + self.Kd_der * d_err)
+
+    def _cambiar(self, nuevo: str):
+        self.get_logger().info(
+            f'{self.estado}→{nuevo}  '
+            f'f={self.dist_frente:.2f}  l={self.dist_izq:.2f}  r={self.dist_der:.2f}'
+            f'  clase_frente={self.clase_frente}')
+        # Marca cooldown al salir de GIRO o RODEO hacia CRUCERO
+        if self.estado in (GIRO, RODEO) and nuevo == CRUCERO:
+            self.t_ultimo_giro = self.get_clock().now().nanoseconds * 1e-9
+            # Resetea la derivada: si no, el primer tick calcula d_err sobre
+            # un salto acumulado durante todo GIRO+RODEO (spike falso).
+            if math.isfinite(self.dist_der):
+                self._err_der_prev = self.dist_der - self.target_der
+            self._t_der_prev = self.get_clock().now()
+        self.estado   = nuevo
+        self.t_inicio = self.get_clock().now()
+
+    def loop_control(self):
+
+        # ── PRIORIDAD 1: STOP absoluto ────────────────────────────────────
+        if self.dist_frente < self.d_stop_front:
             self._pub(0.0, 0.0)
-            self._cambiar(PARAR)                 # replanifica: espera y rodea de nuevo
+            self._pub_dbg(0, 0, 0, 0)
+            self.get_logger().warn(
+                f'PARA frente={self.dist_frente:.3f}m', throttle_duration_sec=0.4)
             return
-        if self.fase == 0:                       # +45° izquierda
-            if self._giro_ok(self.ang_rodeo):
-                self._cambiar(RODEAR, 1)
+        # Usa el mínimo crudo (dist_izq_raw/dist_der_raw), NO el de RANSAC:
+        # RANSAC descarta a propósito objetos que no son pared (p.ej. una
+        # caja pegada al costado) como outliers, y ese es justo el caso que
+        # este STOP tiene que detectar.
+        if math.isfinite(self.dist_izq_raw) and self.dist_izq_raw < self.d_stop_lat:
+            self._pub(0.0, 0.0)
+            self._pub_dbg(0, 0, 0, 0)
+            self.get_logger().warn(
+                f'PARA izq={self.dist_izq_raw:.3f}m', throttle_duration_sec=0.4)
+            return
+        if math.isfinite(self.dist_der_raw) and self.dist_der_raw < self.d_stop_lat:
+            # El GIRO puede ir hacia cualquier lado (no solo izquierda), así
+            # que el riesgo de colisión lateral también puede venir del
+            # lado derecho.
+            self._pub(0.0, 0.0)
+            self._pub_dbg(0, 0, 0, 0)
+            self.get_logger().warn(
+                f'PARA der={self.dist_der_raw:.3f}m', throttle_duration_sec=0.4)
+            return
+
+        # ── CRUCERO ───────────────────────────────────────────────────────
+        if self.estado == CRUCERO:
+            ahora = self.get_clock().now().nanoseconds * 1e-9
+            t_post = ahora - self.t_ultimo_giro
+            cooldown_ok = t_post >= self.t_cooldown
+
+            if cooldown_ok and self.dist_frente <= self.d_giro:
+                # Girar hacia el lado con MÁS espacio disponible en este
+                # instante (no siempre izquierda). Sin referencia de ningún
+                # lado, izquierda por defecto.
+                if math.isfinite(self.dist_izq) and math.isfinite(self.dist_der):
+                    self.dir_giro = 1.0 if self.dist_izq >= self.dist_der else -1.0
+                elif math.isfinite(self.dist_der):
+                    self.dir_giro = -1.0
+                else:
+                    self.dir_giro = 1.0
+                # Magnitud del giro: se calcula UNA vez aquí, con las
+                # lecturas de este instante, y queda fija durante todo el
+                # GIRO. Recalcularla en cada ciclo con dist_frente en vivo
+                # la hacía errática: dist_frente cambia rápido y de forma
+                # poco representativa mientras el robot rota, así que el
+                # giro salía a veces corto, a veces excesivo.
+                urgencia = max(0.0, self.d_giro - self.dist_frente) / max(self.d_giro, 1e-6)
+                self.w_giro_efectivo = max(-self.max_w, min(self.max_w,
+                    self.dir_giro * self.w_giro * (1.0 + self.k_urgencia_giro * urgencia)))
+                self._cambiar(GIRO)
+                self.get_logger().info(
+                    f'GIRO dir={"izq" if self.dir_giro > 0 else "der"}'
+                    f'  izq={self.dist_izq:.2f}  der={self.dist_der:.2f}'
+                    f'  w_giro={self.w_giro_efectivo:.2f}')
+                self._pub_dbg(0, 0, 0, 0)
+                return
+
+            recuperando = t_post < self.t_recuperacion
+            w_front = 0.0
+            w_der   = 0.0
+
+            if recuperando:
+                # Solo tracking pared derecha — permite alinearse tras RODEO
+                if math.isfinite(self.dist_der):
+                    w_der = self._w_der_pd()
+            elif self.dist_frente < self.d_front_ini:
+                # Evasión frontal pura — sin competencia con w_der
+                w_front = self.Kfront * (self.d_front_ini - self.dist_frente)
             else:
-                self._pub(self.v_arco, self.w_giro)
-        elif self.fase == 1:                     # diagonal: libra la caja
-            if self._avance_ok(self.av_diag):
-                self._cambiar(RODEAR, 2)
-            else:
-                self._pub(self.v_cru, 0.0)
-        elif self.fase == 2:                     # −45°: queda paralelo
-            if self._giro_ok(self.ang_rodeo):
-                self._cambiar(RODEAR, 3)
-            else:
-                self._pub(self.v_arco, -self.w_giro)
-        elif self.fase == 3:                     # recto: pasa la caja
-            if self._avance_ok(self.av_par):
-                self._w_prev = 0.0
-                self._cambiar(CRUCERO)           # el PD lo re-pega a la derecha
-            else:
-                self._pub(self.v_cru, self._w_pared())
+                # Tracking normal pared derecha
+                if math.isfinite(self.dist_der):
+                    w_der = self._w_der_pd()
+
+            # Repulsión izquierda (siempre activa)
+            w_izq = 0.0
+            if math.isfinite(self.dist_izq) and self.dist_izq < self.d_izq_min:
+                w_izq = -self.Kizq * (self.d_izq_min - self.dist_izq)
+
+            w = max(-self.max_w, min(self.max_w, w_front + w_der + w_izq))
+            self._pub_dbg(w_front, w_der, w_izq, w)
+            self._pub(self.v_cruise, w)
+
+        # ── GIRO ──────────────────────────────────────────────────────────
+        elif self.estado == GIRO:
+            # d_lado: distancia del lado HACIA EL QUE SE GIRA (criterio de
+            # salida por acercamiento excesivo a esa pared).
+            d_lado = self.dist_izq if self.dir_giro > 0 else self.dist_der
+
+            if self._t_estado() > self.t_giro_max:
+                self._cambiar(RODEO)
+                return
+            if math.isfinite(d_lado) and d_lado < self.d_lado_salida_giro:
+                self.get_logger().warn(
+                    f'GIRO→RODEO lado={"izq" if self.dir_giro > 0 else "der"}={d_lado:.2f}m')
+                self._cambiar(RODEO)
+                return
+            if self._t_estado() >= self.t_giro_min and self.dist_frente > self.d_giro:
+                self._cambiar(RODEO)
+                return
+
+            # Magnitud congelada al entrar a GIRO (ver comentario en CRUCERO).
+            # v_maniobra (más lenta que crucero): menos distancia recorrida
+            # "a ciegas" por ciclo si el rumbo queda torcido tras el giro.
+            self._pub_dbg(self.w_giro_efectivo, 0, 0, self.w_giro_efectivo)
+            self._pub(self.v_maniobra, self.w_giro_efectivo)
+
+        # ── RODEO: avance recto para separarse del obstáculo ──────────────
+        elif self.estado == RODEO:
+            t = self._t_estado()
+            if t >= self.t_rodeo_max:
+                self._cambiar(CRUCERO)
+                return
+            # Salida por sensor: recién evaluamos si el frente ya despejó
+            # después de un mínimo, para no cortar el rodeo por un rebote
+            # transitorio justo al salir de GIRO.
+            if t >= self.t_rodeo_min and self.dist_frente > self.d_front_ini:
+                self._cambiar(CRUCERO)
+                return
+            self._pub_dbg(0, 0, 0, 0)
+            self._pub(self.v_maniobra, 0.0)   # w=0: absolutamente recto, más lento que crucero
 
     # ── Debug JSON para lidar_viz.py ─────────────────────────────────────────
     def _publicar_debug(self):
@@ -467,29 +485,26 @@ class Guardian(Node):
         for cl in self.clusters:
             for s in cl['segs']:
                 # color por LÍNEA, no por cluster: cada segmento se pinta
-                # naranja (caja) o azul (pared) según su propio largo, así
-                # una esquina en L con un lado corto y otro largo muestra
-                # cada lado con su clase real en vez de heredar la del
-                # cluster completo.
+                # naranja (caja) o azul (pared) según su propio largo.
                 clase_seg = pc.CAJA if s['lon'] <= self.lado_caja_linea else pc.PARED
                 segs.append({'x1': round(s['p1'][0], 3), 'y1': round(s['p1'][1], 3),
                              'x2': round(s['p2'][0], 3), 'y2': round(s['p2'][1], 3),
                              'lon': round(s['lon'], 3), 'clase': clase_seg})
+        pared_der = None
+        if math.isfinite(self.dist_der):
+            pared_der = {'d': round(self.dist_der, 3), 'alpha_deg': 0.0,
+                         'tipo': 'RANSAC_DER', 'd_front': None, 'd_rear': None}
         data = {
-            'estado': self.estado, 'fase': self.fase,
+            'estado': self.estado, 'fase': 0,
             'accion': self.accion,
-            'd_frente': None if not math.isfinite(self.d_frente)
-                        else round(self.d_frente, 3),
+            'd_frente': None if not math.isfinite(self.dist_frente)
+                        else round(self.dist_frente, 3),
             'clase_frente': self.clase_frente,
-            'pared_der': (None if self.pared_der is None else
-                          {'d': round(self.pared_der['d'], 3),
-                           'alpha_deg': round(math.degrees(
-                               self.pared_der['alpha']), 1),
-                           'tipo': self.pared_der.get('tipo', 'PARED'),
-                           'd_front': self.pared_der.get('d_front'),
-                           'd_rear': self.pared_der.get('d_rear')}),
-            'd_izq': None if not math.isfinite(self.d_izq) else round(self.d_izq, 3),
-            'd_der': None if not math.isfinite(self.d_der) else round(self.d_der, 3),
+            'pared_der': pared_der,
+            'd_izq': None if not math.isfinite(self.dist_izq_raw)
+                     else round(self.dist_izq_raw, 3),
+            'd_der': None if not math.isfinite(self.dist_der_raw)
+                     else round(self.dist_der_raw, 3),
             'pose': None if self.pose is None else [round(v, 3) for v in self.pose],
             'trail': [[round(x, 3), round(y, 3)] for x, y in self.trail[-400:]],
             'cajas_vivas': [[round(x, 3), round(y, 3)]
@@ -502,9 +517,23 @@ class Guardian(Node):
         self.pub_debug.publish(m)
 
 
+def _esperar_inicio(logger, segundos: float):
+    """Cuenta regresiva antes de arrancar (tiempo para acomodar el robot en
+    la pista). El nodo ya está creado (tópicos advertidos) pero no se
+    procesa ningún callback hasta rclpy.spin(), así que nada se mueve
+    mientras tanto. Sin ENTER: funciona igual con ros2 run o ros2 launch."""
+    restante = segundos
+    while restante > 0:
+        logger.info(f'Arrancando en {restante:.0f}s...')
+        time.sleep(1.0)
+        restante -= 1.0
+    logger.info('Arrancando!')
+
+
 def main(args=None):
     rclpy.init(args=args)
     nodo = Guardian()
+    _esperar_inicio(nodo.get_logger(), nodo.t_espera_inicio)
     try:
         rclpy.spin(nodo)
     except KeyboardInterrupt:

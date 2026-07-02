@@ -3,9 +3,10 @@ capytown.launch.py — Lanzamiento COMPLETO del reto.
 
     ros2 launch behavior_fsm capytown.launch.py
 
-Lanza: box_detector (Parte A) + metrics_logger + guardián (Parte B).
-El guardián ya integra el seguimiento de pared derecha; wall_follower
-es solo un nodo de depuración opcional y NO se lanza aquí.
+Lanza: box_detector (Parte A) + metrics_logger + wall_follower (RANSAC,
+paredes laterales) + guardián (Parte B). El guardián ya NO hace su propio
+seguimiento de pared: consume /dist_izq y /dist_der de wall_follower, así
+que este nodo dejó de ser opcional/solo-depuración y se lanza siempre.
 El bringup del robot (driver LiDAR + base) va aparte:
     ros2 launch capytown_esan bringup.launch.py
 """
@@ -38,6 +39,14 @@ def generate_launch_description():
         parameters=[params_det],
     )
 
+    wall_follower = Node(
+        package='behavior_fsm',
+        executable='wall_follower',
+        name='wall_follower',
+        output='screen',
+        parameters=[params_fsm],
+    )
+
     guardian = Node(
         package='behavior_fsm',
         executable='behavior_fsm',
@@ -49,5 +58,6 @@ def generate_launch_description():
     return LaunchDescription([
         detector,
         metrics,
+        wall_follower,
         guardian,
     ])

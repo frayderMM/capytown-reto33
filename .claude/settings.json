@@ -14,7 +14,9 @@
       "Bash(python -c \"import ast; ast.parse\\(open\\('behavior_fsm/behavior_fsm/behavior_fsm.py', encoding='utf-8'\\).read\\(\\)\\)\")",
       "Bash(python -c ' *)",
       "Bash(python -c \"import ast; ast.parse\\(open\\('lidar_viz.py', encoding='utf-8'\\).read\\(\\)\\)\")",
-      "Bash(python -c \"print\\('yaml module not available, skipping validation'\\)\")"
+      "Bash(python -c \"print\\('yaml module not available, skipping validation'\\)\")",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('behavior_fsm/behavior_fsm/percepcion.py', encoding='utf-8'\\).read\\(\\)\\)\")",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('behavior_fsm/behavior_fsm/wall_follower.py', encoding='utf-8'\\).read\\(\\)\\)\")"
     ]
   }
 }
