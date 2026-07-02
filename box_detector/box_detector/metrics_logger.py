@@ -14,7 +14,9 @@ declarado por parametro y calcula:
     dist_min_parada_cm: distancia minima al frenar frente a una caja (cm)
 
 Al apagar el nodo (Ctrl+C) agrega una fila al archivo 'metricas_lidar.csv'.
-Los campos colisiones y rodeo_exitoso se completan manualmente despues de la corrida.
+colisiones y rodeo_exitoso los publica behavior_fsm.py en vivo
+(/metrics/colisiones, /metrics/rodeo_exitoso) — este nodo solo guarda el
+último valor recibido de cada uno al cerrar.
 
 ESAN - Robotica de Moviles 2026-I  |  Proyecto CapyTown
 """
@@ -27,7 +29,7 @@ from datetime import datetime
 import rclpy
 from rclpy.node import Node
 from geometry_msgs.msg import PoseArray
-from std_msgs.msg import Float32
+from std_msgs.msg import Float32, Int32, String
 
 
 CAMPOS = [
@@ -62,9 +64,13 @@ class MetricsLogger(Node):
 
         self.ultimas_detecciones = []
         self.dist_min_parada     = float('inf')   # se actualiza con /parada_dist
+        self.colisiones          = 0     # último valor de /metrics/colisiones
+        self.rodeo_exitoso       = '0/0'  # último valor de /metrics/rodeo_exitoso
 
         self.create_subscription(PoseArray, '/cajas_avistadas', self._cb_cajas,  10)
         self.create_subscription(Float32,   '/parada_dist',     self._cb_parada, 10)
+        self.create_subscription(Int32, '/metrics/colisiones',    self._cb_colisiones, 10)
+        self.create_subscription(String, '/metrics/rodeo_exitoso', self._cb_rodeo,      10)
 
         self.get_logger().info(
             f'metrics_logger iniciado | corrida={self.corrida_num} '
@@ -86,6 +92,12 @@ class MetricsLogger(Node):
 
     def _cb_parada(self, msg: Float32):
         self.dist_min_parada = min(self.dist_min_parada, msg.data)
+
+    def _cb_colisiones(self, msg: Int32):
+        self.colisiones = msg.data
+
+    def _cb_rodeo(self, msg: String):
+        self.rodeo_exitoso = msg.data
 
     # ── Cálculo ───────────────────────────────────────────────────────────
     def _calcular(self):
@@ -132,14 +144,15 @@ class MetricsLogger(Node):
                 'tasa_deteccion':     round(tasa, 3),
                 'error_pos_prom_cm':  round(err_cm, 1),
                 'dist_min_parada_cm': round(parada_cm, 1),
-                'colisiones':         'COMPLETAR',
-                'rodeo_exitoso':      'COMPLETAR',
+                'colisiones':         self.colisiones,
+                'rodeo_exitoso':      self.rodeo_exitoso,
             })
 
         self.get_logger().info(
             f'[corrida {self.corrida_num}] CSV → {self.archivo} | '
             f'VP={vp} FP={fp} FN={fn} tasa={tasa:.2f} '
-            f'err={err_cm:.1f}cm parada={parada_cm:.1f}cm')
+            f'err={err_cm:.1f}cm parada={parada_cm:.1f}cm '
+            f'colisiones={self.colisiones} rodeo_exitoso={self.rodeo_exitoso}')
 
 
 def main(args=None):

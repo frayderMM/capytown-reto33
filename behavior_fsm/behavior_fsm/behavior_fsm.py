@@ -52,7 +52,7 @@ from rcl_interfaces.msg import SetParametersResult
 from sensor_msgs.msg import LaserScan
 from nav_msgs.msg import Odometry
 from geometry_msgs.msg import Twist
-from std_msgs.msg import Float32, String
+from std_msgs.msg import Float32, Int32, String
 
 from behavior_fsm import percepcion as pc
 
@@ -209,6 +209,12 @@ class Guardian(Node):
         self.cajas_pendientes = []  # candidatas a confirmar (hits/miss), ver _actualizar_censo_derecha
         self.mapa_pared = {}    # {(celda_x,celda_y): {'x','y','n'}} nube de puntos en marco odom
 
+        # ── Métricas para metrics_logger.py (metricas_lidar.csv) ───────────
+        self.n_colisiones     = 0     # STOP por proximidad real (no timeouts de GIRO)
+        self.n_rodeo_intentos = 0     # cada CRUCERO→GIRO es un intento de evasión
+        self.n_rodeo_exitosos = 0     # GIRO→RODEO→CRUCERO sin choque de por medio
+        self._rodeo_actual_ok = True  # se apaga si el intento en curso choca
+
         # ── ROS I/O ───────────────────────────────────────────────────────
         _qos = QoSProfile(depth=10)
         _qos.reliability = ReliabilityPolicy.BEST_EFFORT
@@ -230,6 +236,12 @@ class Guardian(Node):
         self.pub_wd  = self.create_publisher(Float32, '/dbg/w_der',    10)
         self.pub_wi  = self.create_publisher(Float32, '/dbg/w_izq',    10)
         self.pub_wt  = self.create_publisher(Float32, '/dbg/w_total',  10)
+
+        # Para metrics_logger.py: distancia de frenado frente a una caja,
+        # y contadores de colisiones/rodeos exitosos de esta corrida.
+        self.pub_parada     = self.create_publisher(Float32, '/parada_dist', 10)
+        self.pub_colisiones = self.create_publisher(Int32,   '/metrics/colisiones', 10)
+        self.pub_rodeo      = self.create_publisher(String,  '/metrics/rodeo_exitoso', 10)
 
         self.create_timer(0.05, self.loop_control)
 
@@ -537,13 +549,35 @@ class Guardian(Node):
         terminaba en un vaivén choca→retrocede→choca sin escapar nunca
         (visto en pruebas reales, varias veces seguidas). En línea recta
         el retroceso solo aumenta la distancia al punto de choque, sin
-        arriesgar un golpe lateral nuevo por el giro."""
+        arriesgar un golpe lateral nuevo por el giro.
+
+        También alimenta metrics_logger.py: cualquier retroceso echa a
+        perder el intento de rodeo en curso (self._rodeo_actual_ok), y un
+        CHOQUE (no un GIRO sin resolver, que no es un choque real) cuenta
+        como colisión y, si fue de frente contra una CAJA, reporta la
+        distancia de frenado (/parada_dist)."""
+        self._rodeo_actual_ok = False
+        if motivo.startswith('CHOQUE'):
+            self.n_colisiones += 1
+            self.pub_colisiones.publish(Int32(data=self.n_colisiones))
+            if motivo.startswith('CHOQUE frente=') and self.clase_frente == pc.CAJA:
+                self.pub_parada.publish(Float32(data=float(self.dist_frente)))
         self.get_logger().warn(
             f'{motivo} → retrocede {self.dist_retroceso:.2f}m recto',
             throttle_duration_sec=0.4)
         self._cambiar(RETROCESO)
         self._pub_dbg(0, 0, 0, 0)
         self._pub(-self.vel_retroceso, 0.0)
+
+    def _cerrar_rodeo(self):
+        """Cierra el intento de rodeo actual para metrics_logger.py: si no
+        hubo ningún choque de por medio (self._rodeo_actual_ok), cuenta
+        como exitoso. Se llama justo antes de volver a CRUCERO desde
+        RODEO limpio (nunca desde RETROCESO, que ya marcó el intento
+        como fallido en _iniciar_retroceso)."""
+        if self._rodeo_actual_ok:
+            self.n_rodeo_exitosos += 1
+        self.pub_rodeo.publish(String(data=f'{self.n_rodeo_exitosos}/{self.n_rodeo_intentos}'))
 
     def loop_control(self):
 
@@ -615,6 +649,8 @@ class Guardian(Node):
                 urgencia = max(0.0, self.d_giro - self.dist_frente) / max(self.d_giro, 1e-6)
                 self.w_giro_efectivo = max(-self.max_w, min(self.max_w,
                     self.dir_giro * self.w_giro * (1.0 + self.k_urgencia_giro * urgencia)))
+                self.n_rodeo_intentos += 1   # nuevo intento de evasión, para metrics_logger
+                self._rodeo_actual_ok = True
                 self._cambiar(GIRO)
                 self.get_logger().info(
                     f'GIRO dir={"izq" if self.dir_giro > 0 else "der"}'
@@ -685,12 +721,14 @@ class Guardian(Node):
         elif self.estado == RODEO:
             t = self._t_estado()
             if t >= self.t_rodeo_max:
+                self._cerrar_rodeo()
                 self._cambiar(CRUCERO)
                 return
             # Salida por sensor: recién evaluamos si el frente ya despejó
             # después de un mínimo, para no cortar el rodeo por un rebote
             # transitorio justo al salir de GIRO.
             if t >= self.t_rodeo_min and self.dist_frente > self.d_front_ini:
+                self._cerrar_rodeo()
                 self._cambiar(CRUCERO)
                 return
             self._pub_dbg(0, 0, 0, 0)
