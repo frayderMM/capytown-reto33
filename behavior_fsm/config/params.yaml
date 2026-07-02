@@ -40,8 +40,10 @@ behavior_fsm:
     vel_maniobra:     0.05   # lineal en GIRO/RODEO: bajada de 0.07 -> 0.05, el
                              # robot pasaba bien pero avanzaba mas de lo necesario
                              # haciendo el giro/rodeo
-    vel_giro_gradual: 0.55   # subido de 0.50 (a veces el giro se quedaba corto)
+    vel_giro_gradual: 0.45   # bajado de 0.55: el giro se pasaba de largo y
+                             # terminaba muy cerca de la pared izquierda
     max_w:            0.60
+    beep_ms:          300    # ms, pitido al entrar a GIRO (una vez por caja evadida)
 
     # Temporizacion / geometria de GIRO y RODEO
     # k_urgencia_giro y la magnitud del giro se calculan UNA vez al entrar a
@@ -52,7 +54,10 @@ behavior_fsm:
     t_giro_min:         0.8   # s  giro minimo (~23 deg)
     t_giro_max:         4.0   # s  salvavidas
     d_lado_salida_giro: 0.20  # m  sale de GIRO si el lado hacia el que gira < 20cm
-    k_urgencia_giro:    1.7   # amplifica el giro si el obstaculo esta muy cerca de d_giro
+                              # (medido crudo/sin RANSAC, ver behavior_fsm.py)
+    k_urgencia_giro:    1.2   # amplifica el giro si el obstaculo esta muy cerca de d_giro
+                              # bajado de 1.7: sumado a vel_giro_gradual alto se pasaba
+                              # de largo y terminaba muy cerca de la pared izquierda
     t_rodeo_min:        0.4   # s  minimo recto tras GIRO antes de evaluar salida
     t_rodeo_max:        1.0   # s  salvavidas — RODEO es ciego (w=0, no corrige rumbo);
                               # bajado de 1.2 -> 1.0 junto con vel_maniobra, para

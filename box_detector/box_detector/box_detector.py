@@ -24,7 +24,6 @@ from sensor_msgs.msg import LaserScan
 from nav_msgs.msg import Odometry
 from geometry_msgs.msg import PoseArray, Pose
 from visualization_msgs.msg import Marker, MarkerArray
-from std_msgs.msg import UInt16
 
 from box_detector import lidar_utils as lu
 
@@ -41,7 +40,6 @@ class BoxDetector(Node):
         self.declare_parameter('rango_max_deteccion', 3.0)  # m, ignora cajas lejanas
         self.declare_parameter('dist_duplicado', 0.30)    # m, mismas cajas si < esto
         self.declare_parameter('topic_odom', '/odom_raw') # topico de odometria del yahboom_driver
-        self.declare_parameter('beep_ms', 300)            # ms, duracion del pitido en /beep
 
         self.umbral_salto = self.get_parameter('umbral_salto').value
         self.min_puntos = int(self.get_parameter('min_puntos').value)
@@ -50,7 +48,6 @@ class BoxDetector(Node):
         self.rango_max = self.get_parameter('rango_max_deteccion').value
         self.dist_dup = self.get_parameter('dist_duplicado').value
         self.topic_odom = self.get_parameter('topic_odom').value
-        self.beep_ms = int(self.get_parameter('beep_ms').value)
 
         # ---- Estado ----
         # Pose actual del robot en el marco odom (x, y, yaw).
@@ -68,11 +65,6 @@ class BoxDetector(Node):
         self.create_subscription(Odometry, self.topic_odom, self.cb_odom, _qos_odom)
         self.pub_cajas = self.create_publisher(PoseArray, '/cajas_avistadas', 10)
         self.pub_markers = self.create_publisher(MarkerArray, '/cajas_markers', 10)
-        # Pitido al censar una caja nueva. /beep es std_msgs/UInt16 en este
-        # robot (confirmado con `ros2 topic type /beep`): el driver
-        # (YB_Car_Node) interpreta el numero como duracion en ms y lo apaga
-        # solo, no hace falta publicar un "off" aparte.
-        self.pub_beep = self.create_publisher(UInt16, '/beep', 10)
 
         self.get_logger().info('box_detector iniciado. Esperando /scan y /odom...')
 
@@ -126,17 +118,9 @@ class BoxDetector(Node):
         if nuevas:
             self.get_logger().info(
                 f'Nuevas cajas: {nuevas}  |  Censo total: {len(self.cajas_censo)}')
-            self._pitar()
 
         # 5) Publicar resultados.
         self._publicar(msg.header)
-
-    # ------------------------------------------------------------------
-    def _pitar(self):
-        """Pitido al censar una caja nueva: publica la duracion en ms una
-        sola vez, el driver (YB_Car_Node) se encarga de apagarlo solo."""
-        m = UInt16(); m.data = self.beep_ms
-        self.pub_beep.publish(m)
 
     # ------------------------------------------------------------------
     def _ya_censada(self, punto):
