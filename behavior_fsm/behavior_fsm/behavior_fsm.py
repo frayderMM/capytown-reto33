@@ -83,14 +83,14 @@ class BehaviorFSM(Node):
                                                             # 0.07 -> 0.05, el robot pasaba bien
                                                             # pero avanzaba mas de lo necesario
                                                             # haciendo el giro/rodeo
-        self.declare_parameter('vel_giro_gradual', 0.38)
+        self.declare_parameter('vel_giro_gradual', 0.45)
         self.declare_parameter('max_w',            0.60)
         self.declare_parameter('beep_ms',           300)  # ms, pitido al entrar a GIRO (una vez por caja)
 
-        self.declare_parameter('t_giro_min',        0.65)
+        self.declare_parameter('t_giro_min',        0.8)
         self.declare_parameter('t_giro_max',        4.0)
-        self.declare_parameter('d_lado_salida_giro', 0.25)  # sale de GIRO si el lado hacia el que gira se cierra
-        self.declare_parameter('k_urgencia_giro',   0.9)   # amplifica w_giro si el obstaculo esta muy cerca
+        self.declare_parameter('d_lado_salida_giro', 0.20)  # sale de GIRO si el lado hacia el que gira se cierra
+        self.declare_parameter('k_urgencia_giro',   1.2)   # amplifica w_giro si el obstaculo esta muy cerca
         self.declare_parameter('t_rodeo_min',       0.4)   # minimo recto tras GIRO antes de evaluar salida
         self.declare_parameter('t_rodeo_max',       1.0)   # salvavidas — RODEO es ciego (w=0)
         self.declare_parameter('t_cooldown',        2.0)
