@@ -23,10 +23,14 @@ behavior_fsm:
     d_giro:         0.28   # m  trigger GIRO
     d_front_inicio: 0.40   # m  inicio evasión frontal
 
-    # Tracking pared derecha
+    # Tracking pared derecha (distancia RANSAC + heading del segmento
+    # clasificado por percepcion.py, borde exterior)
     target_der: 0.17
     Kder:       2.6
     Kd_der:     0.3
+    K_alpha:    1.0    # ganancia del heading (ángulo del segmento vs. avance)
+    min_long_pared_pd:  0.30  # m mínimo del segmento de referencia
+    cos_lateral_min_pd: 0.55  # |dx|/L mínimo ("va a lo largo de x")
 
     # Repulsión pared izquierda
     d_izq_min: 0.15
@@ -44,7 +48,8 @@ behavior_fsm:
 
     # Temporización / geometría de GIRO y RODEO
     t_giro_min:         0.7   # s  giro mínimo
-    t_giro_max:         4.0   # s  salvavidas
+    t_giro_max:         2.0   # s  salvavidas — si no resuelve, retrocede en vez de
+                              # seguir girando (acota el giro a ~70° en un intento)
     d_lado_salida_giro: 0.20  # m  sale de GIRO si el lado hacia el que gira < 20cm
                               # (medido crudo/sin RANSAC, ver behavior_fsm.py)
     k_urgencia_giro:    1.2   # amplifica el giro si el obstáculo está muy cerca de d_giro

@@ -1,32 +1,37 @@
 #!/usr/bin/env python3
 """
-behavior_fsm.py — Guardian v4 (RC3): motor de movimiento + detección de
-caja/pared por tamaño para el panel de diagnóstico (lidar_viz.py).
+behavior_fsm.py — Guardian v4 (RC3 + RETROCESO + heading): motor de
+movimiento + detección de caja/pared por tamaño para el panel de
+diagnóstico (lidar_viz.py).
 
 Estados: CRUCERO → GIRO → RODEO → CRUCERO
+         (cualquier estado) → RETROCESO → CRUCERO   [si hay choque/STOP,
+         o si GIRO no resuelve a tiempo — espacio muy chico]
 
-El motor de movimiento (control, STOP de seguridad, GIRO/RODEO) es el de
-RC3 (2)/RC3/behavior_fsm/behavior_fsm/behavior_fsm.py, sin cambios: gira
-hacia el lado con MÁS espacio disponible en cada momento (no siempre hacia
-la izquierda) y RODEO avanza recto hasta que el frente se despeja, con
-mínimos/máximos de tiempo como salvavidas.
+El motor de movimiento (control, STOP de seguridad, GIRO/RODEO/RETROCESO)
+viene de RC3 (2) y RC3 (3): gira hacia el lado con MÁS espacio disponible
+en cada momento (no siempre hacia la izquierda), RODEO avanza recto hasta
+que el frente se despeja, y RETROCESO se aleja del choque (o de un GIRO
+que no encontró salida) en vez de quedarse congelado o seguir a ciegas.
 
 dist_frente y dist_izq_raw/dist_der_raw (mínimo crudo, sin filtrar) se
 miden localmente sobre /scan: son la base del STOP de seguridad y deben
 ver CUALQUIER objeto cercano. dist_izq / dist_der llegan del nodo
 wall_follower (RANSAC sobre las paredes laterales, vía /dist_izq y
-/dist_der) y se usan solo para el tracking de crucero y la elección de
-lado en GIRO — RANSAC descarta a propósito los objetos que no son pared
-(p.ej. una caja pegada al costado) como outliers, por lo que NO sirven
-para detectar un choque lateral inminente.
+/dist_der) y se usan para la elección de lado en GIRO/RETROCESO y como
+respaldo del tracking de crucero — RANSAC descarta a propósito los
+objetos que no son pared (p.ej. una caja pegada al costado) como
+outliers, por lo que NO sirven para detectar un choque lateral inminente.
 
 Aparte del motor de movimiento, este nodo corre en paralelo la
 clasificación caja/pared de percepcion.py (Split-and-Merge por tamaño de
-línea: ≤ lado_caja_linea → caja, mayor → pared) únicamente para poblar
+línea: ≤ lado_caja_linea → caja, mayor → pared) para poblar
 /guardian/debug (clase_frente, segmentos coloreados, cajas vivas, trail)
-que consume lidar_viz.py. Esa clasificación NO decide el movimiento — el
-motor de RC3 reacciona solo a distancias (dist_frente/dist_izq/dist_der),
-igual que en RC3 (2).
+que consume lidar_viz.py. Esa clasificación NO decide qué es caja/pared
+para el movimiento en sí — pero el segmento PARED del borde exterior que
+produce SÍ alimenta _w_der_pd() con distancia + heading (ángulo del
+segmento respecto al avance), en vez de solo la distancia de RANSAC;
+si no hay segmento clasificado disponible, cae a RANSAC sin heading.
 
 Tópicos debug: /dist_frente /dbg/dist_izq_fsm /dbg/dist_der_fsm
                /dbg/w_front /dbg/w_der /dbg/w_izq /dbg/w_total
@@ -85,7 +90,11 @@ class Guardian(Node):
         self.declare_parameter('max_w',            0.60)
 
         self.declare_parameter('t_giro_min',        0.7)
-        self.declare_parameter('t_giro_max',        4.0)
+        self.declare_parameter('t_giro_max',        2.0)  # baja de 4.0: acota el giro
+                                                            # máximo en un solo intento
+                                                            # (~70° a max_w) — si no
+                                                            # resuelve, retrocede en vez
+                                                            # de seguir girando/avanzando
         self.declare_parameter('d_lado_salida_giro', 0.20)
         self.declare_parameter('k_urgencia_giro',   1.2)
         self.declare_parameter('t_rodeo_min',       0.4)
@@ -99,6 +108,14 @@ class Guardian(Node):
         self.declare_parameter('w_retroceso',    0.42)  # rad/s giro de corrección durante el
                                                           # retroceso, hacia el lado con más
                                                           # espacio (crudo, igual criterio que GIRO)
+
+        # Tracking de pared derecha con heading (además de distancia): usa el
+        # segmento PARED ya clasificado por percepcion.py (borde exterior del
+        # jirón) en vez de solo la distancia de RANSAC, sumando el término de
+        # ángulo que evita el zigzag del PID de una sola variable.
+        self.declare_parameter('K_alpha', 1.0)            # ganancia del heading
+        self.declare_parameter('min_long_pared_pd', 0.30)  # m mínimo del segmento de referencia
+        self.declare_parameter('cos_lateral_min_pd', 0.55)  # |dx|/L mínimo ("va a lo largo de x")
 
         # ── Parámetros de percepción / clasificación (solo para el panel) ─
         self.declare_parameter('excluir_atras_deg', 60.0)
@@ -155,6 +172,7 @@ class Guardian(Node):
         # ── Percepción / clasificación (solo para el panel) ───────────────
         self.clusters = []
         self.clase_frente = None
+        self.pared_der_seg = None  # {'d','alpha','lon'} del borde exterior, o None
         self.accion = 'AVANZANDO'
 
         # ── Odometría / censo (para el panel derecho) ─────────────────────
@@ -218,6 +236,9 @@ class Guardian(Node):
         self.vel_retroceso     = self.get_parameter('vel_retroceso').value
         self.t_retroceso       = self.dist_retroceso / max(self.vel_retroceso, 1e-6)
         self.w_retroceso       = self.get_parameter('w_retroceso').value
+        self.K_alpha           = self.get_parameter('K_alpha').value
+        self.min_long_pared_pd = self.get_parameter('min_long_pared_pd').value
+        self.cos_lat_pd        = self.get_parameter('cos_lateral_min_pd').value
 
     def _on_params(self, params):
         self._reload_params()
@@ -281,9 +302,11 @@ class Guardian(Node):
         self.dist_izq_raw  = d_l_raw
         self.dist_der_raw  = d_r_raw
 
-        # Clasificación caja/pared (percepcion.py) — solo para el panel de
-        # diagnóstico; NO decide el movimiento (eso lo hace loop_control con
-        # dist_frente/dist_izq/dist_der, igual que en RC3).
+        # Clasificación caja/pared (percepcion.py) — la caja/pared la decide
+        # SOLO esto (igual que antes, para el panel); pero el segmento PARED
+        # del borde exterior que sale de aquí también alimenta el tracking
+        # de crucero (_w_der_pd) con distancia + heading, no solo distancia
+        # RANSAC como antes.
         pts = pc.filtrar_scan(msg.ranges, msg.angle_min, msg.angle_increment,
                               msg.range_min, msg.range_max,
                               self.front_rad, self.rango_max_clasif, self.atras_rad)
@@ -293,6 +316,8 @@ class Guardian(Node):
         _, clase_f, _, _, _, _ = pc.frente_y_lados(
             pts, self.clusters, self.off_f, self.off_l)
         self.clase_frente = clase_f
+        self.pared_der_seg = pc.pared_derecha(self.clusters, self.min_long_pared_pd,
+                                              self.cos_lat_pd)
         self._actualizar_cajas_desde_scan(self.clusters)
 
         self._publicar_debug()
@@ -342,15 +367,28 @@ class Guardian(Node):
         return (self.get_clock().now() - self.t_inicio).nanoseconds * 1e-9
 
     def _w_der_pd(self) -> float:
-        """PD de tracking a la pared derecha. El término derivativo amortigua
-        el overshoot que trae subir Kder para pegarse más rápido al target."""
-        error = self.dist_der - self.target_der
+        """PD de tracking a la pared derecha, con heading además de
+        distancia: usa el segmento PARED del borde exterior ya clasificado
+        (percepcion.py) — su 'alpha' (ángulo respecto al avance) corrige la
+        orientación además de la distancia, que es lo que evita el zigzag
+        de un PD de una sola variable. Si no hay segmento clasificado
+        disponible (p.ej. muy cerca de una esquina), cae a la distancia
+        RANSAC de wall_follower sin corrección de heading (alpha=0), igual
+        que el comportamiento anterior."""
+        if self.pared_der_seg is not None:
+            d_der = self.pared_der_seg['d']
+            alpha = self.pared_der_seg['alpha']
+        else:
+            d_der = self.dist_der
+            alpha = 0.0
+        error = d_der - self.target_der
         now   = self.get_clock().now()
         dt    = max((now - self._t_der_prev).nanoseconds * 1e-9, 0.01)
         d_err = (error - self._err_der_prev) / dt
         self._err_der_prev = error
         self._t_der_prev   = now
-        return -(self.Kder * error + self.Kd_der * d_err)
+        # lejos → girar derecha (w<0); alpha≠0 → realinear paralelo
+        return -(self.Kder * error + self.Kd_der * d_err) + self.K_alpha * alpha
 
     def _cambiar(self, nuevo: str):
         self.get_logger().info(
@@ -367,6 +405,30 @@ class Guardian(Node):
             self._t_der_prev = self.get_clock().now()
         self.estado   = nuevo
         self.t_inicio = self.get_clock().now()
+
+    def _iniciar_retroceso(self, motivo: str):
+        """Gira hacia el lado con MÁS espacio (crudo, no RANSAC: justo aquí
+        es donde RANSAC es menos confiable, pegado a un obstáculo) mientras
+        retrocede, para quedar ya encarado hacia el lado libre y no repetir
+        el mismo problema al reintentar. Mismo criterio de "más espacio"
+        que GIRO. Compartido por el STOP (choque real) y por GIRO cuando se
+        queda sin resolver (espacio muy chico para completar el giro)."""
+        if math.isfinite(self.dist_izq_raw) and math.isfinite(self.dist_der_raw):
+            dir_retroceso = 1.0 if self.dist_izq_raw >= self.dist_der_raw else -1.0
+        elif math.isfinite(self.dist_der_raw):
+            dir_retroceso = 1.0
+        elif math.isfinite(self.dist_izq_raw):
+            dir_retroceso = -1.0
+        else:
+            dir_retroceso = 1.0
+        self.w_retroceso_efectivo = dir_retroceso * self.w_retroceso
+        self.get_logger().warn(
+            f'{motivo} → retrocede {self.dist_retroceso:.2f}m'
+            f' girando hacia {"izq" if dir_retroceso > 0 else "der"}',
+            throttle_duration_sec=0.4)
+        self._cambiar(RETROCESO)
+        self._pub_dbg(0, 0, 0, 0)
+        self._pub(-self.vel_retroceso, self.w_retroceso_efectivo)
 
     def loop_control(self):
 
@@ -389,27 +451,7 @@ class Guardian(Node):
                 choque = f'der={self.dist_der_raw:.3f}m'
 
             if choque is not None:
-                # Gira hacia el lado con MÁS espacio (crudo, no RANSAC: justo
-                # aquí es donde RANSAC es menos confiable, pegado a un
-                # obstáculo) mientras retrocede, para quedar ya encarado
-                # hacia el lado libre y no repetir el mismo choque al
-                # reintentar. Mismo criterio de "más espacio" que GIRO.
-                if math.isfinite(self.dist_izq_raw) and math.isfinite(self.dist_der_raw):
-                    dir_retroceso = 1.0 if self.dist_izq_raw >= self.dist_der_raw else -1.0
-                elif math.isfinite(self.dist_der_raw):
-                    dir_retroceso = 1.0
-                elif math.isfinite(self.dist_izq_raw):
-                    dir_retroceso = -1.0
-                else:
-                    dir_retroceso = 1.0
-                self.w_retroceso_efectivo = dir_retroceso * self.w_retroceso
-                self.get_logger().warn(
-                    f'CHOQUE {choque} → retrocede {self.dist_retroceso:.2f}m'
-                    f' girando hacia {"izq" if dir_retroceso > 0 else "der"}',
-                    throttle_duration_sec=0.4)
-                self._cambiar(RETROCESO)
-                self._pub_dbg(0, 0, 0, 0)
-                self._pub(-self.vel_retroceso, self.w_retroceso_efectivo)
+                self._iniciar_retroceso(f'CHOQUE {choque}')
                 return
 
         # ── RETROCESO: recto hacia atrás + giro de corrección (congelado al
@@ -491,7 +533,12 @@ class Guardian(Node):
             d_lado = self.dist_izq_raw if self.dir_giro > 0 else self.dist_der_raw
 
             if self._t_estado() > self.t_giro_max:
-                self._cambiar(RODEO)
+                # No resolvió a tiempo: el espacio es muy chico para
+                # completar el giro normal. Seguir rotando a ciegas hacia
+                # RODEO (avance recto) es lo que puede terminar en un giro
+                # casi completo en un lugar chico — mejor retroceder para
+                # abrir espacio y reintentar, igual que ante un choque.
+                self._iniciar_retroceso('GIRO sin resolver')
                 return
             if math.isfinite(d_lado) and d_lado < self.d_lado_salida_giro:
                 self.get_logger().warn(
@@ -535,7 +582,11 @@ class Guardian(Node):
                              'x2': round(s['p2'][0], 3), 'y2': round(s['p2'][1], 3),
                              'lon': round(s['lon'], 3), 'clase': clase_seg})
         pared_der = None
-        if math.isfinite(self.dist_der):
+        if self.pared_der_seg is not None:
+            pared_der = {'d': round(self.pared_der_seg['d'], 3),
+                         'alpha_deg': round(math.degrees(self.pared_der_seg['alpha']), 1),
+                         'tipo': 'PERCEPCION_DER', 'd_front': None, 'd_rear': None}
+        elif math.isfinite(self.dist_der):
             pared_der = {'d': round(self.dist_der, 3), 'alpha_deg': 0.0,
                          'tipo': 'RANSAC_DER', 'd_front': None, 'd_rear': None}
         data = {
