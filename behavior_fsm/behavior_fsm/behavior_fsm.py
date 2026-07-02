@@ -68,10 +68,6 @@ class Guardian(Node):
 
         self.declare_parameter('d_stop_front',   0.14)
         self.declare_parameter('d_stop_lateral', 0.06)
-        self.declare_parameter('d_emergencia_front', 0.06)  # m ya casi tocando: intenta
-        self.declare_parameter('d_emergencia_lateral', 0.03)  # salir aunque esté en GIRO/RODEO
-        self.declare_parameter('w_salir_choque', 0.3)  # rad/s al girar para salir del choque
-        self.declare_parameter('v_retroceso_choque', 0.04)  # m/s: retrocede un poco al salir
         self.declare_parameter('d_giro',         0.30)
         self.declare_parameter('d_front_inicio', 0.40)
 
@@ -189,10 +185,6 @@ class Guardian(Node):
     def _reload_params(self):
         self.d_stop_front      = self.get_parameter('d_stop_front').value
         self.d_stop_lat        = self.get_parameter('d_stop_lateral').value
-        self.d_emerg_front     = self.get_parameter('d_emergencia_front').value
-        self.d_emerg_lat       = self.get_parameter('d_emergencia_lateral').value
-        self.w_salir_choque    = self.get_parameter('w_salir_choque').value
-        self.v_retro_choque    = self.get_parameter('v_retroceso_choque').value
         self.d_giro            = self.get_parameter('d_giro').value
         self.d_front_ini       = self.get_parameter('d_front_inicio').value
         self.target_der        = self.get_parameter('target_der').value
@@ -272,16 +264,9 @@ class Guardian(Node):
                 d_l_raw = min(d_l_raw, r)
             else:
                 d_r_raw = min(d_r_raw, r)
-        # d_f/d_l_raw/d_r_raw son distancias CRUDAS desde el LiDAR, pero el
-        # borde físico del robot está más adelante/afuera del sensor
-        # (offset_frente=15cm, offset_lados=8cm) — sin restar esto, un
-        # umbral como d_stop_front=0.14m se cumple cuando el LiDAR ve algo
-        # a 14cm, momento en el que el borde real (15cm más adelante) YA
-        # está tocando o pasado el obstáculo. Todas las distancias que usa
-        # loop_control deben ser relativas al borde, no al sensor.
-        self.dist_frente   = d_f - self.off_f
-        self.dist_izq_raw  = d_l_raw - self.off_l
-        self.dist_der_raw  = d_r_raw - self.off_l
+        self.dist_frente   = d_f
+        self.dist_izq_raw  = d_l_raw
+        self.dist_der_raw  = d_r_raw
 
         # Clasificación caja/pared (percepcion.py) — solo para el panel de
         # diagnóstico; NO decide el movimiento (eso lo hace loop_control con
@@ -368,103 +353,34 @@ class Guardian(Node):
         self.estado   = nuevo
         self.t_inicio = self.get_clock().now()
 
-    def _w_salir_choque(self):
-        """Emergencia real (ya casi tocando algo): gira EN EL SITIO (v=0)
-        sin importar en qué estado esté el FSM — a esta distancia seguir
-        el guion de GIRO/RODEO tal cual ya no es seguro, hay que intentar
-        salir del choque activamente en vez de solo frenar o continuar
-        ciego. Prioriza volver a la DERECHA (el robot ya viaja pegado a
-        esa pared por diseño — target_der — así que es el lado "natural"
-        para reincorporarse): gira a la derecha si ese lado tiene margen
-        real (>= d_stop_lat, no solo el umbral de emergencia); si la
-        derecha también está apretada, gira a la izquierda."""
-        d_der = self.dist_der_raw if math.isfinite(self.dist_der_raw) else float('inf')
-        if d_der >= self.d_stop_lat:
-            return -self.w_salir_choque   # derecha tiene margen -> gira hacia allá
-        return self.w_salir_choque        # derecha también apretada -> gira a la izquierda
-
-    def _iniciar_giro_emergencia(self):
-        """Fuerza la entrada a GIRO saltando el cooldown normal — se llama
-        desde el STOP cuando dispara estando en CRUCERO: seguir clavado en
-        el límite sin poder girar no es más seguro que girar ya. Prioriza
-        la DERECHA (el robot ya viaja pegado a esa pared por diseño, es el
-        lado "natural" para reincorporarse): si tiene espacio real
-        (>= d_giro), gira ahí con la magnitud normal. Si la derecha
-        también está apretada, solo se "calibra" un poco a la izquierda
-        (giro reducido, no un GIRO completo) — lo mínimo para ganar
-        margen, no una evasión completa hacia el lado que no es el suyo."""
-        d_der = self.dist_der if math.isfinite(self.dist_der) else float('inf')
-        if d_der >= self.d_giro:
-            self.dir_giro = -1.0
-            w = self.w_giro
-        else:
-            self.dir_giro = 1.0
-            w = self.w_giro * 0.5   # solo un ajuste chico a la izquierda
-        self.w_giro_efectivo = max(-self.max_w, min(self.max_w,
-            self.dir_giro * w))
-        self._cambiar(GIRO)
-
     def loop_control(self):
 
-        # ── PRIORIDAD 0: emergencia real — ya casi tocando algo ───────────
-        # Umbral mucho más cerrado que el STOP normal y NO se exceptúa en
-        # GIRO/RODEO: a esta distancia seguir el guion de la maniobra ya no
-        # es seguro, hay que intentar salir del choque.
-        if (self.dist_frente < self.d_emerg_front
-                or (math.isfinite(self.dist_izq_raw) and self.dist_izq_raw < self.d_emerg_lat)
-                or (math.isfinite(self.dist_der_raw) and self.dist_der_raw < self.d_emerg_lat)):
-            # Si lo que está encima es el frente, retrocede un poco MIENTRAS
-            # gira para calibrarse — sin esto, girar en el sitio pegado al
-            # obstáculo puede rozarlo con el costado en vez de despejarlo.
-            # No hay sensor trasero (cono excluido), así que el retroceso es
-            # deliberadamente chico. Si solo dispara por un costado (el
-            # frente sigue libre), no hay razón para retroceder.
-            v = -self.v_retro_choque if self.dist_frente < self.d_emerg_front else 0.0
-            self._pub(v, self._w_salir_choque())
+        # ── PRIORIDAD 1: STOP absoluto ────────────────────────────────────
+        if self.dist_frente < self.d_stop_front:
+            self._pub(0.0, 0.0)
             self._pub_dbg(0, 0, 0, 0)
             self.get_logger().warn(
-                f'CHOQUE f={self.dist_frente:.3f} l={self.dist_izq_raw:.3f}'
-                f' r={self.dist_der_raw:.3f} — retrocediendo y saliendo', throttle_duration_sec=0.4)
+                f'PARA frente={self.dist_frente:.3f}m', throttle_duration_sec=0.4)
             return
-
-        # ── PRIORIDAD 1: STOP absoluto ────────────────────────────────────
-        # No aplica mientras el FSM ya está en GIRO/RODEO: son maniobras
-        # deliberadas que pasan cerca de la caja/pared a propósito y ya
-        # tienen sus propios límites de seguridad (t_giro_max/
-        # d_lado_salida_giro en GIRO; t_rodeo_max en RODEO) — el STOP
-        # genérico las congelaba a mitad de camino por 1cm de margen,
-        # dejando al robot pegado sin terminar de pasar el obstáculo.
-        # El STOP NO se congela indefinidamente: si dispara estando en
-        # CRUCERO, fuerza la entrada a GIRO de una vez (saltando el
-        # cooldown de re-disparo) en vez de publicar (0,0) y esperar.
-        # Antes, mientras dist_frente seguía bajo d_stop_front, este mismo
-        # chequeo se re-disparaba cada ciclo y el "return" nunca dejaba que
-        # loop_control llegara al disparador normal de GIRO en el bloque de
-        # CRUCERO de más abajo — el robot quedaba pegado en el límite
-        # publicando (0,0) en bucle sin girar nunca (visto en pista: 10s
-        # seguidos de "PARA frente=0.120m"). Quedarse quieto justo en el
-        # límite no es más seguro que girar — predecir el choque significa
-        # reaccionar, no solo frenar.
-        en_maniobra = self.estado in (GIRO, RODEO)
-        if not en_maniobra and self.dist_frente < self.d_stop_front:
-            self.get_logger().warn(
-                f'PARA frente={self.dist_frente:.3f}m — forzando GIRO', throttle_duration_sec=0.4)
-            self._iniciar_giro_emergencia()
         # Usa el mínimo crudo (dist_izq_raw/dist_der_raw), NO el de RANSAC:
         # RANSAC descarta a propósito objetos que no son pared (p.ej. una
         # caja pegada al costado) como outliers, y ese es justo el caso que
         # este STOP tiene que detectar.
-        elif not en_maniobra and math.isfinite(self.dist_izq_raw) and self.dist_izq_raw < self.d_stop_lat:
+        if math.isfinite(self.dist_izq_raw) and self.dist_izq_raw < self.d_stop_lat:
+            self._pub(0.0, 0.0)
+            self._pub_dbg(0, 0, 0, 0)
             self.get_logger().warn(
-                f'PARA izq={self.dist_izq_raw:.3f}m — forzando GIRO', throttle_duration_sec=0.4)
-            self._iniciar_giro_emergencia()
-        elif not en_maniobra and math.isfinite(self.dist_der_raw) and self.dist_der_raw < self.d_stop_lat:
+                f'PARA izq={self.dist_izq_raw:.3f}m', throttle_duration_sec=0.4)
+            return
+        if math.isfinite(self.dist_der_raw) and self.dist_der_raw < self.d_stop_lat:
             # El GIRO puede ir hacia cualquier lado (no solo izquierda), así
             # que el riesgo de colisión lateral también puede venir del
             # lado derecho.
+            self._pub(0.0, 0.0)
+            self._pub_dbg(0, 0, 0, 0)
             self.get_logger().warn(
-                f'PARA der={self.dist_der_raw:.3f}m — forzando GIRO', throttle_duration_sec=0.4)
-            self._iniciar_giro_emergencia()
+                f'PARA der={self.dist_der_raw:.3f}m', throttle_duration_sec=0.4)
+            return
 
         # ── CRUCERO ───────────────────────────────────────────────────────
         if self.estado == CRUCERO:

@@ -3,7 +3,7 @@
 # Flujo: CRUCERO → GIRO (elige lado con más espacio, según dist_izq/dist_der
 # de wall_follower) → RODEO (recto, sale por sensor cuando el frente
 # despeja) → CRUCERO. dist_izq/dist_der NO se calculan en behavior_fsm: los
-# publica wall_follower (RANSAC sobre las paredes laterales).
+# publica wall_follower (RANSAC sobre las paredes l
 #
 # La clasificación caja/pared (percepcion.py) corre en paralelo solo para
 # poblar /guardian/debug (panel de lidar_viz.py) — no decide el movimiento.
@@ -17,14 +17,6 @@ behavior_fsm:
     # Parada absoluta
     d_stop_front:   0.14   # m  14 cm frente
     d_stop_lateral: 0.06   # m  6 cm costado (aplica a izq y a der por igual)
-    # No aplica durante GIRO/RODEO (maniobra deliberada, ya tiene sus
-    # propios límites). Debajo de esto sí es choque real y aplica siempre:
-    d_emergencia_front:   0.06  # m
-    d_emergencia_lateral: 0.03  # m
-    w_salir_choque:       0.3   # rad/s: gira en el sitio hacia el lado con
-                                # más espacio crudo para salir del choque
-    v_retroceso_choque:   0.04  # m/s: retrocede un poco (solo si el frente
-                                # es lo que dispara) mientras gira para calibrar
 
     # Umbrales frontales
     d_giro:         0.30   # m  trigger GIRO
