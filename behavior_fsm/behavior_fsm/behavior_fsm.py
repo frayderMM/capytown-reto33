@@ -60,7 +60,7 @@ class BehaviorFSM(Node):
 
         self.declare_parameter('d_stop_front',   0.14)
         self.declare_parameter('d_stop_lateral', 0.06)
-        self.declare_parameter('d_giro',         0.30)
+        self.declare_parameter('d_giro',         0.28)
         self.declare_parameter('d_front_inicio', 0.40)
 
         self.declare_parameter('target_der', 0.17)   # robot consistente a 17-20cm

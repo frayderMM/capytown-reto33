@@ -17,7 +17,7 @@ behavior_fsm:
     d_stop_lateral: 0.06   # m  6 cm costado (aplica a izq y a der por igual)
 
     # Umbrales frontales
-    d_giro:         0.30   # m  trigger GIRO
+    d_giro:         0.28   # m  trigger GIRO
     d_front_inicio: 0.40   # m  inicio evasion frontal
 
     # Tracking pared derecha
