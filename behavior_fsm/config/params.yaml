@@ -60,14 +60,6 @@ behavior_fsm:
     t_cooldown:         2.0   # s  cooldown post-RODEO
     t_recuperacion:     1.5   # s  suprime w_front tras RODEO
 
-    # Zonas complicadas (dos obstaculos pegados, p.ej. caja justo en una
-    # esquina junto a la pared de la isla): giro moderado apunta al
-    # SEGUNDO obstaculo casi de inmediato y encadena mas giros. Si un
-    # nuevo GIRO se dispara dentro de esta ventana desde el anterior, se
-    # responde con un giro mas fuerte y sostenido en vez del calculo normal.
-    t_ventana_escalada:  6.0   # s  disparo dentro de esta ventana = zona complicada
-    t_giro_min_escalado: 1.4   # s  giro minimo mas largo en zona complicada
-
 # wall_follower — paredes laterales por RANSAC (reemplaza Split-and-Merge).
 # Publica /dist_izq y /dist_der; behavior_fsm los consume, no los recalcula.
 wall_follower:
